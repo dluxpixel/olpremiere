@@ -1,8 +1,9 @@
 // The Words panel's Listen keeps what it heard on the media, in source seconds.
 // Listening takes tens of seconds and nothing holds the timeline still while it
-// runs, so the words have to be turned back into source seconds against the
-// clip as it was HEARD, not the clip as it is when the listening ends. Whisper
-// is mocked out, the way listenToClip.test.ts does it.
+// runs, so the words are put in source seconds against the clip as it was HEARD
+// (listenToClip hands back { clip, asset, words } in the media's own seconds),
+// never against the clip as it is when the listening ends. Whisper is mocked
+// out, the way listenToClip.test.ts does it.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -18,9 +19,12 @@ vi.mock('../engine/captions/transcribe', () => ({
     return { promise: Promise.resolve([]), cancel: () => {} }
   },
   wordsFromAsrChunks: () => [],
-  tidyTranscribedWords: () => [],
-  // What the real door hands back: the word he said 1 to 1.5 s into the clip,
-  // placed on the timeline through the clip it was given.
+  // What the recogniser heard: the word he said 1 to 1.5 s into the clip, in
+  // clip time. listenToClip turns it into the media's seconds through the
+  // clip's in point, from the clip as it stood when the listening began.
+  tidyTranscribedWords: () => [{ text: 'hi', startS: 1, endS: 1.5 }],
+  // The caption door's answer, placed on the timeline. Listen ignores it (it
+  // keeps the media's seconds), but it must not be empty or nobody "talked".
   timelineWords: (_w: unknown, clip: { startS: number; speed: number }) => [
     { text: 'hi', startS: clip.startS + 1 / Math.abs(clip.speed), endS: clip.startS + 1.5 / Math.abs(clip.speed) },
   ],
@@ -29,7 +33,11 @@ vi.mock('../engine/captions/transcribeConfig', () => ({
   getCaptionLanguage: () => 'en',
   getCaptionEmphasis: () => false,
   modelFor: () => 'onnx-community/whisper-small.en_timestamped',
+  whisperModel: () => ({ wordLagS: 0 }),
 }))
+// His spellings are read from every other project, which needs a database this
+// test does not have: none are taught here.
+vi.mock('./captionVocabulary', () => ({ currentVocabulary: async () => ({ rewrites: [] }) }))
 vi.mock('../engine/captions/voiceActivity', () => ({
   voiceTrackForClip: () => Promise.resolve(null),
   dropWordsWithoutVoice: (words: unknown[]) => words,
@@ -38,7 +46,7 @@ vi.mock('../engine/captions/voiceActivity', () => ({
 import { activeSequence, newClipFromAsset, newProject, type MediaAsset } from '../engine/types'
 import { updateActiveSequence, useStore } from './store'
 import { listenForWords } from './transcriptActions'
-import { useTranscribe } from './transcribeActions'
+import { forgetHeard, useTranscribe } from './transcribeActions'
 
 const ASSET: MediaAsset = { id: 'a', name: 'take.wav', kind: 'audio', blobKey: 'b', durationS: 20, hasAudio: true, hasVideo: false }
 
@@ -64,6 +72,9 @@ const words = () => useStore.getState().project.assets.a?.words ?? []
 
 beforeEach(() => {
   duringListen = () => {}
+  // The recogniser keeps what it heard for the same stretch of the same media, so
+  // without this the drag test would never reach the model and never drag.
+  forgetHeard()
   useTranscribe.setState({ status: 'idle', pct: null, downloading: false, cancel: null, queue: null })
 })
 

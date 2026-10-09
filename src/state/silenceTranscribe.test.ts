@@ -37,6 +37,9 @@ vi.mock('../engine/captions/transcribeConfig', () => ({
   modelFor: () => 'onnx-community/whisper-small.en_timestamped',
   whisperModel: () => ({ wordLagS: 0 }),
 }))
+// His spellings are read from every other project, which needs a database this
+// test does not have: none are taught here.
+vi.mock('./captionVocabulary', () => ({ currentVocabulary: async () => ({ rewrites: [] }) }))
 vi.mock('../engine/captions/voiceActivity', () => ({
   voiceTrackForClip: () => Promise.resolve(null),
   dropWordsWithoutVoice: (words: unknown[]) => words,
