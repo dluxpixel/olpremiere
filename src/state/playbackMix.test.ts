@@ -26,7 +26,13 @@ vi.mock('../engine/audio', () => ({
   clipEmitsAudioOn: (kind: string, clip: { linkId?: string; ownAudioOff?: boolean }) =>
     kind === 'audio' || (clip.linkId === undefined && !clip.ownAudioOff),
 }))
-vi.mock('../engine/preview', () => ({ pauseAllPreviewVideos: () => {}, setPreviewTransportRate: () => {} }))
+// No monitor runs here, so no frame was ever drawn (preview.ts lastPlayedFrameS is null).
+vi.mock('../engine/preview', () => ({
+  pauseAllPreviewVideos: () => {},
+  setPreviewTransportRate: () => {},
+  lastPlayedFrameS: () => null,
+  forgetPlayedFrame: () => {},
+}))
 vi.mock('./voiceRecorder', () => ({
   isTakeInProgress: () => false,
   pauseRecording: () => {},
