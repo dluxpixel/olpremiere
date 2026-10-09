@@ -36,6 +36,13 @@ const RISE_S = 5 / FPS
 const DEPTH = 1.2
 /** The rail between two diamonds, in px, that counts as a thumb's width. */
 const GRABBABLE_PX = 40
+/**
+ * The curve editor's header for the punch's rise. A punch zooms toward the zoom
+ * anchor (ui.zoomAnchor, above centre by default), so it writes Position with
+ * the same knots and the same curve, and the header says so (2026-10-06). The
+ * test below checks that the words are TRUE, not only that they are there.
+ */
+const PUNCH_HEADER = 'Zoom 100 to 120 over 0.17s · Position follows'
 
 async function setUI(page: Page, patch: Record<string, unknown>): Promise<void> {
   await page.evaluate(async (p) => {
@@ -100,9 +107,9 @@ interface ScaleKey {
   curve: number[] | null
 }
 
-/** Every Zoom keyframe as the RENDERER reads it, through the channel adapter. */
-async function scaleKeys(page: Page): Promise<ScaleKey[]> {
-  return page.evaluate(async () => {
+/** Every keyframe of one channel as the RENDERER reads it, through the channel adapter. */
+async function channelKeys(page: Page, channel: string): Promise<ScaleKey[]> {
+  return page.evaluate(async (ch) => {
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
     const chMod = '/src/engine/effects/channels.ts'
@@ -120,14 +127,17 @@ async function scaleKeys(page: Page): Promise<ScaleKey[]> {
     }
     const seq = activeSequence(useStore.getState().project)
     const clip = seq.tracks.flatMap((t) => t.clips).find((c) => c.title)
-    return channelKeyframes(clip, 'scale').map((k) => ({
+    return channelKeyframes(clip, ch).map((k) => ({
       t: k.t,
       value: k.value,
       ease: k.ease,
       curve: k.curve ? [...k.curve] : null,
     }))
-  })
+  }, channel)
 }
+
+/** Every Zoom keyframe. */
+const scaleKeys = (page: Page): Promise<ScaleKey[]> => channelKeys(page, 'scale')
 
 /**
  * What the app itself resolves the Zoom to at each LOCAL time, plus the clip's
@@ -260,19 +270,34 @@ test('zooming the rail earns the click between two diamonds, and that segment op
   // editor headed with its real numbers.
   await expect(lane.getByTestId('keyframe-segment')).toBeVisible()
   await expect(page.getByTestId('curve-editor')).toBeVisible()
-  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 0.17s')
+  await expect(page.getByTestId('curve-editor-header')).toHaveText(PUNCH_HEADER)
 
   // The punch wrote the Snap curve, and the chip claiming to be Snap agrees with
   // it: one MOTION_CURVES table, read by the preset builder and the editor alike.
   await expect(page.getByTestId('curve-chip-snapIn')).toHaveAttribute('aria-pressed', 'true')
 
+  // "Position follows" is TRUE here, not decoration. The punch zooms toward the
+  // zoom anchor, which sits above the frame's centre, so it wrote Position on
+  // the same two moments with the same Snap curve, and the picture really
+  // shifts as it rises (a Position that never moved would make the words a lie).
+  const zoomKeys = await scaleKeys(page)
+  const posKeys = await channelKeys(page, 'posY')
+  expect(posKeys).toHaveLength(2)
+  expect(posKeys[0].t).toBeCloseTo(zoomKeys[0].t, 6)
+  expect(posKeys[1].t).toBeCloseTo(zoomKeys[1].t, 6)
+  expect(posKeys[0].curve).toEqual([0.16, 1, 0.3, 1])
+  expect(Math.abs(posKeys[1].value - posKeys[0].value)).toBeGreaterThan(1)
+
   // Then shape it into something else and back, because a chip that only ever
   // agreed with what was already stored would prove nothing. Overshoot travels
-  // past the target on purpose, which is why y is left unclamped.
+  // past the target on purpose, which is why y is left unclamped. The Position
+  // takes the same shape in the same click, or the point would slide.
   await page.getByTestId('curve-chip-overshoot').click()
   await expect.poll(async () => (await scaleKeys(page))[0].curve).toEqual([0.34, 1.56, 0.64, 1])
+  await expect.poll(async () => (await channelKeys(page, 'posY'))[0].curve).toEqual([0.34, 1.56, 0.64, 1])
   await page.getByTestId('curve-chip-snapIn').click()
   await expect.poll(async () => (await scaleKeys(page))[0].curve).toEqual([0.16, 1, 0.3, 1])
+  await expect.poll(async () => (await channelKeys(page, 'posY'))[0].curve).toEqual([0.16, 1, 0.3, 1])
 
   // Shaping the segment retimed nothing and added nothing: same two diamonds,
   // same numbers, same header.
@@ -281,7 +306,7 @@ test('zooming the rail earns the click between two diamonds, and that segment op
   expect(keys[0].value).toBeCloseTo(1, 6)
   expect(keys[1].value).toBeCloseTo(DEPTH, 6)
   expect(keys[1].t - keys[0].t).toBeCloseTo(RISE_S, 6)
-  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 0.17s')
+  await expect(page.getByTestId('curve-editor-header')).toHaveText(PUNCH_HEADER)
 
   // ⛔ AND THE EDITOR IS STILL THERE AFTER DRAGGING A HANDLE. It used not to be.
   // A handle is a bare <circle>, which matched nothing in the rail's "not a
@@ -303,7 +328,7 @@ test('zooming the rail earns the click between two diamonds, and that segment op
   await page.mouse.up()
 
   await expect(page.getByTestId('curve-editor')).toBeVisible()
-  await expect(page.getByTestId('curve-editor-header')).toHaveText('Zoom 100 to 120 over 0.17s')
+  await expect(page.getByTestId('curve-editor-header')).toHaveText(PUNCH_HEADER)
   await expect.poll(async () => (await scaleKeys(page))[0].curve).not.toEqual(before)
 })
 
