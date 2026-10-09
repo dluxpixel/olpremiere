@@ -707,6 +707,22 @@ export interface TitleDef {
    * they always did.
    */
   wordColors?: { at: number; word: string; color: string }[]
+  /**
+   * Word pop (his ask, 2026-10-08): each word lights up in `color` as it is said
+   * and pops a little. STORED, and just the colour: which word is lit and how big
+   * it is depends on the time, so the resolver works that out per frame (see
+   * captions/wordPop.ts) and hands the rasterizer `wordColors` and `wordScales`.
+   * Absent on every title made before this, which draw exactly as they always did.
+   */
+  wordPop?: { color: string }
+  /**
+   * RESOLVE TIME ONLY, never stored: a word drawn bigger than the rest, around its
+   * own centre, while it pops. Named like `wordColors` (`at` counts the words of
+   * `text`, `word` is the word itself, so a retyped caption cannot scale the wrong
+   * one). `scale` is a plain multiple of the word's own size, so it is the same at
+   * any raster size.
+   */
+  wordScales?: { at: number; word: string; scale: number }[]
 }
 
 /**
