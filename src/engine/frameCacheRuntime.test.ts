@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   /** How tall each file's track says it is, and what every sink was asked for. */
   heights: { orig: 36, copy: 36 } as Record<string, number>,
   sinks: [] as Array<{ file: string; height?: number }>,
+  /** While set, a one-shot read waits on it, so a test decides when the reads land and not the timers. */
+  hold: null as Promise<void> | null,
 }))
 
 vi.mock('mediabunny', () => {
@@ -50,6 +52,7 @@ vi.mock('mediabunny', () => {
     /** One frame by random access, the way a one-shot reader asks. */
     async getCanvas(tS: number): Promise<{ canvas: object; timestamp: number } | null> {
       await new Promise((r) => setTimeout(r, 2))
+      if (h.hold) await h.hold
       if (this.track.input.disposed) throw new InputDisposedError('disposed')
       const i = Math.floor(tS * 30)
       return { canvas: { width: 64, height: 36, tag: `${this.track.input.name}:${i}` }, timestamp: i / 30 }
@@ -118,6 +121,7 @@ beforeEach(() => {
   h.inputs.length = 0
   h.heights = { orig: 36, copy: 36 }
   h.sinks.length = 0
+  h.hold = null
 })
 
 describe('PB-2: a reopen never breaks the decode that is running', () => {
@@ -239,11 +243,19 @@ describe('PB-13: the frame he rests on at Full is redone from his footage', () =
     await frameOf(a, 10 / 30)
     await frameOf(a, 20 / 30)
     const before = h.inputs.length
+    // Both reads are held in the air until the cancel has landed. Without this the
+    // fake's own timers could finish the first read before the test got to cancel
+    // it, which is a busy machine's doing and not the cache's.
+    let release = (): void => undefined
+    h.hold = new Promise<void>((r) => {
+      release = r
+    })
     const one = fc.refineFromOriginal(a, 10 / 30)
     await until(() => h.inputs.length > before)
     const two = fc.refineFromOriginal(a, 20 / 30)
     await until(() => h.inputs.length > before + 1)
     fc.cancelRefine(a.id, 10 / 30)
+    release()
     expect(await one).toBe(false)
     expect(await two).toBe(true)
     expect(tagAt(a, 10 / 30)).toBe('copy:10')
