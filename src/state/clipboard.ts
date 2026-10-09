@@ -175,7 +175,7 @@ export function cutSelection(): void {
   // A Cut that quietly does nothing reads as a broken key, so it says why, the
   // way Copy and Delete do.
   if (s.ui.selection.length === 0) {
-    useToasts.getState().show('Select a clip to cut', 'danger')
+    useToasts.getState().show('Select a clip to cut', 'info')
     return
   }
   const ids: string[] = []

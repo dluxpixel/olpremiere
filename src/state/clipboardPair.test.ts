@@ -126,7 +126,7 @@ describe('the picture half brings its sound', () => {
   it('Cut with nothing to cut says why, the way Copy does', () => {
     useStore.getState().setUI({ selection: [] })
     cutSelection()
-    expect(show).toHaveBeenCalledWith('Select a clip to cut', 'danger')
+    expect(show).toHaveBeenCalledWith('Select a clip to cut', 'info')
     // The picture's sound on a locked track holds the pair whole.
     show.mockClear()
     updateActiveSequence('lock A1', (sq) => ({ ...sq, tracks: sq.tracks.map((t, i) => (i === 2 ? { ...t, locked: true } : t)) }))

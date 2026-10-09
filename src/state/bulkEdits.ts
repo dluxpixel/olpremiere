@@ -740,7 +740,7 @@ export function applyTransitionToSelection(ids: readonly string[], edge: 'in' | 
   }
   const show = useToasts.getState().show
   if (ids.length === 0) {
-    show('Select a clip first', 'danger')
+    show('Select a clip first', 'info')
     return
   }
   const loneTitle = ids.length === 1 && seq.tracks.some((t) => t.kind === 'video' && t.clips.some((c) => c.id === ids[0] && c.title))
