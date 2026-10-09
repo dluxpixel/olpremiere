@@ -25,12 +25,13 @@ import {
 } from './previewTruth'
 import { hasProxy, setProxyBuildingPaused } from './proxyMedia'
 import { createRenderer, type LayerShape, type Renderer } from './render/glRenderer'
+import { beforeView, dropIdleAdjustments, type BeforeScope } from './render/beforeView'
 import { pairTransitionAt, resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
 import { hasEmoji } from './render/emojiFont'
 import { ensureEmojiFont, ensureTitleFace } from './render/titleFonts'
 import { coverScale, croppedSize, fitScale } from './render/mat'
-import type { RenderLayer, ResolvedTransform, TextureSource } from './render/types'
+import type { RenderFrame, RenderLayer, ResolvedTransform, TextureSource } from './render/types'
 import { clipEndS, type Clip, type Id, type MediaAsset, type Sequence } from './types'
 
 interface PooledVideo {
@@ -436,6 +437,32 @@ export function invalidatePreview(): void {
 export function setLivePreviewTransform(v: { clipId: Id; x: number; y: number; scale: number } | null): void {
   liveTransform = v
   epoch++
+}
+
+// The "Before" hold (render/beforeView.ts): while it is set, the preview resolves
+// a copy of the sequence with the scoped clips' effects emptied. Nothing is
+// written to the store, so no undo entry and no decode: the same footage is
+// drawn through fewer passes.
+let beforeScope: BeforeScope | null = null
+
+/**
+ * Turn the Before picture on (a scope) or off (null). Every flip bumps the
+ * epoch, or a paused playhead would keep showing the picture it had.
+ */
+export function setPreviewBefore(scope: BeforeScope | null): void {
+  beforeScope = scope
+  epoch++
+}
+
+/** Whether the preview is showing the Before picture right now. */
+export function previewBeforeActive(): boolean {
+  return beforeScope !== null
+}
+
+/** The frame the preview draws at `tS`: the real one, or the Before one while held. */
+export function resolveForPreview(seq: Sequence, tS: number): RenderFrame {
+  if (!beforeScope) return resolveFrame(seq, tS)
+  return dropIdleAdjustments(resolveFrame(beforeView(seq, beforeScope), tS))
 }
 
 // One renderer per canvas (a canvas keeps a single GL context for its life).
@@ -1879,7 +1906,7 @@ export function renderPreview(
   setPreviewSequenceHeight(seq.height)
   // The live raster drives how big preview-only rasters (titles) need to be.
   previewRasterH = canvas.height
-  const frame = resolveFrame(seq, tS)
+  const frame = resolveForPreview(seq, tS)
   // Apply the live drag override to its layer (frame is freshly built, safe to mutate).
   if (liveTransform) {
     for (const op of frame.ops) {
