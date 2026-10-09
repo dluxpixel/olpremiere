@@ -252,6 +252,16 @@ interface AssetEntry {
    * still correct, but every future seek should be paying proxy prices.
    */
   usingProxy: boolean
+  /**
+   * Bumped by every close of this entry's reader. A decode or an open that
+   * started under an older number was cut off on purpose, not broken.
+   */
+  gen: number
+  /**
+   * A reopen was asked for while the pump was running. The pump does it between
+   * two frames, never under one: see closeOrDefer.
+   */
+  reopenWanted: boolean
 }
 
 // The ceiling follows the machine now, see engine/memoryBudget.ts. CACHE_BUDGET_BYTES
@@ -273,11 +283,38 @@ const entries = new Map<Id, AssetEntry>()
  */
 const tally = { hits: 0, misses: 0, stores: 0, lruDropped: 0, assetDropped: 0, decodes: 0, doneEarly: 0, noFramed: 0 }
 
+/**
+ * Keys whose cached frame was decoded from the PREVIEW COPY, not the original.
+ * One key per frame whatever file it came from, so without this a still taken
+ * at Full quality was made from the compressed copy whenever the frame on
+ * screen was already cached, which it always is (PB-4).
+ */
+const fromCopy = new Set<string>()
+
 /** Cache a decoded frame, counting it and anything the LRU had to drop to fit. */
-function keep(key: string, canvas: CanvasImageSource): void {
+function keep(key: string, canvas: CanvasImageSource, copy = false): void {
+  // Never trade a frame of his footage for the copy's: a sequential pass of the
+  // copy reader caches every frame it walks through, including one just decoded
+  // from the original (refineFromOriginal).
+  if (copy && cache.has(key) && !fromCopy.has(key)) return
   tally.stores++
-  tally.lruDropped += cache.set(key, canvas).length
+  const dropped = cache.set(key, canvas)
+  tally.lruDropped += dropped.length
+  for (const k of dropped) fromCopy.delete(k)
+  if (copy) fromCopy.add(key)
+  else fromCopy.delete(key)
 }
+
+/**
+ * The cached frame for `key`, unless it came from the preview copy while the
+ * original is wanted (withFullQuality). That counts as a miss, so it is decoded
+ * again from his footage and replaces the copy's frame.
+ */
+function cached(key: string): CanvasImageSource | undefined {
+  if (fullQuality && fromCopy.has(key)) return undefined
+  return cache.get(key)
+}
+const isCached = (key: string): boolean => cache.has(key) && !(fullQuality && fromCopy.has(key))
 
 const cacheKey = (assetId: Id, index: number): string => `${assetId}:${index}`
 
@@ -312,11 +349,34 @@ const MAX_LIVE_DECODERS = 8
  */
 function closeDecoder(e: AssetEntry): void {
   e.pending = []
+  closeReader(e)
+}
+
+/** Close the demuxer and decoder now. Only for an entry with no decode running. */
+function closeReader(e: AssetEntry): void {
+  e.gen++
+  e.reopenWanted = false
   closeIter(e)
   e.input?.dispose()
   e.input = null
   e.sink = null
   e.ready = null
+}
+
+/**
+ * Close the reader so the next decode reopens it, without breaking a decode
+ * that is running.
+ *
+ * ⛔ DISPOSING UNDER A RUNNING PUMP SWITCHED EXACT FRAMES OFF FOR THE SESSION
+ * (PB-2, 2026-10-06). mediabunny cancels a running read on dispose with
+ * InputDisposedError; the pump took that for a broken file and failed the
+ * asset for good. A preview copy finishing while he scrubbed, or a screenshot
+ * right after a scrub, was enough. So a running pump is asked to do it itself,
+ * between two frames, the same rule reapDecoders already keeps.
+ */
+function closeOrDefer(e: AssetEntry): void {
+  if (e.pumping) e.reopenWanted = true
+  else closeReader(e)
 }
 
 /**
@@ -366,6 +426,8 @@ function ensureEntry(asset: MediaAsset): AssetEntry {
       iter: null,
       iterIdx: -1,
       usingProxy: false,
+      gen: 0,
+      reopenWanted: false,
     }
     entries.set(asset.id, e)
   }
@@ -389,6 +451,10 @@ function closeIter(e: AssetEntry): void {
 
 
 async function openInput(e: AssetEntry): Promise<void> {
+  // Which open this is. A close while it is in flight (an eviction) makes it
+  // stale, and a stale open must dispose what it made rather than hand it on:
+  // assigned, it was a decoder nothing counted and nothing would ever close.
+  const gen = e.gen
   const [{ ALL_FORMATS, BlobSource, CanvasSink: Sink, Input: MbInput }, { getBlob }] = await Promise.all([
     import('mediabunny'),
     import('../state/persistence'),
@@ -408,6 +474,16 @@ async function openInput(e: AssetEntry): Promise<void> {
   e.usingProxy = blob === proxy
   const input = new MbInput({ source: new BlobSource(blob), formats: ALL_FORMATS })
   const track = await input.getPrimaryVideoTrack()
+  // How tall the file being decoded REALLY is. The preview copy of a 4K clip is
+  // 1080 tall, and sizing its sink from the original's 2160 (a 1920 tall short
+  // asks for 1920 rows) blew every cached copy frame up to about 3413x1920:
+  // three times the memory per frame, a third as many frames held, a bigger
+  // upload, and no detail the copy does not have (PB-15).
+  const fileH = track ? await track.getDisplayHeight() : 0
+  if (e.gen !== gen || e.failed) {
+    input.dispose()
+    return
+  }
   if (!track) {
     input.dispose()
     throw new Error(`frameCache: no video track in asset ${e.asset.id}`)
@@ -417,7 +493,7 @@ async function openInput(e: AssetEntry): Promise<void> {
   // pool, so every getCanvas yields a FRESH canvas: cached frames must never
   // be recycled underneath us. Decode at PREVIEW height (downscaled) so large
   // sources scrub cheaply; export uses its own full-res decode.
-  const th = previewTargetHeight(e.asset.height, previewScale, PREVIEW_BASE_MAX_H, sequenceH)
+  const th = previewTargetHeight(fileH || e.asset.height, previewScale, PREVIEW_BASE_MAX_H, sequenceH)
   e.sink = th ? new Sink(track, { height: th }) : new Sink(track)
   // The decoder exists from this line on, so this is where the ceiling is
   // enforced. See MAX_LIVE_DECODERS: unbounded, this is where Chromium quietly
@@ -429,10 +505,7 @@ function failAsset(e: AssetEntry, err: unknown): void {
   if (!e.failed) console.warn(`frameCache: decode failed for asset ${e.asset.id}; disabling`, err)
   e.failed = true
   e.pending = []
-  closeIter(e)
-  e.input?.dispose()
-  e.input = null
-  e.sink = null
+  closeReader(e)
 }
 
 /**
@@ -460,7 +533,7 @@ async function decodeSequential(e: AssetEntry, idx: number): Promise<void> {
       // Source exhausted before the target: the last decoded frame IS the
       // display at the target time (freeze on last), else mark no-frame.
       tally.doneEarly++
-      if (prev) keep(targetKey, prev.canvas)
+      if (prev) keep(targetKey, prev.canvas, e.usingProxy)
       else {
         tally.noFramed++
         e.noFrame.add(idx)
@@ -470,13 +543,13 @@ async function decodeSequential(e: AssetEntry, idx: number): Promise<void> {
     }
     const w = r.value
     const wIdx = frameIndexAt(w.timestamp, e.asset.fps)
-    keep(cacheKey(e.asset.id, wIdx), w.canvas)
+    keep(cacheKey(e.asset.id, wIdx), w.canvas, e.usingProxy)
     e.iterIdx = wIdx + 1
     if (wIdx === idx) return // exact hit
     if (wIdx > idx) {
       // Overshot the nominal grid (sparse/VFR timestamps): the frame shown at
       // the target time is the last one before it, else clamp to the first.
-      keep(targetKey, (prev ?? w).canvas)
+      keep(targetKey, (prev ?? w).canvas, e.usingProxy)
       return
     }
     prev = w
@@ -487,9 +560,14 @@ async function decodeSequential(e: AssetEntry, idx: number): Promise<void> {
 async function pump(e: AssetEntry): Promise<void> {
   e.pumping = true
   try {
-    e.ready ??= openInput(e)
-    await e.ready
     while (e.pending.length > 0 && !e.failed) {
+      // A reopen asked for while a frame was decoding happens HERE, between
+      // frames, where nothing is reading from the old input.
+      if (e.reopenWanted) closeReader(e)
+      e.ready ??= openInput(e)
+      await e.ready
+      if (e.reopenWanted || e.failed) continue
+      if (!e.sink) break
       e.pending = boundPending(e.pending, e.latest, PENDING_CAP)
       // Order for sequential decode WITHOUT starving the displayed frame: the
       // at-or-after-playhead half ascending FIRST (the playhead frame leads and
@@ -501,9 +579,16 @@ async function pump(e: AssetEntry): Promise<void> {
       const idx = e.pending.shift()
       if (idx === undefined || !e.sink) break
       const key = cacheKey(e.asset.id, idx)
-      if (cache.has(key)) continue
+      if (isCached(key)) continue
       e.decoding = idx
-      await decodeSequential(e, idx)
+      const gen = e.gen
+      try {
+        await decodeSequential(e, idx)
+      } catch (err) {
+        // Closed under this decode on purpose (an eviction, a reopen): the
+        // file is fine, so this is not a failure. Anything else is.
+        if (e.gen === gen && !e.failed) throw err
+      }
       e.decoding = null
     }
   } catch (err) {
@@ -511,6 +596,8 @@ async function pump(e: AssetEntry): Promise<void> {
   } finally {
     e.decoding = null
     e.pumping = false
+    // Asked for after the last frame: nothing is reading now, so do it now.
+    if (e.reopenWanted && !e.failed) closeReader(e)
   }
 }
 
@@ -520,12 +607,10 @@ function request(asset: MediaAsset, indices: number[], latest: number): void {
   // A preview copy finished transcoding while this asset was already open.
   // Reopen against it, or every seek keeps paying the original's price for the
   // rest of the session, which is the whole cost the proxy was built to remove.
-  if (!e.usingProxy && hasProxy(asset.id) && e.ready) {
-    closeIter(e)
-    e.input?.dispose()
-    e.input = null
-    e.sink = null
-    e.ready = null
+  // Never while a still is being taken: that wants the original on purpose, and
+  // reopening here on every request closed the reader under its own decode.
+  if (!e.usingProxy && hasProxy(asset.id) && e.ready && !fullQuality) {
+    closeOrDefer(e)
   } else if (!e.usingProxy && !hasProxy(asset.id)) {
     // Being asked for a frame of this asset is the app's best evidence about
     // which clip he is on, and it is exactly the asset whose copy is worth
@@ -534,7 +619,7 @@ function request(asset: MediaAsset, indices: number[], latest: number): void {
     bumpProxyPriority(asset.id)
   }
   e.latest = latest
-  const fresh = indices.filter((i) => i !== e.decoding && !e.noFrame.has(i) && !cache.has(cacheKey(asset.id, i)))
+  const fresh = indices.filter((i) => i !== e.decoding && !e.noFrame.has(i) && !isCached(cacheKey(asset.id, i)))
   if (fresh.length === 0 && e.pending.length === 0) return
   e.pending = boundPending([...e.pending, ...fresh], latest, PENDING_CAP)
   if (!e.pumping) void pump(e)
@@ -552,7 +637,7 @@ export function getFrameAt(asset: MediaAsset, tS: number): CanvasImageSource | n
   if (asset.kind !== 'video') return null
   try {
     const idx = frameIndexAt(tS, asset.fps)
-    const hit = cache.get(cacheKey(asset.id, idx))
+    const hit = cached(cacheKey(asset.id, idx))
     if (hit) {
       tally.hits++
       return hit
@@ -563,6 +648,20 @@ export function getFrameAt(asset: MediaAsset, tS: number): CanvasImageSource | n
     // decode path must never break the draw loop
   }
   return null
+}
+
+/**
+ * getFrameAt WITHOUT the decode request on a miss. For a caller that keeps the
+ * decode queue fed itself, in one order: a reversed clip playing asks for frames
+ * that run BACKWARD, and a request per frame re-anchors the forward-only reader
+ * behind itself every frame, which reopens the file once per frame.
+ */
+export function peekFrameAt(asset: MediaAsset, tS: number): CanvasImageSource | null {
+  if (asset.kind !== 'video') return null
+  const hit = cached(cacheKey(asset.id, frameIndexAt(tS, asset.fps)))
+  if (hit) tally.hits++
+  else tally.misses++
+  return hit ?? null
 }
 
 /** Queue decodes ±spanS around tS at the asset frame step, nearest-first. Cheap to call every scrub tick. */
@@ -649,6 +748,10 @@ let fullQuality = false
  * and on the way back out the same clip would keep paying the original's price
  * for the rest of the session. Reopening twice costs one seek each and buys a
  * still that is actually his footage.
+ *
+ * ⛔ AND A FRAME ALREADY CACHED FROM THE COPY IS A MISS WHILE THIS IS ON (PB-4,
+ * 2026-10-06). The frame he is parked on is always cached, so the reopen alone
+ * changed nothing: the still came out of the copy again. See `fromCopy`.
  */
 export async function withFullQuality<T>(fn: () => Promise<T>): Promise<T> {
   fullQuality = true
@@ -673,11 +776,87 @@ function reopenProxyBacked(): void {
   for (const e of entries.values()) {
     if (e.usingProxy !== fullQuality) continue
     if (!fullQuality && !hasProxy(e.asset.id)) continue
-    closeIter(e)
-    e.input?.dispose()
-    e.input = null
-    e.sink = null
-    e.ready = null
+    if (!e.ready) continue // nothing open: the next open reads the flag
+    closeOrDefer(e)
+  }
+}
+
+/** One-shot original decodes in flight, so a second rest on the same frame does not start another. */
+const refining = new Set<string>()
+/** The one-shot reader of each frame's refine in flight, so moving on can stop it. */
+const refineInputs = new Map<string, { assetId: Id; fps: number | undefined; input: Input }>()
+
+/**
+ * Stop the one-shot original decode of this asset (every asset when omitted), or
+ * of just the frame at `tS` of it: he moved on, or pressed Play, and that frame
+ * is not on screen any more. A decode through a long GOP original can take most
+ * of a second, all of it competing with the scrub he is doing now.
+ *
+ * Kept per FRAME, not per asset (sweep review N3): two layers of one take rest
+ * on two different frames, and moving one on must not stop the other's redo.
+ */
+export function cancelRefine(assetId?: Id, tS?: number): void {
+  for (const [key, r] of [...refineInputs]) {
+    if (assetId !== undefined && r.assetId !== assetId) continue
+    if (tS !== undefined && key !== cacheKey(r.assetId, frameIndexAt(tS, r.fps))) continue
+    refineInputs.delete(key)
+    r.input.dispose()
+  }
+}
+
+/**
+ * Decode ONE frame from his ORIGINAL footage and put it in the cache in place of
+ * the preview copy's frame. Resolves true when the cached frame changed, so the
+ * caller redraws.
+ *
+ * ⛔ AT FULL QUALITY THE FRAME HE STOPS ON WAS THE COMPRESSED COPY (PB-13). The
+ * copy exists for fast seeking, and while he scrubs that is right. Once he stops
+ * to place a caption or judge a look, "Full quality" still showed the copy,
+ * re-encoded at crf 23 and softer than his footage and than the export. The
+ * preview asks for this when the playhead has rested on a paused frame at Full.
+ *
+ * Through a reader opened for this frame alone and closed straight after, never
+ * an entry's reader: that one stays on the copy for the next scrub, and this one
+ * never holds one of the MAX_LIVE_DECODERS slots. A no-op for a frame that did
+ * not come from the copy.
+ */
+export async function refineFromOriginal(asset: MediaAsset, tS: number): Promise<boolean> {
+  if (asset.kind !== 'video') return false
+  const key = cacheKey(asset.id, frameIndexAt(tS, asset.fps))
+  if (!fromCopy.has(key) || refining.has(key)) return false
+  const e = entries.get(asset.id)
+  const scale = previewScale
+  const seqH = sequenceH
+  refining.add(key)
+  let input: Input | null = null
+  try {
+    const [{ ALL_FORMATS, BlobSource, CanvasSink: Sink, Input: MbInput }, { getBlob }] = await Promise.all([
+      import('mediabunny'),
+      import('../state/persistence'),
+    ])
+    const blob = await getBlob(asset.blobKey)
+    if (!blob) return false
+    input = new MbInput({ source: new BlobSource(blob), formats: ALL_FORMATS })
+    refineInputs.set(key, { assetId: asset.id, fps: asset.fps, input })
+    const track = await input.getPrimaryVideoTrack()
+    if (!track) return false
+    const th = previewTargetHeight((await track.getDisplayHeight()) || asset.height, scale, PREVIEW_BASE_MAX_H, seqH)
+    const sink = th ? new Sink(track, { height: th }) : new Sink(track)
+    const frame = await sink.getCanvas(frameMidTimeS(frameIndexAt(tS, asset.fps), asset.fps))
+    // Anything that changed what the cache holds since (the asset removed, the
+    // quality tier or the sequence height moved, or the frame already redone)
+    // makes this frame the wrong one to keep.
+    if (!frame || entries.get(asset.id) !== e || previewScale !== scale || sequenceH !== seqH) return false
+    if (!fromCopy.has(key)) return false
+    keep(key, frame.canvas, false)
+    return true
+  } catch {
+    // A failed refine leaves the copy's frame on screen, which is what was there.
+    return false
+  } finally {
+    if (input && refineInputs.get(key)?.input === input) refineInputs.delete(key)
+    input?.dispose()
+    refining.delete(key)
   }
 }
 
@@ -687,16 +866,14 @@ export function evictAsset(assetId: Id): void {
   if (e) {
     e.failed = true // stops an in-flight pump without a spurious warn (already true on failure)
     e.pending = []
-    closeIter(e)
-    e.input?.dispose()
-    e.input = null
-    e.sink = null
+    closeReader(e)
     entries.delete(assetId)
   }
   const prefix = `${assetId}:`
   for (const key of cache.keys()) {
     if (key.startsWith(prefix)) {
       cache.delete(key)
+      fromCopy.delete(key)
       tally.assetDropped++
     }
   }

@@ -4,7 +4,13 @@
 import { clipEmitsAudioOn, scheduleAudio } from '../engine/audio'
 import { diagnoseSilence, type SilenceFix } from '../engine/audioSilence'
 import { Transport, type HeardSpan } from '../engine/playback'
-import { pauseAllPreviewVideos, setPreviewTransportRate } from '../engine/preview'
+import {
+  forgetPlayedFrame,
+  lastPlayedFrameS,
+  pauseAllPreviewVideos,
+  setPreviewTransportRate,
+} from '../engine/preview'
+import { lastFrameS } from '../engine/timecode'
 import { activeSequence, type Clip, type Track } from '../engine/types'
 import { workArea } from '../engine/workArea'
 import { isTakeInProgress, pauseRecording, resumeRecording, takeHeard } from './voiceRecorder'
@@ -58,12 +64,79 @@ export function subscribeShuttleRate(cb: (rate: number) => void): () => void {
   return () => rateSubs.delete(cb)
 }
 
+/**
+ * Where the last pause REALLY stopped, and the frame the playhead was put on.
+ *
+ * ⛔ A PAUSE LEFT THE PLAYHEAD BETWEEN TWO FRAMES (2026-10-06). Playing draws
+ * the frame the playhead is in (Monitor.tsx floors it, like the export), and a
+ * paused playhead draws the NEAREST frame, so about half of all pauses stepped
+ * the picture on by one, and the readout disagreed with the picture. So a pause
+ * puts the playhead on the frame that was on screen. The exact time is kept,
+ * and a take being recorded resumes from it while the playhead has not been
+ * moved, because a dub resumed from the frame would replay a stretch he already
+ * heard (MIC-5).
+ */
+let stoppedAt: { exactS: number; frameS: number } | null = null
+
+/**
+ * Where play should start from the playhead.
+ *
+ * ⛔ EVERY RESUME SKIPPED THE PICTURE FORWARD BY THE OUTPUT LATENCY (sweep
+ * review B1, 2026-10-08). The exact stop is the SOUND clock, and the frame on
+ * screen is that less the latency (PB-8): 41 ms on his default output, 2 to 3
+ * frames at 60 fps skipped on every Space, and Space-Space crept forward by that
+ * each tap; 0.3 s on Bluetooth. So the exact stop is for a take only, the one
+ * thing that must not replay what he heard. Everything else, Space and J/L, goes
+ * on from the frame he is looking at.
+ */
+function resumeFrom(playheadS: number): number {
+  if (!stoppedAt || Math.abs(playheadS - stoppedAt.frameS) >= 1e-9) return playheadS
+  return isTakeInProgress() ? stoppedAt.exactS : playheadS
+}
+
+/**
+ * Where Space plays from. At the end it starts over from the top (Premiere
+ * behavior), and the end is the LAST FRAME as well as the end itself: play that
+ * runs out parks there (onPaused), and so does End.
+ */
+function playFrom(playheadS: number, endS: number, fps: number): number {
+  const from = resumeFrom(playheadS)
+  return from >= endS - 1e-6 || playheadS >= lastFrameS(endS, fps) - 1e-6 ? 0 : from
+}
+
 const transport = new Transport({
   getEndS: () => activeSequence(useStore.getState().project).durationS,
   onTick: (t) => useStore.getState().setUI({ playheadS: Math.max(0, t) }),
+  onPaused: (exactS, ranOut) => {
+    const s = useStore.getState()
+    const seq = activeSequence(s.project)
+    const fps = seq.fps || 30
+    // Play ran off the end: the last real frame, never the end itself, where
+    // nothing resolves and the monitor goes black (PB-17). Space starts over
+    // from there (playFrom). Only play that RAN OUT: the sound reaches the end
+    // before the picture does (PB-8), so a pause in the last stretch has a stop
+    // time at the end too, and is a pause on the frame he is looking at, which
+    // the next Space resumes from (sweep review S2). J that ran back to the
+    // start: the start.
+    // Otherwise the frame on screen is the one the monitor LAST DREW
+    // (lastPlayedFrameS), not the one the live clock has reached since; a tick
+    // the monitor did not draw (its redraw cap, a frame still decoding) leaves
+    // the store ahead of the picture. Before the monitor has drawn anything this
+    // run (no canvas, or a pause on the very first frame), the frame the last
+    // tick is in.
+    const frameS =
+      ranOut && seq.durationS > 0
+        ? lastFrameS(seq.durationS, fps)
+        : exactS <= 0
+          ? 0
+          : (lastPlayedFrameS() ?? Math.floor(Math.max(0, s.ui.playheadS) * fps + 1e-6) / fps)
+    stoppedAt = { exactS: Math.max(0, exactS), frameS }
+    s.setUI({ playheadS: frameS })
+  },
   onStateChange: (playing, rate) => {
     useStore.getState().setUI({ playing })
-    if (!playing) pauseAllPreviewVideos()
+    if (playing) forgetPlayedFrame()
+    else pauseAllPreviewVideos()
     // Dubbing: a take in progress follows the transport. Pausing the preview
     // (Space, K, the transport button, or hitting the end) holds the take;
     // resuming resumes it. The mic itself never stops (voiceRecorder,
@@ -123,11 +196,9 @@ export function togglePlay(): void {
     return
   }
   const s = useStore.getState()
-  const endS = activeSequence(s.project).durationS
-  if (endS <= 0) return
-  // At the end, Space restarts from the top (Premiere behavior).
-  const fromS = s.ui.playheadS >= endS - 1e-6 ? 0 : s.ui.playheadS
-  void transport.play(fromS, 1)
+  const seq = activeSequence(s.project)
+  if (seq.durationS <= 0) return
+  void transport.play(playFrom(s.ui.playheadS, seq.durationS, seq.fps), 1)
 }
 
 export function pausePlayback(): void {
@@ -142,10 +213,9 @@ export function pausePlayback(): void {
 export function ensurePlaying(): void {
   if (transport.playing) return
   const s = useStore.getState()
-  const endS = activeSequence(s.project).durationS
-  if (endS <= 0) return
-  const fromS = s.ui.playheadS >= endS - 1e-6 ? 0 : s.ui.playheadS
-  void transport.play(fromS, 1)
+  const seq = activeSequence(s.project)
+  if (seq.durationS <= 0) return
+  void transport.play(playFrom(s.ui.playheadS, seq.durationS, seq.fps), 1)
 }
 
 const SHUTTLE_RATES = [1, 2, 4]
@@ -160,11 +230,17 @@ export function shuttle(dir: -1 | 1): void {
     const idx = SHUTTLE_RATES.indexOf(Math.abs(transport.rate))
     magnitude = SHUTTLE_RATES[Math.min(idx + 1, SHUTTLE_RATES.length - 1)] ?? 1
   }
-  const fromS = transport.playing ? transport.currentTime() : s.ui.playheadS
+  const fromS = transport.playing ? transport.currentTime() : resumeFrom(s.ui.playheadS)
   void transport.play(fromS, dir * magnitude)
 }
 
 export const isPlaying = (): boolean => transport.playing
+
+/**
+ * The clock's tick for the animation frame stamped `now`, before anything
+ * draws in it (Transport.tickFrame). The monitor calls it first in its draw.
+ */
+export const tickPlaybackFrame = (now: number): void => transport.tickFrame(now)
 
 /** The stretch of the timeline he is hearing right now, for a take started mid-play. */
 export const currentHeardSpan = (): HeardSpan | null => transport.heardSpan

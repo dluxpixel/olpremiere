@@ -1581,10 +1581,6 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   const fullVao = gl.createVertexArray()
   if (!layerVao || !fullVao) throw new Error('createVertexArray failed')
 
-  // Shared texture for CHANGING sources (video frames): re-uploaded each draw,
-  // but with texSubImage2D into stable storage so it doesn't reallocate.
-  const srcTex = gl.createTexture()
-  if (!srcTex) throw new Error('createTexture failed')
   // `mipmap` may be true ONLY for source textures that get generateMipmap after
   // every upload. A mipmap MIN_FILTER on a texture without a complete mip
   // chain is incomplete and samples opaque black (why destCapTex passes false).
@@ -1594,53 +1590,119 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   }
-  gl.bindTexture(gl.TEXTURE_2D, srcTex)
-  setTexParams(mipmapSources)
-  let srcTexW = -1
-  let srcTexH = -1
-  // The direct (unstaged) upload's own record, by the same rule as the stage:
-  // a video element writes in place only into what it allocated itself. The
-  // export only ever hands this canvases, so for it nothing changes.
-  let direct: StageState = NO_STAGE
+
+  /**
+   * A texture for CHANGING sources (video frames): re-uploaded each draw, with
+   * texSubImage2D into storage it already has whenever it can.
+   *
+   * ⛔ ONE SHARED TEXTURE GAVE ITSELF NEW STORAGE TWICE A FRAME (PB-5, 2026-10-08).
+   * A frame with two video layers of different upload sizes (a facecam over
+   * gameplay, a picture in picture) re-sized it for each layer, mip chain and
+   * all, sixty times a second; two different elements at one size (both sides
+   * of a dissolve) did the same to the staging texture, since an element may
+   * only write in place into what it allocated itself. So each layer playing at
+   * once gets a texture of its own (and a staging texture of its own on the
+   * preview's road), found again next frame by its source or its size.
+   */
+  interface LiveTex {
+    tex: WebGLTexture
+    /** Its storage size, -1 before the first upload. */
+    w: number
+    h: number
+    /** The preview's staging texture for this one (fastSourceUpload), and what it holds. */
+    stage: StageSlot
+    /**
+     * The direct (unstaged) upload's own record, by the same rule as the stage:
+     * a video element writes in place only into what it allocated itself.
+     */
+    direct: StageState
+    /**
+     * The source it holds within ONE render() call only (cleared at its start:
+     * a video's pixels move on between frames). Two layers drawing the same
+     * picture in one frame (a clip over its own blurred background) upload it
+     * once, not twice with two mip chains (PB-5).
+     */
+    holds: TexImageSource | null
+    /** The source it was last filled from, in any frame. */
+    last: TexImageSource | null
+    /** The render() it was last used in. */
+    usedIn: number
+  }
+  /** Layers that play at once: two sides of a dissolve, a facecam, a picture in picture. */
+  const LIVE_TEX_CAP = 4
+  /**
+   * ⛔ THE TEXTURES ARE BOUNDED IN BYTES AND FREED WHEN IDLE (sweep review N4).
+   * Four live textures of a 4K export, a mip chain each, were about 176 MB where
+   * the one shared texture was 44. So a new one is made only while the ones alive
+   * together stay under this (two at 4K, all four at 1080p and at the preview's
+   * raster); beyond it a layer shares one, which is slower and never wrong. And
+   * one no layer has drawn from for this many frames is freed, so the second
+   * side of a dissolve does not stay in video memory after the dissolve.
+   */
+  const LIVE_TEX_BYTES_CAP = 96 * 1024 * 1024
+  const LIVE_TEX_IDLE_FRAMES = 120
+  const liveTex: LiveTex[] = []
+  /** What one live texture of this size holds: its sRGB storage, the mip chain, and its RGBA8 stage on the preview's road. */
+  const liveTexBytes = (w: number, h: number): number =>
+    w > 0 && h > 0 ? w * h * 4 * (mipmapSources ? 4 / 3 : 1) + (fastUpload ? w * h * 4 : 0) : 0
+  /** Counts render() calls, so a texture knows whether this frame has used it. */
+  let renderSeq = 0
 
   // Per-source texture cache for STABLE sources: stills (<img>) and the cached
   // title/caption rasters (OffscreenCanvas). Their pixels never change between
   // frames, so once uploaded they're just re-BOUND, never re-uploaded. This is
   // the big playback win on caption-heavy timelines, where 10+ static title
   // layers were each re-uploading their whole texture every frame. Bounded LRU;
-  // GL textures freed on eviction. VideoFrames/ImageBitmaps stay on srcTex.
+  // GL textures freed on eviction. VideoFrames/ImageBitmaps go to a LiveTex.
   const STABLE_TEX_CAP = 48
   const texCache = new Map<TexImageSource, { tex: WebGLTexture; w: number; h: number }>()
 
   // The staging path, see RendererOptions.fastSourceUpload.
   const fastUpload = options?.fastSourceUpload === true
-  const stageTex = fastUpload ? gl.createTexture() : null
+  /** An RGBA8 staging texture and what it holds, as far as the CPU can know it. */
+  interface StageSlot {
+    tex: WebGLTexture | null
+    state: StageState
+  }
+  const makeStageTex = (): WebGLTexture | null => {
+    const t = gl.createTexture()
+    if (t) {
+      gl.bindTexture(gl.TEXTURE_2D, t)
+      // LINEAR for the one case that samples (a stage of another size, see
+      // STAGE_FS). The texel fetch every ordinary frame takes ignores filtering.
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    }
+    return t
+  }
+  /** The stage the stills and titles go through (each changing source has its own, LiveTex). */
+  const stillStage: StageSlot = { tex: fastUpload ? makeStageTex() : null, state: NO_STAGE }
   const stageFb = fastUpload ? gl.createFramebuffer() : null
   const stageProg = fastUpload ? link(gl, STAGE_VS, STAGE_FS) : null
   const stageLoc = stageProg ? gl.getUniformLocation(stageProg, 'uStage') : null
   const stageDstLoc = stageProg ? gl.getUniformLocation(stageProg, 'uDst') : null
-  let stage: StageState = NO_STAGE
-  if (stageTex) {
-    gl.bindTexture(gl.TEXTURE_2D, stageTex)
-    // LINEAR for the one case that samples (a stage of another size, see
-    // STAGE_FS). The texel fetch every ordinary frame takes ignores filtering.
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-  }
 
   /**
-   * Put `source` into the sRGB texture `dst` through the RGBA8 staging texture.
+   * Put `source` into the sRGB texture `dst` through an RGBA8 staging texture.
    * `allocate` sizes dst's storage first. Leaves the framebuffer, viewport,
    * program and blend state changed: callers bind their own target AFTER this.
    */
-  function uploadThroughStage(dst: WebGLTexture, source: TexImageSource, texW: number, texH: number, allocate: boolean): void {
+  function uploadThroughStage(
+    dst: WebGLTexture,
+    source: TexImageSource,
+    texW: number,
+    texH: number,
+    allocate: boolean,
+    slot: StageSlot,
+  ): void {
+    const stageTex = slot.tex
     gl.bindTexture(gl.TEXTURE_2D, stageTex)
-    const plan = stageUpload(stage, source, texW, texH)
+    const plan = stageUpload(slot.state, source, texW, texH)
     if (plan.reuse) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
     else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
-    stage = plan.next
+    slot.state = plan.next
     gl.bindTexture(gl.TEXTURE_2D, dst)
     if (allocate) gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, texW, texH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
     gl.bindFramebuffer(gl.FRAMEBUFFER, stageFb)
@@ -1677,7 +1739,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       if (!hit) setTexParams(mipmapSources)
       // An sRGB texture: the GPU decodes on every sample, so bilinear, bicubic
       // and the mip chain all filter light, not encoded numbers.
-      if (fastUpload) uploadThroughStage(tex, source, texW, texH, true)
+      if (fastUpload) uploadThroughStage(tex, source, texW, texH, true, stillStage)
       else gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
       // Stable sources upload once, so the mip chain is built once and then
       // only re-bound. Cache hits above never pay for generateMipmap.
@@ -1692,24 +1754,86 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       }
       return tex
     }
-    // CHANGING source: reuse srcTex; texSubImage2D avoids reallocating storage
-    // when the frame size is unchanged (the common case across a clip).
-    gl.bindTexture(gl.TEXTURE_2D, srcTex)
+    // CHANGING source: its own LiveTex; texSubImage2D avoids reallocating
+    // storage when the frame size is unchanged (the common case across a clip).
+    const e = liveTexFor(source, texW, texH)
+    gl.bindTexture(gl.TEXTURE_2D, e.tex)
+    if (source === e.holds && e.w === texW && e.h === texH) return e.tex
     if (fastUpload) {
-      const allocate = srcTexW !== texW || srcTexH !== texH
-      uploadThroughStage(srcTex!, source, texW, texH, allocate)
-      srcTexW = texW
-      srcTexH = texH
+      const allocate = e.w !== texW || e.h !== texH
+      uploadThroughStage(e.tex, source, texW, texH, allocate, e.stage)
     } else {
-      const plan = stageUpload(direct, source, texW, texH)
+      const plan = stageUpload(e.direct, source, texW, texH)
       if (plan.reuse) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source)
       else gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, source)
-      direct = plan.next
+      e.direct = plan.next
     }
+    e.w = texW
+    e.h = texH
+    e.holds = source
+    e.last = source
     // Every upload replaces level 0, so the chain must be re-derived each time
     // or the mip MIN_FILTER would sample stale (or missing) levels.
     if (mipmapSources) gl.generateMipmap(gl.TEXTURE_2D)
-    return srcTex
+    return e.tex
+  }
+
+  /**
+   * The texture a changing source goes into this frame. The one it filled last
+   * frame, at this size (an element, or its scratch canvas, writes in place);
+   * else one of this size no layer has used yet this frame (a decoded frame is
+   * a new canvas every time); else a new one while there is room; else the one
+   * used longest ago, given new storage. A layer is drawn before the next one is
+   * uploaded, so sharing a texture inside a frame is never wrong, only slower.
+   */
+  function liveTexFor(source: TexImageSource, w: number, h: number): LiveTex {
+    let e =
+      liveTex.find((x) => x.last === source && x.w === w && x.h === h) ??
+      liveTex.find((x) => x.w === w && x.h === h && x.usedIn !== renderSeq)
+    const room =
+      liveTex.length === 0 ||
+      (liveTex.length < LIVE_TEX_CAP &&
+        liveTex.reduce((n, x) => n + liveTexBytes(x.w, x.h), 0) + liveTexBytes(w, h) <= LIVE_TEX_BYTES_CAP)
+    if (!e && room) {
+      const tex = gl.createTexture()
+      if (!tex) throw new Error('createTexture failed')
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      setTexParams(mipmapSources)
+      e = {
+        tex,
+        w: -1,
+        h: -1,
+        stage: { tex: fastUpload ? makeStageTex() : null, state: NO_STAGE },
+        direct: NO_STAGE,
+        holds: null,
+        last: null,
+        usedIn: renderSeq,
+      }
+      liveTex.push(e)
+    }
+    e ??= liveTex.reduce((a, b) => (b.usedIn < a.usedIn ? b : a))
+    e.usedIn = renderSeq
+    return e
+  }
+
+  /** Free the LiveTex no layer has drawn from for a while. */
+  function freeIdleLiveTex(): void {
+    for (let i = liveTex.length - 1; i >= 0; i--) {
+      const e = liveTex[i]
+      if (renderSeq - e.usedIn <= LIVE_TEX_IDLE_FRAMES) continue
+      gl.deleteTexture(e.tex)
+      if (e.stage.tex) gl.deleteTexture(e.stage.tex)
+      liveTex.splice(i, 1)
+    }
+  }
+
+  /** Delete every LiveTex: the next frame that plays builds what it needs. */
+  function dropLiveTex(): void {
+    for (const e of liveTex) {
+      gl.deleteTexture(e.tex)
+      if (e.stage.tex) gl.deleteTexture(e.stage.tex)
+    }
+    liveTex.length = 0
   }
 
   // FBO pool, recreated when frame dims change. Sized to seq resolution.
@@ -2565,6 +2689,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   }
 
   function render(frame: RenderFrame, tex: TextureSource): void {
+    renderSeq++
+    freeIdleLiveTex()
+    for (const e of liveTex) e.holds = null
     const frameW = frame.width
     const frameH = frame.height
     // EVERY frame composites into the sRGB accumulator (pool[5]) and is blitted
@@ -2630,7 +2757,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.deleteBuffer(fullVbo)
     gl.deleteVertexArray(layerVao)
     gl.deleteVertexArray(fullVao)
-    gl.deleteTexture(srcTex)
+    dropLiveTex()
+    if (stillStage.tex) gl.deleteTexture(stillStage.tex)
     for (const e of texCache.values()) gl.deleteTexture(e.tex)
     texCache.clear()
     for (const f of pool) {
@@ -2643,10 +2771,11 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   function releaseSources(): void {
     for (const e of texCache.values()) gl.deleteTexture(e.tex)
     texCache.clear()
-    // The stage remembers the last video element it was filled from; forgetting
-    // it only means the next upload allocates instead of writing in place.
-    stage = NO_STAGE
-    direct = NO_STAGE
+    // A stage remembers the last video element it was filled from; forgetting
+    // it only means the next upload allocates instead of writing in place. The
+    // video textures go too, and with them the elements they last held.
+    stillStage.state = NO_STAGE
+    dropLiveTex()
   }
 
   return { render, warm, releaseSources, dispose }

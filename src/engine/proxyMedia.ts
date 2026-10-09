@@ -99,6 +99,18 @@ let running = false
 /** True once this asset has a preview copy ready to decode from. */
 export const hasProxy = (assetId: Id): boolean => ready.has(assetId)
 
+/**
+ * Which stored file a SMALL picture of this asset is cut from: the preview copy
+ * once there is one, else the original (PB-14). His captures have a keyframe
+ * every 225 frames, so a seek in the original decodes up to 3.75 s of video
+ * before it lands, for each of up to 32 filmstrip tiles and under every move of
+ * a hover scrub; the copy is short GOP and about 19 times cheaper a seek, and a
+ * 64 px tile cannot show the difference. Filmstrips and the bin's hover scrub
+ * only. Never the export, never the monitor.
+ */
+export const thumbnailSourceKey = (asset: Pick<MediaAsset, 'id' | 'blobKey'>): string =>
+  hasProxy(asset.id) ? proxyKeyFor(asset.id) : asset.blobKey
+
 // ⛔ THERE IS NO onProxyReady SUBSCRIPTION AND THERE MUST NOT BE ONE.
 // It existed here for a year with no subscriber, and its docstring promised the
 // preview would "drop its stale decode state" when a copy landed. That promise

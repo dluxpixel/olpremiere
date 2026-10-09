@@ -417,6 +417,49 @@ describe('a sound rebuilt while play goes on continues the stretch, on the pictu
     t.pause()
   })
 
+  // PB-9, 2026-10-06: every pass after the first ran the picture ahead of the
+  // sound by its scheduling latency and build time.
+  it('after a loop wrap the picture is exactly on the new sound', async () => {
+    world.t = 5
+    const t = new Transport({
+      getEndS: () => 60,
+      onTick: () => undefined,
+      getLoopRange: () => ({ startS: 0, endS: 1 }),
+      schedule: () => Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.07 })),
+    })
+    await t.play(0)
+    world.t = 6.1 // past the loop's end: this frame wraps
+    runFrame()
+    await Promise.resolve()
+    await Promise.resolve()
+    const startsAt = 6.1 + 0.07
+    world.t = startsAt
+    expect(t.currentTime()).toBeCloseTo(0, 6)
+    world.t = startsAt + 0.5
+    expect(t.currentTime()).toBeCloseTo(0.5, 6)
+    t.pause()
+  })
+
+  it('a looped shuttle stays silent after the wrap', async () => {
+    world.t = 5
+    let builds = 0
+    const t = new Transport({
+      getEndS: () => 60,
+      onTick: () => undefined,
+      getLoopRange: () => ({ startS: 0, endS: 1 }),
+      schedule: () => {
+        builds += 1
+        return Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.02 }))
+      },
+    })
+    await t.play(0, 2)
+    world.t = 5.6 // two times speed: past the end of the loop
+    runFrame()
+    await Promise.resolve()
+    expect(builds).toBe(0)
+    t.pause()
+  })
+
   it('running off the end of the edit says so, and a Space pause does not', async () => {
     world.t = 5
     const events: Ev[] = []
@@ -734,3 +777,467 @@ describe('a seamless rebuild leaves no hole', () => {
   })
 })
 
+// PB-17, 2026-10-06: play that ran out put the playhead ON the end, where
+// nothing resolves, so the monitor went black after every play to the end.
+describe('running off the end of the edit', () => {
+  it('tells the playhead once, through onPaused, and never puts it on the end itself', async () => {
+    let now = 1000
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const raf = { cb: null as FrameRequestCallback | null }
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      raf.cb = cb
+      return 1
+    }) as typeof requestAnimationFrame
+    const ticks: number[] = []
+    const paused: number[] = []
+    const t = new Transport({
+      getEndS: () => 2,
+      onTick: (s) => ticks.push(s),
+      onPaused: (s) => paused.push(s),
+      schedule: async () => () => undefined,
+    })
+    await t.play(1.5)
+    now += 300
+    raf.cb?.(now)
+    now += 300 // past the end
+    raf.cb?.(now)
+    expect(t.playing).toBe(false)
+    expect(paused).toEqual([2])
+    expect(ticks.length).toBeGreaterThan(0)
+    expect(ticks.every((s) => s < 2)).toBe(true)
+    spy.mockRestore()
+  })
+})
+
+// 2026-10-07: the monitor's draw ran before the transport's tick in every
+// animation frame, so it drew the clock of the frame before. tickFrame lets a
+// draw tick the clock first; the clock still ticks once a frame, never twice.
+describe('a draw can tick the clock first in its frame', () => {
+  it('ticks once for that frame, and the transport only books the next one', async () => {
+    let now = 1000
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const raf = { cb: null as FrameRequestCallback | null }
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      raf.cb = cb
+      return 1
+    }) as typeof requestAnimationFrame
+    const ticks: number[] = []
+    const t = new Transport({ getEndS: () => 10, onTick: (s) => ticks.push(s), schedule: async () => () => undefined })
+    await t.play(1)
+    now += 100
+    t.tickFrame(now) // the monitor, first in the frame
+    expect(ticks).toHaveLength(1)
+    expect(ticks[0]).toBeCloseTo(1.1, 9)
+    t.tickFrame(now) // asked again in the same frame: nothing new
+    const own = raf.cb
+    own?.(now) // the transport's own callback, later in the same frame
+    expect(ticks).toHaveLength(1)
+    expect(raf.cb).not.toBeNull()
+    // A frame with no draw in it: the transport ticks on its own, as before.
+    now += 100
+    raf.cb?.(now)
+    expect(ticks).toHaveLength(2)
+    expect(ticks[1]).toBeCloseTo(1.2, 9)
+    t.pause() // which tells the playhead once more, where it stopped
+    const told = ticks.length
+    t.tickFrame(now + 100) // paused: a draw ticks nothing
+    expect(ticks).toHaveLength(told)
+    spy.mockRestore()
+  })
+})
+
+// PB-8, 2026-10-07: the picture ran on the sample the audio graph was
+// RENDERING, and his ears get it the output latency later: measured on his
+// default output that day, 41 ms by the output timestamps (40 ms output plus
+// 10 ms base reported), two and a half frames of a 60 fps edit, and five to
+// fifteen frames on Bluetooth. Every cut he saw landed before the beat he heard.
+describe('the picture shows what is reaching his ears', () => {
+  const world = { t: 5 }
+  /** A device whose sound reaches his ears 0.2 s after the graph renders it. */
+  const ctx = {
+    state: 'running',
+    get currentTime() {
+      return world.t
+    },
+    resume: () => Promise.resolve(),
+    getOutputTimestamp: () => ({ contextTime: world.t - 0.2, performanceTime: 1000 * world.t }),
+  }
+  let frames: FrameRequestCallback[] = []
+  const runFrame = () => frames.splice(0).forEach((f) => f(world.t))
+  beforeEach(() => {
+    world.t = 5
+    frames = []
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => frames.push(cb)) as typeof requestAnimationFrame
+    vi.spyOn(performance, 'now').mockImplementation(() => 1000 * world.t)
+    audioMock.ctx = ctx
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+    audioMock.ctx = null
+  })
+
+  const transport = (ticks: number[], extra: Partial<ConstructorParameters<typeof Transport>[0]> = {}) =>
+    new Transport({
+      getEndS: () => 60,
+      onTick: (s) => ticks.push(s),
+      schedule: () => Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.02 })),
+      ...extra,
+    })
+
+  it('holds the first frame until the first sound reaches him, then runs on what he hears', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks)
+    await t.play(2)
+    world.t = 5.12 // the sound has started, and has not reached him yet
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2, 9)
+    world.t = 5.22 // it reaches him
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2, 9)
+    world.t = 5.72
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2.5, 9)
+    // A pause still stops where the SOUND stopped: what he has heard by the
+    // time the device plays out, which a dub resumes from (MIC-5).
+    expect(t.pause()).toBeCloseTo(2.7, 9)
+  })
+
+  it('shows the last frames of the edit before it stops, while their sound plays out', async () => {
+    const ticks: number[] = []
+    const paused: number[] = []
+    const t = transport(ticks, { getEndS: () => 3, onPaused: (s) => paused.push(s) })
+    await t.play(2)
+    world.t = 6.1 // the sound has rendered past the end; he is hearing 2.88
+    runFrame()
+    expect(t.playing).toBe(true)
+    expect(ticks.at(-1)).toBeCloseTo(2.88, 9)
+    world.t = 6.3
+    runFrame()
+    expect(t.playing).toBe(false)
+    expect(paused).toEqual([3])
+  })
+
+  // The sound reaches the end of the edit before the picture does. A pause in
+  // that stretch is a pause, and the playhead is told so (sweep review S2): only
+  // play that runs out says it ran out.
+  it('tells onPaused when play ran off the end, and not when he paused in the last stretch', async () => {
+    const told: Array<[number, boolean]> = []
+    const t = transport([], { getEndS: () => 3, onPaused: (s, ranOut) => told.push([s, ranOut]) })
+    await t.play(2)
+    world.t = 6.1 // the sound has rendered past the end; he is hearing 2.88
+    runFrame()
+    expect(t.playing).toBe(true)
+    t.pause()
+    expect(told).toEqual([[3, false]])
+
+    told.length = 0
+    await t.play(2)
+    world.t = 12.1
+    runFrame() // the picture has reached the end too
+    expect(t.playing).toBe(false)
+    expect(told).toEqual([[3, true]])
+  })
+
+  it('a loop pass is seen to its end, and the next starts when its sound reaches him', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks, {
+      getLoopRange: () => ({ startS: 0, endS: 1 }),
+      schedule: () => Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.07 })),
+    })
+    await t.play(0) // the first sound starts at 5.07
+    world.t = 6.1 // the sound wraps here; he is still hearing 0.83 of the pass
+    runFrame()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(ticks.at(-1)).toBeCloseTo(0.83, 9)
+    world.t = 6.29
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(1, 9) // the pass's last frame, never cut short
+    world.t = 6.32 // the old pass has played out; the new one has not reached him
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(0, 9)
+    world.t = 6.1 + 0.07 + 0.2 + 0.5
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(0.5, 9)
+    t.pause()
+  })
+
+  // N2 (sweep review): the pass's tail is the pass's own picture, clock less lag
+  // from the pass's anchor. For a loop shorter than the lag the clock reaches the
+  // wrap before the first sound has reached him, and that sum is NEGATIVE: the
+  // picture fell below the in point, to a frame outside his loop.
+  describe.each([0.041, 0.3])('a loop shorter than the lag (%s s) never leaves its range', (lag) => {
+    it.each([0.05, 0.1, 0.2, 0.5])('loop of %s s', async (len) => {
+      audioMock.ctx = {
+        state: 'running',
+        get currentTime() {
+          return world.t
+        },
+        resume: () => Promise.resolve(),
+        getOutputTimestamp: () => ({ contextTime: world.t - lag, performanceTime: 1000 * world.t }),
+      }
+      const IN = 2
+      const ticks: number[] = []
+      const t = transport(ticks, { getLoopRange: () => ({ startS: IN, endS: IN + len }) })
+      await t.play(IN)
+      for (let i = 0; i < 300; i++) {
+        world.t += 0.01
+        runFrame()
+        await Promise.resolve()
+        await Promise.resolve()
+      }
+      t.pause()
+      expect(ticks.length).toBeGreaterThan(50)
+      expect(Math.min(...ticks)).toBeGreaterThanOrEqual(IN - 1e-9)
+      expect(Math.max(...ticks)).toBeLessThanOrEqual(IN + len + 1e-9)
+    })
+  })
+
+  it('a sound that joins a picture rolling alone starts where the picture will be when he hears it', async () => {
+    // The device has not opened at Space: the picture rolls on the performance
+    // clock with nothing to wait for, and takes the lag on when the sound joins.
+    const w = { ctxT: 0, perfS: 100 }
+    audioMock.ctx = {
+      state: 'running',
+      get currentTime() {
+        return w.ctxT
+      },
+      resume: () => Promise.resolve(),
+      getOutputTimestamp: () => ({ contextTime: w.ctxT - 0.2, performanceTime: 1000 * w.perfS }),
+    }
+    vi.spyOn(performance, 'now').mockImplementation(() => 1000 * w.perfS)
+    const ticks: number[] = []
+    const joined: number[] = []
+    const t = transport(ticks, {
+      schedule: () => Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: w.ctxT + 0.02 })),
+      onHeard: (span) => {
+        if (span?.continues) joined.push(span.timelineS)
+      },
+    })
+    await t.play(4)
+    w.perfS = 100.3
+    w.ctxT = 3 // the device opened: the sound is rebuilt on its clock
+    runFrame()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(joined).toHaveLength(1)
+    for (const c of [3.0, 3.1, 3.22]) {
+      w.ctxT = c
+      runFrame()
+    }
+    // When its first sample reaches him (3.02 + 0.2), the picture shows it.
+    expect(ticks.at(-1)).toBeCloseTo(joined[0], 9)
+    w.ctxT = 3.5
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(joined[0] + 0.28, 9)
+    expect(ticks.every((s, i) => i === 0 || s >= ticks[i - 1])).toBe(true) // never a step back
+    t.pause()
+  })
+
+  it('a late first sound never holds back a cold Space, and the picture takes the lag on when it joins', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let firstBuild: (stop: () => void) => void = () => undefined
+    let calls = 0
+    const ticks: number[] = []
+    const joined: number[] = []
+    const t = transport(ticks, {
+      schedule: () => {
+        calls += 1
+        if (calls === 1) return new Promise((resolve) => (firstBuild = (stop) => resolve(stop)))
+        return Promise.resolve(Object.assign(() => undefined, { startsAtCtxS: world.t + 0.02 }))
+      },
+      onHeard: (span) => {
+        if (span?.continues) joined.push(span.timelineS)
+      },
+    })
+    const playing = t.play(10)
+    await vi.advanceTimersByTimeAsync(AUDIO_START_BUDGET_MS + 1)
+    await playing
+    world.t = 5.1
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(10.1, 9) // the picture rolls at once: nothing to wait for
+    world.t = 5.2
+    firstBuild(() => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(joined).toHaveLength(1)
+    for (const c of [5.25, 5.3, 5.42]) {
+      world.t = c
+      runFrame()
+    }
+    // When the joined sound's first sample reaches him (5.22 + 0.2), the picture shows it.
+    expect(ticks.at(-1)).toBeCloseTo(joined[0], 9)
+    expect(ticks.every((s, i) => i === 0 || s >= ticks[i - 1])).toBe(true) // never a step back
+    t.pause()
+    vi.useRealTimers()
+  })
+
+  // Merge check (audio x playback): a scheduler that places its own sound from
+  // where the picture is when it starts (`follow`, SF-1) must be told where the
+  // picture will be when the sound REACHES him, or a sound joining a picture that
+  // rolled alone starts a whole output lag early and the picture steps back by it
+  // when the lag is taken on.
+  it('a late first sound placed by its scheduler still starts where the picture will be when he hears it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let firstBuild: (stop: () => void) => void = () => undefined
+    let calls = 0
+    const asked: { fromS: number; follow: boolean }[] = []
+    const ticks: number[] = []
+    const joined: number[] = []
+    const t = transport(ticks, {
+      schedule: (fromS, follow) => {
+        calls += 1
+        asked.push({ fromS, follow: follow !== undefined })
+        if (calls === 1) return new Promise((resolve) => (firstBuild = (stop) => resolve(stop)))
+        const startsAtCtxS = world.t + 0.02
+        return Promise.resolve(Object.assign(() => undefined, { startsAtCtxS, ...(follow ? { fromS: follow(startsAtCtxS) } : {}) }))
+      },
+      onHeard: (span) => {
+        if (span?.continues) joined.push(span.timelineS)
+      },
+    })
+    const playing = t.play(10)
+    await vi.advanceTimersByTimeAsync(AUDIO_START_BUDGET_MS + 1)
+    await playing
+    world.t = 5.1
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(10.1, 9)
+    world.t = 5.2
+    firstBuild(() => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(asked[1]!.follow).toBe(true)
+    expect(joined).toHaveLength(1)
+    // The sound starts at 5.22 and reaches him 0.2 s later, when the rolling picture
+    // is at 10 + (5.42 - 5) = 10.42: that is where it is placed, not 10.22.
+    expect(joined[0]).toBeCloseTo(10.42, 9)
+    for (const c of [5.25, 5.3, 5.42]) {
+      world.t = c
+      runFrame()
+    }
+    expect(ticks.at(-1)).toBeCloseTo(joined[0]!, 9)
+    expect(ticks.every((s, i) => i === 0 || s >= ticks[i - 1]!)).toBe(true) // never a step back
+    t.pause()
+    vi.useRealTimers()
+  })
+
+  // L or J pressed during normal play re-anchors from currentTime(). The sound
+  // still on its way is the lag ahead of the frame on screen, and starting the
+  // shuttle there jumped the picture that far forward first: 12 frames of a
+  // 60 fps edit on Bluetooth, and with J a flick forward before it ran back.
+  it('a shuttle from normal play goes on from the frame on screen, not the sound on its way', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks)
+    await t.play(2) // heard from 5.22
+    world.t = 5.72
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2.5, 9)
+    expect(t.currentTime()).toBeCloseTo(2.5, 9)
+    await t.play(t.currentTime(), 2) // L again
+    world.t = 5.82
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2.7, 9)
+    t.pause()
+  })
+
+  it('J from normal play runs back from the frame on screen', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks)
+    await t.play(2)
+    world.t = 5.72
+    runFrame()
+    await t.play(t.currentTime(), -1)
+    world.t = 5.82
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(2.4, 9) // never forward of 2.5 first
+    t.pause()
+  })
+
+  // N1 of the sweep review. The lag is re-measured every second from the output
+  // timestamps, which scatter by about 10 ms between readings (they move in steps
+  // of the device's buffer). A 4 ms gate on the raw reading moved the picture by
+  // up to 10 ms about once a second, and a move across a frame boundary doubled a
+  // frame (the never-backward hold) or dropped one. The measurement is smoothed;
+  // the sync itself is unchanged.
+  describe('a jittery latency reading', () => {
+    /** A device whose lag is 0.2 s on average and scatters by +-10 ms from one reading to the next. */
+    function jitteryDevice(): void {
+      let seed = 12345
+      const scatter = (): number => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+        return (seed / 2 ** 32 - 0.5) * 0.02
+      }
+      audioMock.ctx = {
+        state: 'running',
+        get currentTime() {
+          return world.t
+        },
+        resume: () => Promise.resolve(),
+        getOutputTimestamp: () => ({ contextTime: world.t - 0.2 + scatter(), performanceTime: 1000 * world.t }),
+      }
+    }
+
+    /** Play 40 s at 60 Hz; the whole frames the picture shows, one per display frame. */
+    async function shownFrames(ticks: number[]): Promise<number[]> {
+      world.t = 5.004
+      const t = transport(ticks)
+      await t.play(2)
+      const shown: number[] = []
+      for (let i = 0; i < 60 * 40; i++) {
+        world.t += 1 / 60
+        runFrame()
+        shown.push(Math.floor(ticks.at(-1)! * 60 + 1e-6))
+      }
+      t.pause()
+      return shown
+    }
+
+    it('never doubles or drops a frame of the picture once it has settled', async () => {
+      jitteryDevice()
+      const shown = await shownFrames([])
+      // Past the hold at the start, and the first seconds the estimate takes to settle.
+      const settled = shown.slice(60 * 5)
+      const bad = settled.map((f, i) => (i === 0 ? 1 : f - settled[i - 1])).filter((step) => step !== 1)
+      // Raw, it was 19 in these 35 s (about one a second). A drift of the smoothed
+      // lag across the gate can still move one now and then, but not each second.
+      expect(bad.length).toBeLessThanOrEqual(1)
+    })
+
+    it('still follows a different output device within a second or two', async () => {
+      const lag = { s: 0.04 }
+      audioMock.ctx = {
+        state: 'running',
+        get currentTime() {
+          return world.t
+        },
+        resume: () => Promise.resolve(),
+        getOutputTimestamp: () => ({ contextTime: world.t - lag.s, performanceTime: 1000 * world.t }),
+      }
+      world.t = 5.004
+      const ticks: number[] = []
+      const t = transport(ticks)
+      await t.play(2)
+      for (let i = 0; i < 60 * 3; i++) {
+        world.t += 1 / 60
+        runFrame()
+      }
+      // The sound renders at world.t; the picture is what reached him 0.04 s ago.
+      expect(ticks.at(-1)).toBeCloseTo(2 + (world.t - 5.024 - 0.04), 6)
+      lag.s = 0.25 // he plugs in Bluetooth
+      for (let i = 0; i < 60 * 2; i++) {
+        world.t += 1 / 60
+        runFrame()
+      }
+      expect(Math.max(...ticks.slice(-1))).toBeCloseTo(2 + (world.t - 5.024 - 0.25), 2)
+      t.pause()
+    })
+  })
+
+  it('a shuttle has no sound, so its picture is not held back', async () => {
+    const ticks: number[] = []
+    const t = transport(ticks)
+    await t.play(2, 2)
+    world.t = 5.5
+    runFrame()
+    expect(ticks.at(-1)).toBeCloseTo(3, 9)
+    t.pause()
+  })
+})

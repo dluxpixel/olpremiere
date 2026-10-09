@@ -107,3 +107,53 @@ describe('a preview copy actually gets made and comes back whole', () => {
     expect(await readdir(join(userData, 'proxies'))).toEqual([])
   }, 60_000)
 })
+
+// PB-19, 2026-10-07: nothing checked that frame N of a copy is frame N of the
+// original. The preview and the export both place a frame by its own timestamp
+// (frameIndex.ts), so a copy that moves the timestamps moves every paused frame.
+describe('a preview copy keeps the frame times of the original', () => {
+  /** Every video frame's presentation time, in order, as the app's own reader sees it. */
+  async function frameTimes(path: string): Promise<number[]> {
+    const { ALL_FORMATS, BufferSource, EncodedPacketSink, Input } = await import('mediabunny')
+    const input = new Input({ source: new BufferSource(await readFile(path)), formats: ALL_FORMATS })
+    try {
+      const track = await input.getPrimaryVideoTrack()
+      if (!track) return []
+      const times: number[] = []
+      for await (const packet of new EncodedPacketSink(track).packets()) times.push(packet.timestamp)
+      return times.sort((a, b) => a - b)
+    } finally {
+      input.dispose()
+    }
+  }
+
+  it('when every stream of the source starts after zero', async () => {
+    // Half a second in: a file cut out of a longer recording without its times
+    // rebased. The copy used to start at zero, so the paused picture showed
+    // the frame fifteen frames on from the one the export writes.
+    const src = join(userData, 'late.mp4')
+    const made = spawnSync(FFMPEG, [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=30:duration=1',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      '-output_ts_offset', '0.5',
+      src,
+    ])
+    expect(made.status, `could not make a source: ${made.stderr}`).toBe(0)
+    const original = await frameTimes(src)
+    expect(original[0]).toBeCloseTo(0.5, 3)
+
+    const id = await beginProxy()
+    try {
+      await chunkProxy(id, Uint8Array.from(await readFile(src)).buffer)
+      const { size } = await finishProxy(id)
+      const out = join(userData, 'late-copy.mp4')
+      await writeFile(out, Buffer.from(await readProxy(id, 0, size)))
+      const copy = await frameTimes(out)
+      expect(copy).toHaveLength(original.length)
+      copy.forEach((t, i) => expect(t).toBeCloseTo(original[i], 3))
+    } finally {
+      await releaseProxy(id)
+    }
+  }, 60_000)
+})

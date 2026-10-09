@@ -9,10 +9,7 @@
 
 import { upload } from '@vercel/blob/client'
 import { create } from 'zustand'
-import { forgetAssetSound } from '../engine/assetSound'
-import { evictAsset } from '../engine/frameCache'
-import { invalidatePreview } from '../engine/preview'
-import { notifyBlobArrived } from '../state/blobUrls'
+import { mediaPutBack } from '../state/mediaPutBack'
 import { getBlob, putBlob } from '../state/persistence'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
@@ -194,8 +191,6 @@ async function downloadBlob(
 
 /** Make an arrived blob visible everywhere it was showing a placeholder. */
 export function healArrivedBlob(key: string, assetId: string): void {
-  notifyBlobArrived(key)
-  evictAsset(assetId) // frameCache retries decode with the real bytes
-  forgetAssetSound(assetId) // and the sound, read as nothing while the bytes were missing
-  invalidatePreview()
+  // The one put back road: pictures, frame cache, preview elements, redraw.
+  mediaPutBack([{ id: assetId, blobKey: key }])
 }

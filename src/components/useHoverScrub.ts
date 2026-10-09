@@ -7,7 +7,8 @@
 // Without that a fast sweep across the card queues dozens of seeks and the
 // picture lags behind the pointer by seconds.
 
-import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
+import { thumbnailSourceKey } from '../engine/proxyMedia'
 import type { MediaAsset } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { movedAFrame, scrubTimeAt } from './hoverScrub'
@@ -37,10 +38,17 @@ export function useHoverScrub(asset: MediaAsset, fps: number): HoverScrub {
   const [active, setActive] = useState(false)
   const [tS, setTS] = useState(0)
   const [xPx, setXPx] = useState(0)
-  const url = useBlobUrl(active && scrubbable ? asset.blobKey : undefined)
+  // The preview copy when there is one: a seek in his long GOP original decodes
+  // seconds of video before it lands, under every move of the pointer (PB-14).
+  const url = useBlobUrl(active && scrubbable ? thumbnailSourceKey(asset) : undefined)
   const videoRef = useRef<HTMLVideoElement>(null)
   const pending = useRef<number | null>(null)
   const shown = useRef(-1)
+  // A new url is a new source, and it starts from the top: what was last written
+  // to the old one says nothing about where this one is, so the next move seeks.
+  useEffect(() => {
+    shown.current = -1
+  }, [url])
 
   const seek = useCallback(
     (t: number) => {

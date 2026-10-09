@@ -31,6 +31,7 @@ import { initPersistence, listProjects, loadProjectById } from './state/persiste
 import { installEditTabs, reconcileEditTabs } from './state/editTabs'
 import { recoverFromWipe, sweepEmptyRecoveries } from './state/backupRestore'
 import { backfillEveryProject, healProjectMedia } from './state/mediaMirror'
+import { putBackHealed } from './state/mediaPutBack'
 import { initSettings } from './state/settings'
 import { useStore } from './state/store'
 import { activeSequence, type MediaAsset } from './engine/types'
@@ -184,7 +185,9 @@ const work: BootWork = {
           undefined,
           { durationMs: 10_000 },
         )
-      invalidatePreview()
+      // The monitor warmed these clips before they were back (it mounts behind
+      // the boot card), so the put back has to reach the preview too (PB-3).
+      putBackHealed(useStore.getState().project, healed.healed)
     }
     // And make sure everything he already had is mirrored, not just what he
     // imports from now on, or the edit he has been cutting for a month would

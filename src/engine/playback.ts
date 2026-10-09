@@ -1,6 +1,7 @@
 // Transport clock (spec §4.2 playback.ts). Audio is the MASTER clock: while
 // the shared AudioContext is 'running' the playhead advances on
-// AudioContext.currentTime; otherwise (autoplay policy or headless Chrome can
+// AudioContext.currentTime, less the time that sound takes to reach his ears
+// (pictureAt); otherwise (autoplay policy or headless Chrome can
 // keep the context suspended) it falls back to performance.now()/1000 so
 // playback still advances. No React, no store imports, no DOM beyond rAF.
 
@@ -51,6 +52,16 @@ const REBUILD_LEARN_MAX_S = 0.25
 interface Rebuilt {
   calledAt: number
   retry?: () => void
+  /**
+   * The output lag a picture rolling alone takes on when this sound joins it
+   * (followSound), which the sound was asked to start ahead by. 0 once a sound has joined.
+   */
+  joinLagS?: number
+  /**
+   * False for a loop wrap: the sound is rebuilt and the picture follows it like any
+   * other rebuild, but it is a NEW pass for a take, not a continuation of the one before.
+   */
+  continues?: boolean
 }
 
 /**
@@ -87,6 +98,15 @@ export interface TransportOpts {
   /** Sequence end in seconds. Re-read every frame so edits mid-play count. */
   getEndS: () => number
   onTick: (tS: number) => void
+  /**
+   * Where a pause really stopped (the live clock, MIC-5). Defaults to onTick.
+   * The app puts the playhead on the frame that was on screen and keeps this
+   * exact time to resume a take from. `ranOut` is true only for the pause that
+   * is play running off the end of the edit: the sound reaches the end before
+   * the picture does, so a pause in that last stretch has a stop time AT the
+   * end and is still a pause (sweep review S2).
+   */
+  onPaused?: (tS: number, ranOut: boolean) => void
   onStateChange?: (playing: boolean, rate: number) => void
   /** Schedules audio from a timeline time; resolves to a stop fn. */
   schedule: ScheduleFn
@@ -123,6 +143,43 @@ function heardAtMsOf(ctx: AudioContext, ctxS: number): number {
   }
   const latency = (ctx.outputLatency || 0) + (ctx.baseLatency || 0)
   return performance.now() + (ctxS - ctx.currentTime + latency) * 1000
+}
+
+/** Longer than this is not an output latency (Bluetooth runs 0.15 to 0.3 s). */
+const MAX_EAR_LAG_S = 0.5
+/** A smoothed lag that moved less than this is jitter, and keeps the old one. */
+const EAR_LAG_JITTER_S = 0.004
+/**
+ * How much of a new reading the lag estimate takes. The output timestamps move in
+ * steps of the device's buffer, so one reading is off by up to about 10 ms either
+ * way (sweep review N1): the raw reading against the 4 ms gate moved the picture
+ * by that about once a second, doubling a frame or dropping one. Ten readings a
+ * second, a twentieth of each: the scatter settles to about a millisecond in two
+ * or three seconds, and a real drift of the lag is followed at that pace.
+ */
+const EAR_LAG_SMOOTHING = 0.05
+/** A reading this far from the estimate is another output device, not scatter, and is taken whole. */
+const EAR_LAG_STEP_S = 0.03
+/** How often a playing picture re-measures the lag (a different output device, and the readings the estimate smooths). */
+const EAR_LAG_EVERY_S = 0.1
+
+/**
+ * How far his ears are behind the audio clock: the context time rendering now,
+ * less the one coming out of the speakers now. The same reading heardAtMsOf
+ * places a take with, so the picture and a dub agree on when he heard a thing.
+ */
+function earLagOf(ctx: AudioContext): number {
+  try {
+    const ts = ctx.getOutputTimestamp()
+    if (ts.contextTime !== undefined && ts.performanceTime) {
+      const lag = ctx.currentTime - ts.contextTime - (performance.now() - ts.performanceTime) / 1000
+      if (lag >= 0 && lag <= MAX_EAR_LAG_S) return lag
+    }
+  } catch {
+    // An engine without output timestamps: the latencies it reports instead.
+  }
+  const reported = (ctx.outputLatency || 0) + (ctx.baseLatency || 0)
+  return reported > 0 && reported <= MAX_EAR_LAG_S ? reported : 0
 }
 
 export class Transport {
@@ -167,6 +224,32 @@ export class Transport {
   private stoppingAtEnd = false
   /** How long a sound rebuild mid-play takes, learned as it goes (see rescheduleAudio). */
   private rebuildS = 0.01
+  /** This play's clock tick, while its loop is live (see tickFrame). */
+  private frameTick: ((now: number) => void) | null = null
+  /** The timestamp of the animation frame the clock last ticked in. */
+  private tickedAt: number | null = null
+  /** The frame a draw ticked the clock in, ahead of the transport's own callback. */
+  private aheadAt: number | null = null
+  /**
+   * How far his ears are behind the clock while the picture runs on the sound
+   * (earLagOf), and 0 whenever it does not: a shuttle, or a picture rolling
+   * alone because its first sound was late. See pictureAt.
+   */
+  private earLag = 0
+  /** The smoothed measurement behind earLag (see measureEarLag), or null before the first reading. */
+  private earLagEstimate: number | null = null
+  /**
+   * A sound has reached the picture this play. Until one has, there is nothing
+   * to wait for, so a cold Space is not held back by the lag; the first sound
+   * to join brings it (rescheduleAudio, followSound).
+   */
+  private soundHeard = false
+  /** The clock reading the lag was last measured at. */
+  private earLagAt = -Infinity
+  /** A looped pass whose sound has wrapped and is still on its way to his ears. */
+  private tail: { startS: number; anchor: number; endS: number; untilClock: number } | null = null
+  /** The last picture time told this run, so a re-measured lag never steps it back. */
+  private lastPicture = -Infinity
 
   constructor(opts: TransportOpts) {
     this.opts = opts
@@ -185,10 +268,34 @@ export class Transport {
     return this.heard ? { timelineS: this.heard.timelineS, heardAtMs: this.heard.heardAtMs } : null
   }
 
+  /**
+   * Tick the clock for the animation frame stamped `now`, unless it has
+   * ticked in that frame already. The monitor calls this first thing in its
+   * draw, so what it draws is where the clock is in THIS frame.
+   *
+   * ⛔ THE MONITOR DREW THE FRAME BEFORE (2026-10-07). Its loop is asked for at
+   * mount, long before any play, and the browser runs a frame's callbacks in the
+   * order they were asked for, so in every frame the monitor ran FIRST and drew
+   * the playhead the transport had set one frame earlier. The picture sat a
+   * display frame behind the clock, the sound and the readout, and a pause
+   * between two frames found the playhead one frame past what he saw.
+   * Remembering the drawn frame (preview.ts lastPlayedFrameS) put the pause
+   * right; this puts the picture right. The transport's own callback, later in
+   * the same frame, then only books the next one. Without a monitor it ticks on
+   * its own, as before.
+   */
+  tickFrame(now: number): void {
+    if (!this.frameTick || this.tickedAt === now) return
+    this.aheadAt = now
+    this.frameTick(now)
+  }
+
   currentTime(): number {
     // Live while playing so JKL re-anchors (play(t.currentTime(), newRate))
-    // never jump back to a stale tick.
-    return this.isPlaying ? this.liveTime() : this.lastT
+    // never jump back to a stale tick. And the PICTURE, the frame on screen:
+    // the sound still on its way to his ears is the lag ahead of it, and a
+    // shuttle started from there jumped the picture forward first (PB-8).
+    return this.isPlaying ? this.livePicture() : this.lastT
   }
 
   /**
@@ -315,6 +422,13 @@ export class Transport {
         : this.readClock()
     this.isPlaying = true
     this.currentRate = rate
+    this.tail = null
+    this.lastPicture = -Infinity
+    this.earLag = 0
+    this.earLagEstimate = null
+    this.earLagAt = -Infinity
+    this.soundHeard = audioScheduled && useAudioClock
+    this.measureEarLag(this.readClock())
     this.opts.onStateChange?.(true, rate)
     if (rate === 1) {
       // What he hears from here: the sound, at the time it was scheduled for,
@@ -344,56 +458,97 @@ export class Transport {
     // has got to, and it is the same swap a mid-play mute already performs.
     let realignAudio = audioScheduled && !ctxClockStarted && ctx !== null
 
-    const loop = (): void => {
+    // One tick of the clock. False when it stopped play (the end, J back at 0)
+    // or a new play took over (onTick may call pause()/play()).
+    const tick = (now: number): boolean => {
+      this.tickedAt = now
       if (realignAudio && ctx !== null && ctx.currentTime > 0) {
         realignAudio = false
         this.rescheduleAudio()
       }
       const endS = Math.max(0, this.opts.getEndS())
-      const t = this.liveTime()
+      const clock = this.readClock()
+      this.measureEarLag(clock)
+      // `t` is where the SOUND is (the sample rendering now), which wraps a
+      // loop and is where a pause stops; the picture is what reaches his ears.
+      const t = this.timeAt(clock)
       const loopRange = rate > 0 ? (this.opts.getLoopRange?.() ?? null) : null
       const stopAt = loopRange
         ? Math.min(Math.max(loopRange.endS, loopRange.startS + 0.05), endS)
         : endS
-      if (rate > 0 && t >= stopAt) {
-        if (loopRange) {
-          // Re-anchor and swap the audio in place (no pause/play state churn,
-          // the rAF loop never dies). Audio rejoins a scheduling-latency later;
-          // video restarts on this very frame.
-          const fromS = Math.max(0, Math.min(loopRange.startS, stopAt))
-          this.lastT = fromS
-          this.startS = fromS
-          this.anchor = this.readClock()
-          // The pass he was hearing ends at the wrap, sound or picture alone.
-          this.endHeard()
-          const claim = this.claimAudio()
+      if (rate > 0 && loopRange && t >= stopAt) {
+        // Re-anchor and swap the audio in place (no pause/play state churn,
+        // the rAF loop never dies).
+        //
+        // ⛔ ON THE SOUND, NOT ON THIS FRAME (PB-9, 2026-10-06). The new
+        // sound starts a scheduling latency plus its build time from now, and
+        // the picture used to restart on this very frame, so every pass after
+        // the first ran 50 ms and more AHEAD of the sound: the error MIC-4
+        // removed from every other rebuild, left in the one place the loop
+        // exists for, timing captions to the beat. So the picture holds the
+        // first loop frame until the predicted start, and adoptAudio puts it
+        // exactly on the sound when it lands.
+        const fromS = Math.max(0, Math.min(loopRange.startS, stopAt))
+        const calledAt = clock
+        // The pass's last stretch of sound is still on its way to his ears,
+        // so its picture plays on until it has arrived (PB-8).
+        this.tail =
+          this.earLag > 0
+            ? { startS: this.startS, anchor: this.anchor, endS: stopAt, untilClock: calledAt + this.earLag }
+            : null
+        this.lastPicture = -Infinity
+        this.lastT = fromS
+        this.startS = fromS
+        this.anchor = rate === 1 ? calledAt + SCHEDULE_LATENCY_S + this.rebuildS : calledAt
+        // The pass he was hearing ends at the wrap, sound or picture alone.
+        this.endHeard()
+        const claim = this.claimAudio()
+        // A shuttle is silent, looped or not: a sound at normal speed under a
+        // 2x picture is not his edit.
+        if (rate === 1) {
           void this.opts
             .schedule(fromS)
-            .then((stop) => this.adoptAudio(claim, stop, fromS))
+            .then((stop) => this.adoptAudio(claim, stop, fromS, { calledAt, continues: false }))
             .catch(() => undefined)
-          this.opts.onTick(fromS)
-          if (token !== this.playToken) return
-          this.rafId = requestAnimationFrame(loop)
-          return
         }
+        this.opts.onTick(this.pictureAt(calledAt))
+        return token === this.playToken
+      }
+      const picture = this.pictureAt(clock)
+      // The end is where he SEES it: its last frames are shown while their
+      // sound plays out, and nothing sounds past the end.
+      if (rate > 0 && !loopRange && picture >= endS) {
         this.lastT = endS
         this.stoppingAtEnd = true
+        // pause() tells the playhead where play stopped (onPaused, else onTick).
+        // A second onTick(endS) here put it back ON the end, where nothing
+        // resolves, so every play that ran out left the monitor black (PB-17).
         this.pause()
-        this.opts.onTick(endS)
-        return
+        return false
       }
       if (rate < 0 && t <= 0) {
         this.lastT = 0
+        // Told once, by pause(), like the end above.
         this.pause()
-        this.opts.onTick(0)
-        return
+        return false
       }
       this.lastT = t
-      this.opts.onTick(t)
+      this.opts.onTick(picture)
       // onTick may have called pause()/play(), so never double-schedule.
+      return token === this.playToken
+    }
+    const loop = (now: number): void => {
+      // A draw already ticked the clock in this frame (tickFrame): book the next.
+      if (this.aheadAt === now) this.aheadAt = null
+      else if (!tick(now)) return
       if (token !== this.playToken) return
       this.rafId = requestAnimationFrame(loop)
     }
+    this.frameTick = (now) => {
+      tick(now)
+    }
+    this.tickedAt = null
+    this.aheadAt = null
     this.rafId = requestAnimationFrame(loop)
   }
 
@@ -483,20 +638,26 @@ export class Transport {
     // and one more is built from the live time (warm by now, so quick). Only if
     // that one is late too does the picture follow, rather than run on with the
     // sound behind it.
-    if (rebuilt?.retry && soundS < this.timelineAtCtx(ctx, startsAt) - FOLLOW_BACK_MAX_S) {
+    //
+    // A sound joining a picture that rolled alone was asked to start `joinLag`
+    // ahead (see rebuild), so it is judged against where the picture will be when
+    // the sound reaches his ears, not where it is when the sound starts.
+    if (rebuilt?.retry && soundS < this.timelineAtCtx(ctx, startsAt + (rebuilt.joinLagS ?? 0)) - FOLLOW_BACK_MAX_S) {
       stop()
       rebuilt.retry()
       return
     }
     this.stopAudio = stop
     this.handOver(startsAt)
+    // Asked for mid-play: put the picture on the sound. A loop wrap does this
+    // too, but is a NEW pass for a take, not a continuation (`continues: false`).
     if (rebuilt) this.followSound(ctx, startsAt, soundS, rebuilt.calledAt, stop.fromS === undefined)
     this.openHeard({
       timelineS: soundS,
       heardAtMs: heardAtMsOf(ctx, startsAt),
       sound: true,
       ctxS: startsAt,
-      continues: rebuilt !== undefined,
+      continues: rebuilt !== undefined && rebuilt.continues !== false,
     })
   }
 
@@ -519,6 +680,14 @@ export class Transport {
     } else if (predicted) {
       const took = startsAt - SCHEDULE_LATENCY_S - calledAt
       if (took >= 0 && took < REBUILD_LEARN_MAX_S) this.rebuildS = (this.rebuildS + took) / 2
+    }
+    // The first sound of this play: the picture takes on the lag here, and the
+    // sound was scheduled from where the picture will be when he hears it.
+    if (!this.soundHeard) {
+      this.soundHeard = true
+      this.earLagAt = -Infinity
+      this.earLagEstimate = null
+      this.measureEarLag(ctx.currentTime)
     }
     this.anchor = startsAt - (fromS - this.startS) / this.currentRate
   }
@@ -614,12 +783,18 @@ export class Transport {
     // `follow` lets the scheduler do better than predict: it starts the sound
     // from where the picture is at the moment the sound really starts (SF-1).
     const calledAt = this.readClock()
-    const fromS = this.timeAt(calledAt + SCHEDULE_LATENCY_S + this.rebuildS)
-    const follow = (ctxS: number): number => this.timelineAtCtx(this.contextOrNull(), ctxS)
+    // A picture still rolling alone has no lag, and takes it on when this sound
+    // joins it (followSound): so this sound starts from where the picture will
+    // be when it reaches his ears, and the picture never steps back. `follow`
+    // says the same to a scheduler that places the sound itself.
+    const ctx = this.soundHeard ? null : this.contextOrNull()
+    const joinLagS = ctx ? earLagOf(ctx) : 0
+    const fromS = this.timeAt(calledAt + SCHEDULE_LATENCY_S + this.rebuildS + joinLagS)
+    const follow = (ctxS: number): number => this.timelineAtCtx(this.contextOrNull(), ctxS + joinLagS)
     const retry = mayRetry ? () => this.rebuild(seamless, false) : undefined
     void this.opts
       .schedule(fromS, follow)
-      .then((stop) => this.adoptAudio(claim, stop, fromS, { calledAt, retry }))
+      .then((stop) => this.adoptAudio(claim, stop, fromS, { calledAt, retry, joinLagS }))
       .catch(() => {
         // Nothing to hand over to: the old sound of a seamless rebuild stops.
         if (claim !== this.audioToken || !this.outgoing) return
@@ -652,6 +827,7 @@ export class Transport {
     // live clock, read before the sound is torn down, is the truth.
     const wasPlaying = this.isPlaying
     if (wasPlaying) this.lastT = this.liveTime()
+    const ranOut = this.stoppingAtEnd
     this.teardown()
     this.stoppingAtEnd = false
     // Fire the state change if we were playing OR merely intending to (audio
@@ -663,8 +839,89 @@ export class Transport {
     this.currentRate = 0
     if (wasActive) this.opts.onStateChange?.(false, 0)
     // And the playhead is told, so the next play starts exactly there.
-    if (wasPlaying) this.opts.onTick(this.lastT)
+    if (wasPlaying) {
+      if (this.opts.onPaused) this.opts.onPaused(this.lastT, ranOut)
+      else this.opts.onTick(this.lastT)
+    }
     return this.lastT
+  }
+
+  /**
+   * ⛔ THE PICTURE RAN AHEAD OF THE SOUND BY THE OUTPUT LATENCY (PB-8,
+   * 2026-10-07). The clock is the sample the audio graph is rendering, and his
+   * ears get that sample the output latency later: measured on his default
+   * output, 41 ms (two and a half frames of a 60 fps edit), and 150 to 250 ms on
+   * Bluetooth. A cut he saw landed before the beat he heard, so cuts set by eye
+   * to the beat went into the export late.
+   *
+   * So the picture is what is reaching his ears: the clock less the lag. Only
+   * the picture. Where a pause stops, where a loop wraps and where a rebuilt
+   * sound starts stay on the rendered sample, because that is what the device
+   * plays out and what a dub resumes from (MIC-4, MIC-5). Two consequences
+   * follow from it, and both are what he hears: the last frames of the edit are
+   * shown while their sound plays out (the end is where he SEES it), and a
+   * looped pass is shown to its end while its last sound arrives (the tail).
+   */
+  private pictureAt(clock: number): number {
+    if (this.tail && clock >= this.tail.untilClock) {
+      // The wrapped pass has played out; the next starts from its own first frame.
+      this.tail = null
+      this.lastPicture = -Infinity
+    }
+    let p = this.rawPicture(clock)
+    // A re-measured lag moves the picture by a few ms, and never backward.
+    if (this.currentRate > 0) {
+      p = Math.max(p, this.lastPicture)
+      this.lastPicture = p
+    }
+    return p
+  }
+
+  /** The picture at a clock reading, before the never-backward hold. */
+  private rawPicture(clock: number): number {
+    const tail = this.tail
+    if (tail && clock < tail.untilClock) {
+      // Never below the pass's own first frame: for a loop shorter than the lag
+      // the clock wraps before the pass's first sound has reached him, and the
+      // sum is negative (N2). A tail is only ever made at a forward rate.
+      return Math.min(tail.endS, Math.max(tail.startS, tail.startS + (clock - this.earLag - tail.anchor) * this.currentRate))
+    }
+    return this.timeAt(clock - this.earLag)
+  }
+
+  /** The picture now, as pictureAt would draw it, without moving anything. */
+  private livePicture(): number {
+    const clock = this.readClock()
+    const p = this.rawPicture(clock)
+    const tailOver = this.tail !== null && clock >= this.tail.untilClock
+    return this.currentRate > 0 && !tailOver ? Math.max(p, this.lastPicture) : p
+  }
+
+  /**
+   * Measure the lag, at most once a second, while the picture runs on the sound:
+   * normal speed, on the audio clock, once a sound has joined. A shuttle is
+   * silent and a picture rolling alone has nothing to wait for, so there it is 0.
+   */
+  private measureEarLag(clock: number): void {
+    if (this.currentRate !== 1 || this.readClock === perfClock || !this.soundHeard) {
+      this.earLag = 0
+      this.earLagEstimate = null
+      return
+    }
+    if (clock - this.earLagAt < EAR_LAG_EVERY_S) return
+    this.earLagAt = clock
+    const ctx = this.contextOrNull()
+    if (!ctx) return
+    const lag = earLagOf(ctx)
+    // The estimate is smoothed, and the gate is on the estimate: a reading is
+    // off by ~10 ms either way, which moved the picture across a frame boundary
+    // about once a second (N1). It is the measurement that is smoothed and not the
+    // sync: the picture is still the clock less the lag, and a different device
+    // is a step far past the scatter, followed at once.
+    const prev = this.earLagEstimate
+    const estimate = prev === null || Math.abs(lag - prev) > EAR_LAG_STEP_S ? lag : prev + (lag - prev) * EAR_LAG_SMOOTHING
+    this.earLagEstimate = estimate
+    if (Math.abs(estimate - this.earLag) > EAR_LAG_JITTER_S) this.earLag = estimate
   }
 
   /** Current transport time from the chosen clock, clamped to [0, end]. */
@@ -695,6 +952,7 @@ export class Transport {
 
   private teardown(): void {
     this.endHeard()
+    this.frameTick = null
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId)
       this.rafId = null

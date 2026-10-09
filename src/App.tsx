@@ -84,6 +84,14 @@ function stepFrames(frames: number) {
 }
 
 /**
+ * One second of the active edit, in whole frames: what Shift+Arrow steps. It was
+ * a fixed 30 frames, which is half a second on his 60 fps edits (PB-18).
+ */
+function secondInFrames(): number {
+  return Math.max(1, Math.round(activeSequence(useStore.getState().project).fps || 30))
+}
+
+/**
  * [ and ]: park the playhead on the selected clip's previous / next keyframe.
  *
  * The unit is the MOMENT, which is exactly what clipKeyframeTimes hands the
@@ -219,8 +227,8 @@ export function buildAppBindings(): Binding[] {
       { combo: 'l', description: 'Shuttle forward', domain: 'transport', run: () => shuttle(1) },
       { combo: 'arrowleft', description: 'Step 1 frame back', domain: 'transport', run: () => stepFrames(-1) },
       { combo: 'arrowright', description: 'Step 1 frame forward', domain: 'transport', run: () => stepFrames(1) },
-      { combo: 'shift+arrowleft', description: 'Step ~1s back', domain: 'transport', run: () => stepFrames(-30) },
-      { combo: 'shift+arrowright', description: 'Step ~1s forward', domain: 'transport', run: () => stepFrames(30) },
+      { combo: 'shift+arrowleft', description: 'Step ~1s back', domain: 'transport', run: () => stepFrames(-secondInFrames()) },
+      { combo: 'shift+arrowright', description: 'Step ~1s forward', domain: 'transport', run: () => stepFrames(secondInFrames()) },
       {
         combo: 'home',
         description: 'Go to start',

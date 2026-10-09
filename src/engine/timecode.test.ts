@@ -4,6 +4,7 @@ import {
   formatTimecode,
   formatTimecodeDelta,
   frameToTime,
+  lastFrameS,
   parseTimecode,
   quantizeToFrame,
   timeToFrame,
@@ -129,5 +130,19 @@ describe('frame math', () => {
   it('quantizes to the frame grid', () => {
     expect(quantizeToFrame(1.49, 30)).toBeCloseTo(45 / 30)
     expect(quantizeToFrame(1.516, 30)).toBeCloseTo(45 / 30)
+  })
+})
+
+describe('lastFrameS', () => {
+  it('is one frame before an end on the grid', () => {
+    expect(lastFrameS(2, 30)).toBeCloseTo(59 / 30, 9)
+    expect(lastFrameS(10, 60)).toBeCloseTo(599 / 60, 9)
+  })
+  it('is the frame an end part way through a frame still shows', () => {
+    expect(lastFrameS(10.01, 30)).toBeCloseTo(10, 9)
+  })
+  it('is never below zero', () => {
+    expect(lastFrameS(0, 30)).toBe(0)
+    expect(lastFrameS(0.01, 30)).toBe(0)
   })
 })

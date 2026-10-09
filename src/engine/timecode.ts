@@ -95,3 +95,13 @@ export const timeToFrame = (tS: number, fps: number): number => Math.round(tS * 
 export const frameToTime = (frame: number, fps: number): number => frame / fps
 /** Quantize a time to the sequence frame grid. */
 export const quantizeToFrame = (tS: number, fps: number): number => Math.round(tS * fps) / fps
+
+/**
+ * Where the LAST frame of an edit `durationS` long starts: the last moment that
+ * still shows a picture. At `durationS` itself nothing resolves and the monitor
+ * is black. An edit that ends part way through a frame still shows that frame.
+ */
+export const lastFrameS = (durationS: number, fps: number): number => {
+  const f = fps > 0 ? fps : 30
+  return Math.max(0, Math.ceil(durationS * f - 1e-6) - 1) / f
+}

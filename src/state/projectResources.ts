@@ -43,7 +43,7 @@ import { forgetAssetAudio, cancelAudioWarm } from '../engine/audio'
 import { invalidateDenoise } from '../engine/denoise'
 import { evictAsset } from '../engine/frameCache'
 import { disposePreviewAsset, releasePreviewScratch } from '../engine/preview'
-import { forgetProxy } from '../engine/proxyMedia'
+import { forgetProxy, proxyKeyFor } from '../engine/proxyMedia'
 import { clearTitleCache } from '../engine/render/titleRaster'
 import { forgetAssetPeaks } from '../engine/waveform'
 import type { Id, MediaAsset, Project } from '../engine/types'
@@ -65,6 +65,8 @@ function keysOf(media: Media): Set<string> {
   for (const a of media.values()) {
     keys.add(a.blobKey)
     if (a.thumbnailKey) keys.add(a.thumbnailKey)
+    // The preview copy is read through a URL of its own, on the asset's id alone.
+    keys.add(proxyKeyFor(a.id))
   }
   return keys
 }
@@ -92,6 +94,8 @@ function releaseCheap(a: MediaAsset, keepKeys: ReadonlySet<string>): void {
   forgetAssetStrips(a.id)
   if (!keepKeys.has(a.blobKey)) revokeBlobUrl(a.blobKey)
   if (a.thumbnailKey && !keepKeys.has(a.thumbnailKey)) revokeBlobUrl(a.thumbnailKey)
+  // The preview copy's URL, minted the first time the monitor played the clip.
+  if (!keepKeys.has(proxyKeyFor(a.id))) revokeBlobUrl(proxyKeyFor(a.id))
 }
 
 // ---------------------------------------------------------------------------

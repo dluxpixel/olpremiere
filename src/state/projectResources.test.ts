@@ -23,7 +23,7 @@ vi.mock('../engine/audio', () => ({
   cancelAudioWarm: () => log.push('audio-warm-stopped'),
 }))
 vi.mock('../engine/denoise', () => ({ invalidateDenoise: said('denoise') }))
-vi.mock('../engine/proxyMedia', () => ({ forgetProxy: said('proxy') }))
+vi.mock('../engine/proxyMedia', () => ({ forgetProxy: said('proxy'), proxyKeyFor: (id: string) => 'proxy:' + id }))
 vi.mock('../engine/render/titleRaster', () => ({ clearTitleCache: () => log.push('titles') }))
 vi.mock('../engine/waveform', () => ({ forgetAssetPeaks: said('peaks') }))
 vi.mock('./filmstrips', () => ({ releaseStripVideo: said('strip-video'), forgetAssetStrips: said('strips') }))
@@ -54,8 +54,13 @@ const edit = (name: string, ...media: MediaAsset[]): Project => ({
   ...newProject(name),
   assets: Object.fromEntries(media.map((a) => [a.id, a])),
 })
-/** What was released for one asset, in the order it happened. */
-const forAsset = (id: string): string[] => log.filter((l) => l.endsWith(`:${id}`)).map((l) => l.split(':')[0])
+/**
+ * What was released for one asset, in the order it happened. The URLs let go of
+ * are told apart by key (`url:asset/g1`, `url:proxy:g1`), not by asset, so they
+ * are read off `log` directly and left out of this list.
+ */
+const forAsset = (id: string): string[] =>
+  log.filter((l) => !l.startsWith('url:') && l.endsWith(`:${id}`)).map((l) => l.split(':')[0])
 /** Everything an asset of the edit he left lets go of: its waiting preview copy at once, the rest queued. */
 const HEAVY = ['proxy', 'frames', 'elements', 'denoise', 'strip-video']
 /** Kept one switch longer: the decoded sound, waveform and thumbnails. */
@@ -107,6 +112,44 @@ describe('the edit he leaves', () => {
     expect(log).toContain('url:thumb/g1')
     // mc night is the warm one now: heavy gone, thumbnails kept.
     expect(forAsset('m1')).toEqual(HEAVY)
+  })
+
+  // S-C (sweep review 2): the preview copy's URL (`proxy:<id>`) is a blob URL of
+  // its own, minted the first time the monitor plays the clip, and nothing let go
+  // of it: a handle on the copy's bytes for as long as the app ran.
+  it('lets the preview copy URL go with the rest, when a third edit comes on screen', () => {
+    const green = edit('Green', asset('g1'))
+    const mc = edit('mc night', asset('m1'))
+    const bc = edit('BC', asset('b1'))
+    releaseSleepingEdit(green, mc)
+    expect(log).not.toContain('url:proxy:g1')
+    releaseSleepingEdit(mc, bc)
+    expect(log).toContain('url:proxy:g1')
+    // Only the edit two switches back: mc night is kept warm, with its copy's URL.
+    expect(log).not.toContain('url:proxy:m1')
+  })
+
+  it('keeps a preview copy URL the edit on screen reads, even for an asset it does not share', () => {
+    // Same id over different bytes: not the same media, but the same preview copy key.
+    const green = edit('Green', asset('g1', 'asset/g1'))
+    const mc = edit('mc night', asset('m1'))
+    const bc = edit('BC', asset('g1', 'asset/g1-copy'))
+    releaseSleepingEdit(green, mc)
+    log.length = 0
+    releaseSleepingEdit(mc, bc)
+    expect(log).toContain('url:asset/g1')
+    expect(log).not.toContain('url:proxy:g1')
+  })
+
+  it('never lets go of the preview copy URL of an asset the edit on screen shares', () => {
+    const shared = asset('gym-footage')
+    const green = edit('Green', shared, asset('g1'))
+    const mc = edit('mc night', asset('m1'))
+    const bc = edit('BC', shared)
+    releaseSleepingEdit(green, mc)
+    releaseSleepingEdit(mc, bc)
+    expect(log).toContain('url:proxy:g1')
+    expect(log).not.toContain('url:proxy:gym-footage')
   })
 })
 
@@ -174,7 +217,7 @@ describe('a closed tab', () => {
     log.length = 0
     expect(releaseClosedEdit(green, mc)).toEqual(['g1'])
     expect(forAsset('g1')).toEqual(CHEAP)
-    expect(log).toEqual(expect.arrayContaining(['url:asset/g1', 'url:thumb/g1']))
+    expect(log).toEqual(expect.arrayContaining(['url:asset/g1', 'url:thumb/g1', 'url:proxy:g1']))
     // And only once.
     log.length = 0
     expect(releaseClosedEdit(green, mc)).toEqual([])

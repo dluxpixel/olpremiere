@@ -20,7 +20,7 @@ import { recordPreviewTick } from '../engine/previewTruth'
 import { ensureProxies } from '../engine/proxyMedia'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
-import { pausePlayback, subscribeShuttleRate, toggleLoop, togglePlay } from '../state/playbackControl'
+import { pausePlayback, subscribeShuttleRate, tickPlaybackFrame, toggleLoop, togglePlay } from '../state/playbackControl'
 import { screenshotToMedia } from '../state/screenshot'
 import { isCriticalWorkRunning } from '../state/unloadGuard'
 import { isExportWatched } from '../state/exportJob'
@@ -68,7 +68,7 @@ const STALLED_POLL_MS = 250
 const EXPORT_PREVIEW_FRAME_MS = 250
 
 /** rAF draw loop: reads the store imperatively so playback never re-renders React. */
-function useProgramCanvas(quality: Quality) {
+export function useProgramCanvas(quality: Quality) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   /**
    * Why the picture is black, when it is black for a reason the app can name.
@@ -119,6 +119,10 @@ function useProgramCanvas(quality: Quality) {
 
     const draw = (now: number) => {
       raf = requestAnimationFrame(draw)
+      // The clock first, then the picture of where it is in THIS frame. This
+      // loop was asked for at mount, so it runs before the transport's in every
+      // frame and drew the playhead of the frame before (Transport.tickFrame).
+      tickPlaybackFrame(now)
       const tickMs = lastTickT > 0 ? now - lastTickT : 0
       lastTickT = now
       const s = useStore.getState()

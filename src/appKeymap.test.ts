@@ -140,6 +140,28 @@ describe('the central keymap', () => {
   })
 })
 
+// PB-18: Shift+Arrow said "about 1 s" and stepped a fixed 30 frames, which is
+// half a second on his 60 fps edits.
+describe('Shift+Arrow steps one second of the edit', () => {
+  const step = (combo: string): void => bindings().find((b) => b.combo === combo)!.run(new KeyboardEvent('keydown'))
+
+  it('on a 60 fps edit', () => {
+    updateActiveSequence('A 60 fps edit', (sq) => ({ ...sq, fps: 60, durationS: 10 }))
+    useStore.getState().setUI({ playheadS: 2 })
+    step('shift+arrowright')
+    expect(useStore.getState().ui.playheadS).toBeCloseTo(3, 9)
+    step('shift+arrowleft')
+    expect(useStore.getState().ui.playheadS).toBeCloseTo(2, 9)
+  })
+
+  it('on a 30 fps edit, as before', () => {
+    updateActiveSequence('A 30 fps edit', (sq) => ({ ...sq, fps: 30, durationS: 10 }))
+    useStore.getState().setUI({ playheadS: 2 })
+    step('shift+arrowright')
+    expect(useStore.getState().ui.playheadS).toBeCloseTo(3, 9)
+  })
+})
+
 describe('the keys reach the keyframe verbs', () => {
   it('Alt+Left nudges the picked diamonds, not the clip', () => {
     const clip = seedPickedDiamonds()

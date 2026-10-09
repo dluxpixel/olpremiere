@@ -3,12 +3,16 @@
 // so preview and export are pixel-identical. Textures come from pooled <video>
 // elements (playing), the WebCodecs frame cache (scrubbing), or <img> (stills).
 
-import { getBlobUrl } from '../state/blobUrls'
+import { getBlobUrl, subscribeBlobArrived } from '../state/blobUrls'
 import {
+  cancelRefine,
+  currentPreviewScale,
   getFrameAt,
+  peekFrameAt,
   prefetchAround,
   prefetchRange,
   previewCapHeight,
+  refineFromOriginal,
   setPreviewSequenceHeight,
 } from './frameCache'
 import {
@@ -19,7 +23,7 @@ import {
   resetPreviewPacing,
   type FrameProbe,
 } from './previewTruth'
-import { setProxyBuildingPaused } from './proxyMedia'
+import { hasProxy, setProxyBuildingPaused } from './proxyMedia'
 import { createRenderer, type LayerShape, type Renderer } from './render/glRenderer'
 import { pairTransitionAt, resolveFrame } from './render/resolve'
 import { rasterizeTitle } from './render/titleRaster'
@@ -27,7 +31,6 @@ import { hasEmoji } from './render/emojiFont'
 import { ensureEmojiFont, ensureTitleFace } from './render/titleFonts'
 import { coverScale, croppedSize, fitScale } from './render/mat'
 import type { RenderLayer, ResolvedTransform, TextureSource } from './render/types'
-import { clipDurationS } from './timeline'
 import { clipEndS, type Clip, type Id, type MediaAsset, type Sequence } from './types'
 
 interface PooledVideo {
@@ -40,10 +43,24 @@ interface PooledVideo {
   probe: FrameProbe
   /** performance.now() of the last hard seek asked of this element. See the seek branch. */
   lastSeekAt?: number
+  /**
+   * performance.now() of the seek pressing Play asked for, until the element
+   * presents a frame after it. Until then its picture is the OLD one. PB-6.
+   */
+  playSeekAt?: number
+  /** Where its media lives, so a put back can find it. */
+  blobKey: string
+  /** The store had no media for it when last asked. See loadSource. */
+  noSrc?: boolean
+  /** performance.now() of that last ask. */
+  askedAt: number
 }
 interface PooledImage {
   el: HTMLImageElement
   ready: boolean
+  blobKey: string
+  noSrc?: boolean
+  askedAt: number
 }
 
 // Both pools are LRU-bounded: every acquire re-inserts (touch), so anything on
@@ -56,6 +73,15 @@ interface PooledImage {
  * element's rate, which the viewer cannot see. A seek, they can.
  */
 const HARD_SEEK_S = 0.35
+/** How far outside a clip's own source span a presented frame may sit and still be its footage (frame timing). */
+const OWN_SPAN_SLACK_S = 0.05
+/**
+ * How far from the moment wanted a picture may sit and still be held as a clip's
+ * own (sweep review S-A). Inside the clip's source span is not enough on a long
+ * clip: an element left 17 s back by a scrub is the clip's footage and the wrong
+ * shot. The worst lag measured on his long GOP capture was 1.8 s.
+ */
+const OWN_FOOTAGE_NEAR_S = 2
 /**
  * Shortest interval between two hard seeks of the SAME element. A seek that has
  * landed still needs a frame decoded and composited before the probe can report
@@ -116,6 +142,37 @@ const LIVE_MISS_LIMIT = 8
 
 /** Last play/pause state renderPreview saw, so a transition can reset the health window. */
 let wasPlaying = false
+/**
+ * ⛔ AT PLAY START THE ELEMENT RAN AHEAD OF THE HELD PICTURE (sweep review S1,
+ * 2026-10-08). The transport holds the first frame until the first sound reaches
+ * his ears: the scheduling latency plus the output latency (PB-8), 0.09 s on his
+ * default output and 0.35 s on Bluetooth. An element started on the first draw
+ * ran through that hold and began the run that far AHEAD of the picture: the 2%
+ * servo needed 4.5 to 17 s to absorb it, the exact-frame fallback gave up on the
+ * way and the picture came from the element, ahead of the sound for seconds
+ * (undoing PB-8), and from 0.3 s up the gap passed HARD_SEEK_S and the element
+ * seeked back during the hold.
+ *
+ * So the element is left parked on the frame the picture holds, per pooled
+ * element: the source time each had at the first draw of this run of play, and
+ * it starts when the picture moves off it. Only the first draw of a run
+ * registers, so a clip that comes up mid-play (a cut) starts on its first frame,
+ * as before.
+ */
+const heldAtStart = new Map<Id, number>()
+/** This draw is the first of a run of play (renderPreview sets it, resolveLayer reads it). */
+let startingRun = false
+/** The picture has not moved off the frame it held at the start of the run (it is a float compare of one source time). */
+const HELD_EPS_S = 1e-6
+
+/** Whether the element for `key` must stay parked: the picture is still on the frame it held at play start. */
+function pictureStillHeld(key: Id, srcT: number): boolean {
+  const at = heldAtStart.get(key)
+  if (at === undefined) return false
+  if (Math.abs(srcT - at) < HELD_EPS_S) return true
+  heldAtStart.delete(key)
+  return false
+}
 /** The cut whose head has already been queued for decode, so it is asked for once, not per rAF. */
 let prefetchedCutId: Id | null = null
 
@@ -176,17 +233,65 @@ export const incomingNeedsOwnElement = (
   to: { clipId: Id; assetId: Id },
 ): boolean => from.clipId !== to.clipId && from.assetId === to.assetId
 
+/** How often an element whose media was missing asks the store again. */
+const NO_SRC_RETRY_MS = 1000
+
+/**
+ * Give a pooled element its media, or remember that there was none.
+ *
+ * ⛔ A MISSING FILE USED TO MAKE A DEAD ELEMENT FOR THE SESSION (PB-3,
+ * 2026-10-06). The editor mounts behind the boot card, so the monitor warms
+ * every clip BEFORE the boot puts his missing media back. Those elements got no
+ * source, and every later acquire returned the same dead one: after the put
+ * back a paused frame came back, but playing that clip drew black until a
+ * restart. Exactly his 2026-08-23 "no picture" days. Now a sourceless element
+ * asks again (on a put back at once, otherwise at most once a second).
+ */
+function loadSource(pooled: PooledVideo | PooledImage, readyEvent: 'loadeddata' | 'load'): void {
+  pooled.askedAt = performance.now()
+  void getBlobUrl(pooled.blobKey).then((url) => {
+    if (!url) {
+      pooled.noSrc = true
+      return
+    }
+    pooled.noSrc = false
+    pooled.el.addEventListener(readyEvent, () => (pooled.ready = true), { once: true })
+    pooled.el.src = url
+  })
+}
+
+/** Ask again for a sourceless element, no more than once a second. */
+function retryIfSourceless(pooled: PooledVideo | PooledImage, readyEvent: 'loadeddata' | 'load', now = false): void {
+  if (pooled.noSrc !== true) return
+  if (!now && performance.now() - pooled.askedAt < NO_SRC_RETRY_MS) return
+  pooled.noSrc = undefined // asking
+  loadSource(pooled, readyEvent)
+}
+
+let arrivalsHooked = false
+/** Every put back announces its key; a sourceless element for that key asks at once. */
+function hookArrivals(): void {
+  if (arrivalsHooked) return
+  arrivalsHooked = true
+  subscribeBlobArrived((key) => {
+    for (const v of videoPool.values()) if (v.blobKey === key) retryIfSourceless(v, 'loadeddata', true)
+    for (const i of imagePool.values()) if (i.blobKey === key) retryIfSourceless(i, 'load', true)
+  })
+}
+
 function warmVideo(asset: MediaAsset, key: Id = asset.id): PooledVideo {
   const existing = videoPool.get(key)
   if (existing) {
     lruTouch(videoPool, key, existing)
+    retryIfSourceless(existing, 'loadeddata')
     return existing
   }
+  hookArrivals()
   const el = document.createElement('video')
   el.muted = true // audio comes from the Web Audio graph, never the elements
   el.playsInline = true
   el.preload = 'auto'
-  const pooled: PooledVideo = { el, ready: false, probe: attachFrameProbe(el) }
+  const pooled: PooledVideo = { el, ready: false, probe: attachFrameProbe(el), blobKey: asset.blobKey, askedAt: 0 }
   videoPool.set(key, pooled)
   // Evict the least-recently-used PAUSED element. Never dispose one that is
   // actively playing (a multi-insert sweep like prewarm would otherwise evict
@@ -199,11 +304,7 @@ function warmVideo(asset: MediaAsset, key: Id = asset.id): PooledVideo {
       disposeVideo(id)
     }
   }
-  void getBlobUrl(asset.blobKey).then((url) => {
-    if (!url) return
-    el.addEventListener('loadeddata', () => (pooled.ready = true), { once: true })
-    el.src = url
-  })
+  loadSource(pooled, 'loadeddata')
   return pooled
 }
 
@@ -211,19 +312,17 @@ function warmImage(asset: MediaAsset): PooledImage {
   const existing = imagePool.get(asset.id)
   if (existing) {
     lruTouch(imagePool, asset.id, existing)
+    retryIfSourceless(existing, 'load')
     return existing
   }
+  hookArrivals()
   const el = new Image()
-  const pooled: PooledImage = { el, ready: false }
+  const pooled: PooledImage = { el, ready: false, blobKey: asset.blobKey, askedAt: 0 }
   imagePool.set(asset.id, pooled)
   while (imagePool.size > IMAGE_POOL_CAP) {
     disposeImage(imagePool.keys().next().value as Id)
   }
-  void getBlobUrl(asset.blobKey).then((url) => {
-    if (!url) return
-    el.addEventListener('load', () => (pooled.ready = true), { once: true })
-    el.src = url
-  })
+  loadSource(pooled, 'load')
   return pooled
 }
 
@@ -256,7 +355,7 @@ export function prewarmPreview(assets: MediaAsset[]): void {
  */
 export async function warmPreview(assets: MediaAsset[], timeoutMs = 6000): Promise<number> {
   prewarmPreview(assets)
-  const pooled: { ready: boolean }[] = assets
+  const pooled: { ready: boolean; noSrc?: boolean }[] = assets
     .map((a) => (a.kind === 'video' ? videoPool.get(a.id) : a.kind === 'image' ? imagePool.get(a.id) : undefined))
     .filter((p): p is PooledVideo | PooledImage => p !== undefined)
   if (pooled.length === 0) return 0
@@ -265,7 +364,9 @@ export async function warmPreview(assets: MediaAsset[], timeoutMs = 6000): Promi
   // Poll rather than race a listener per element: the `ready` flag is set by the
   // existing one-shot listeners, so this reads the same truth the renderer does
   // and cannot double-register on an element that is already pooled and warm.
-  while (Date.now() < deadline && pooled.some((p) => !p.ready)) {
+  // A clip whose media is missing is settled, not slow: waiting the full six
+  // seconds on it only held the boot card up (PB-3).
+  while (Date.now() < deadline && pooled.some((p) => !p.ready && p.noSrc !== true)) {
     await new Promise((r) => setTimeout(r, 50))
   }
   return pooled.filter((p) => p.ready).length
@@ -490,6 +591,13 @@ export function releasePreviewScratch(): void {
   heldFrames.clear()
   liveScale.clear()
   liveMisses.clear()
+  backwardLow.clear()
+  lastExact.clear()
+  aheadHigh.clear()
+  for (const p of parkTimers.values()) clearTimeout(p.timer)
+  parkTimers.clear()
+  for (const p of refineTimers.values()) clearTimeout(p.timer)
+  refineTimers.clear()
   prefetchedCutId = null
   for (const ref of drawnCanvases) {
     const canvas = ref.deref()
@@ -611,6 +719,32 @@ export function pairTransitionWindow(a: Clip, b: Clip, fps: number): PairTransit
  * still matter are examined (earlier windows have fully passed, later heads
  * sit beyond the pre-roll), so a long track costs O(log n) per frame.
  */
+/**
+ * The source span each clip near a window shows, as [low, high] source seconds:
+ * the clip's own in to out, and for the outgoing side also the stretch past its
+ * cut that the dissolve samples. A picture inside it is that clip's footage, a
+ * picture outside it is another part of the take. Pure.
+ */
+export function holdSpansFor(seq: Sequence, windows: readonly PairTransitionWindow[]): Map<Id, [number, number]> {
+  const spans = new Map<Id, [number, number]>()
+  if (windows.length === 0) return spans
+  const clips = new Map<Id, Clip>()
+  for (const track of seq.tracks) if (track.kind === 'video') for (const c of track.clips) clips.set(c.id, c)
+  const add = (clipId: Id, ...times: number[]): void => {
+    const c = clips.get(clipId)
+    if (!c) return
+    const lo = Math.min(c.inS, c.outS, ...times)
+    const hi = Math.max(c.inS, c.outS, ...times)
+    const had = spans.get(clipId)
+    spans.set(clipId, had ? [Math.min(had[0], lo), Math.max(had[1], hi)] : [lo, hi])
+  }
+  for (const w of windows) {
+    add(w.fromClipId, w.fromSourceStartS, w.fromSourceEndS)
+    add(w.toClipId, w.toSourceStartS, w.toSourceEndS)
+  }
+  return spans
+}
+
 export function transitionWindowsNear(
   seq: Sequence,
   tS: number,
@@ -684,6 +818,198 @@ export function upcomingCutHeads(seq: Sequence, tS: number, preRollS = TRANSITIO
 }
 
 /**
+ * The source second a clip shows on its FIRST frame. The same arithmetic as
+ * resolve.ts's layerFor at local time 0: a frozen clip shows its held frame, a
+ * reversed one starts at the END of its span, everything else at `inS`. Pure.
+ */
+export function headSourceS(clip: Pick<Clip, 'freezeAtS' | 'speed' | 'inS' | 'outS'>): number {
+  return clip.freezeAtS ?? (clip.speed < 0 ? clip.outS : clip.inS)
+}
+
+/**
+ * The first `spanS` of source a clip plays, as [head, end] IN PLAY ORDER (end
+ * below head when reversed, both the held frame when frozen), never past the
+ * clip's own span. Pure: what the cut pre-roll decodes ahead.
+ */
+export function playOrderRange(
+  clip: Pick<Clip, 'freezeAtS' | 'speed' | 'inS' | 'outS'>,
+  spanS: number,
+): [number, number] {
+  const head = headSourceS(clip)
+  if (clip.freezeAtS !== undefined) return [head, head]
+  const span = Math.max(0, Math.min(spanS, clip.outS - clip.inS))
+  return clip.speed < 0 ? [head, head - span] : [head, head + span]
+}
+
+/** Does this layer's picture come from a <video> PLAYING it? Only forward, unfrozen play. */
+const elementDriven = (layer: RenderLayer): boolean =>
+  layer.frozen !== true && Math.sign(layer.speed || 1) * Math.sign(transportRate) > 0
+
+/**
+ * Where the backward decode-ahead of a reversed layer should reach down to.
+ * Pure, so the chunking can be tested without a decoder.
+ *
+ * ⛔ A <video> CANNOT PLAY BACKWARD, and a reversed clip used to be handed one
+ * playing FORWARD with a hard seek back every fifth of a second: short forward
+ * bursts with jumps, not his reversed clip and not what the export writes. So a
+ * reversed layer is drawn from the frame cache instead. The cache's reader only
+ * runs forward, so it is fed in CHUNKS: one request reaches `chunkS` further
+ * down whenever the playhead gets within a chunk of what is already asked for,
+ * and the reader decodes that chunk in ONE forward pass. Asking for one frame
+ * at a time reopens the file for every frame, which is the trap the miss limit
+ * in the forward ladder exists for.
+ *
+ * Returns the new low edge. A playhead below the old edge (the decode fell
+ * behind, or a jump) or more than two chunks above it (a jump back up) starts over two chunks
+ * deep.
+ */
+export function nextBackwardLow(lowS: number | undefined, srcT: number, chunkS: number): number {
+  if (lowS === undefined || srcT < lowS || srcT - lowS > 2 * chunkS) return srcT - 2 * chunkS
+  if (srcT - lowS < chunkS) return lowS - chunkS
+  return lowS
+}
+
+/** How much source one backward chunk covers: half a second of play, at most ~100 frames. */
+const backwardChunkS = (rate: number, fps: number): number => Math.min(0.5 * Math.max(1, rate), 100 / fps)
+
+/** Low edge of each reversed layer's decode-ahead, per clip. Cleared on play/pause. */
+const backwardLow = new Map<Id, number>()
+
+/**
+ * The last exact cached frame each cache-served clip was drawn with, and the
+ * source second it shows. A reference, not a copy: the cache hands out a fresh
+ * canvas per frame and never reuses one, so holding it is safe after eviction.
+ */
+const lastExact = new Map<Id, { src: TexImageSource; atS: number }>()
+const LAST_EXACT_CAP = 8
+
+function keepLastExact(clipId: Id, src: TexImageSource, atS: number): void {
+  lastExact.delete(clipId)
+  lastExact.set(clipId, { src, atS })
+  while (lastExact.size > LAST_EXACT_CAP) {
+    const oldest = lastExact.keys().next().value
+    if (oldest === undefined) break
+    lastExact.delete(oldest)
+  }
+}
+
+/** How long the playhead must rest before a paused element is parked on it. */
+const PARK_SETTLE_MS = 200
+const parkTimers = new Map<Id, { srcT: number; timer: ReturnType<typeof setTimeout> }>()
+
+/**
+ * Seek a paused element onto `srcT` once the playhead has rested there, so the
+ * next Space starts on the right picture with no seek at all (PB-6). Not on
+ * every scrub step: a seek per step fights the scrub's own decoder.
+ */
+function parkWhenStill(pooled: PooledVideo, key: Id, srcT: number, fps: number): void {
+  const prev = parkTimers.get(key)
+  if (prev && prev.srcT === srcT) return
+  if (prev) clearTimeout(prev.timer)
+  const timer = setTimeout(() => {
+    parkTimers.delete(key)
+    if (videoPool.get(key) !== pooled || !pooled.ready || !pooled.el.paused) return
+    if (Math.abs(pooled.el.currentTime - srcT) > 1 / (2 * fps)) pooled.el.currentTime = srcT
+  }, PARK_SETTLE_MS)
+  parkTimers.set(key, { srcT, timer })
+}
+
+/** How long a paused frame must stay put before it is redone from his footage. */
+const REFINE_SETTLE_MS = 250
+/**
+ * The paused frame each LAYER was last asked to settle on, and its timer (spent
+ * once it fires). Per layer and not per asset (sweep review N3): two layers of
+ * one take rest on two different frames (a dissolve on one take, a clip over a
+ * copy of itself at another offset), and keyed by asset each re-armed the other's
+ * timer at every draw, so neither frame was ever redone.
+ */
+const refineTimers = new Map<Id, { assetId: Id; srcT: number; timer: ReturnType<typeof setTimeout> }>()
+
+/**
+ * At Full quality, once the playhead has rested on a paused frame, have it
+ * decoded again from his ORIGINAL footage and redraw (PB-13): the frame cache
+ * serves the preview copy, which is right while he scrubs and too soft to judge
+ * a look or place a caption by. Not while moving, so a scrub never pays the
+ * original's seek; never at Half or Quarter, whose point is being cheap.
+ */
+function refineWhenStill(layerKey: Id, asset: MediaAsset, srcT: number): void {
+  const prev = refineTimers.get(layerKey)
+  if (prev && prev.assetId === asset.id && prev.srcT === srcT) return
+  if (prev) {
+    clearTimeout(prev.timer)
+    // Moved on: a redo of the last frame still decoding is for a frame that is
+    // not on screen any more, and it competes with the scrub. Unless another
+    // layer is resting on that very frame, whose redo it is as well.
+    const sharedWithOther = [...refineTimers].some(
+      ([k, p]) => k !== layerKey && p.assetId === prev.assetId && p.srcT === prev.srcT,
+    )
+    if (!sharedWithOther) cancelRefine(prev.assetId, prev.srcT)
+  }
+  const timer = setTimeout(() => {
+    if (wasPlaying || currentPreviewScale() < 1) return
+    void refineFromOriginal(asset, srcT).then((changed) => {
+      if (changed) invalidatePreview()
+    })
+  }, REFINE_SETTLE_MS)
+  refineTimers.set(layerKey, { assetId: asset.id, srcT, timer })
+}
+
+/**
+ * Where the forward decode-ahead of an element that is off its frame should
+ * reach next, or null when what is already asked for still covers the playhead.
+ * The forward twin of nextBackwardLow, pure so it is tested without a decoder.
+ *
+ * Asking for one frame per draw kept the exact fallback a frame late every
+ * time: each draw asked for its own frame, got it one draw later, and after
+ * eight misses the fallback was switched off by design. So the reader is given
+ * a CHUNK ahead of the playhead, and the next chunk once the playhead is half
+ * way through it, which keeps it running ahead in one forward pass. Not a
+ * request per frame, the trap the miss limit exists for.
+ *
+ * `highS` is the top of what was last asked for. Returns the new top to ask up
+ * to. A playhead at or past the top (the decode fell behind, or a jump forward)
+ * or far below it (a jump back) starts again one chunk above the playhead.
+ */
+export function nextAheadHigh(highS: number | undefined, srcT: number, chunkS: number): number | null {
+  if (highS === undefined || srcT >= highS || highS - srcT > 2 * chunkS) return srcT + chunkS
+  if (highS - srcT < chunkS / 2) return highS + chunkS
+  return null
+}
+
+/**
+ * Frames per forward chunk. One under the frame cache's PENDING_CAP (16), which
+ * drops anything past that from a single request: a half second asked for at
+ * 60 fps was cut to its first quarter, and the rest of each half second was a
+ * hole the fallback fell through.
+ */
+const AHEAD_MAX_FRAMES = 15
+
+/** How much source one forward chunk covers: half a second of play, at most AHEAD_MAX_FRAMES. */
+const aheadChunkS = (rate: number, fps: number): number =>
+  Math.max(1 / fps, Math.min(0.5 * Math.max(0.0625, rate), AHEAD_MAX_FRAMES / fps))
+
+/** The top of each element's forward decode-ahead. Cleared on play/pause. */
+const aheadHigh = new Map<Id, number>()
+
+/**
+ * While an element is off its frame, keep the frame cache decoding ahead of the
+ * playhead (PB-6), so the exact fallback actually has the frame when it is
+ * asked. Only on a preview copy, where a run ahead is cheap; on a long GOP
+ * original it is the feedback loop the miss limit is for.
+ */
+function decodeAhead(asset: MediaAsset, key: Id, srcT: number, rate: number, fps: number): void {
+  if (!hasProxy(asset.id)) return
+  const top = nextAheadHigh(aheadHigh.get(key), srcT, aheadChunkS(rate, fps))
+  if (top === null) return
+  aheadHigh.set(key, top)
+  // Asked for FROM THE PLAYHEAD, not from the old top: the cache orders its
+  // queue from the first frame of a request, so anything of the last chunk
+  // still undecoded would otherwise be queued behind the new one and cost a
+  // reopen backward. Frames already cached are not asked for again.
+  prefetchRange(asset, srcT, top)
+}
+
+/**
  * Warm (and pre-seek) the element an upcoming PLAIN cut is about to need, the
  * way prerollTransitions already does for the incoming side of a transition.
  * Idempotent: warmVideo returns the pooled element when it already exists, and
@@ -710,17 +1036,25 @@ function prerollCuts(seq: Sequence, assets: Record<Id, MediaAsset>, tS: number):
     prefetchedCutId = next.id
     const asset = assets[next.assetId]
     if (asset?.kind === 'video') {
-      prefetchRange(asset, next.inS, next.inS + Math.min(CUT_HEAD_PREFETCH_S, clipDurationS(next)))
+      // The head IN PLAY ORDER: a reversed clip starts at its out point and a
+      // frozen one at its held frame. Warming `inS` for those decoded footage
+      // the cut never shows, and left the real first frame cold.
+      const [a, b] = playOrderRange(next, CUT_HEAD_PREFETCH_S)
+      prefetchRange(asset, a, b)
     }
   }
   for (const clip of heads) {
     const asset = assets[clip.assetId]
     if (asset?.kind !== 'video') continue
+    // A reversed or frozen clip is drawn from the frame cache, never from a
+    // playing element, so there is no element to park for it.
+    if (clip.freezeAtS !== undefined || clip.speed < 0) continue
     const pooled = warmVideo(asset)
     // Same guard as the transition path: only pre-seek a PAUSED element, never
     // one that is on screen, and only when it is meaningfully off target.
-    if (pooled.ready && pooled.el.paused && Math.abs(pooled.el.currentTime - clip.inS) > 0.15) {
-      pooled.el.currentTime = clip.inS
+    const head = headSourceS(clip)
+    if (pooled.ready && pooled.el.paused && Math.abs(pooled.el.currentTime - head) > 0.15) {
+      pooled.el.currentTime = head
     }
   }
 }
@@ -840,8 +1174,53 @@ function makeTextureSource(
   transitionSides?: ReadonlySet<RenderLayer>,
   holdClips?: ReadonlySet<Id>,
   ownElementSides?: ReadonlySet<RenderLayer>,
+  zoomByKey?: ReadonlyMap<Id, number>,
+  holdSpans?: ReadonlyMap<Id, readonly [number, number]>,
 ): TextureSource {
-  return (layer: RenderLayer): TexImageSource | null => {
+  /**
+   * ⛔ ONE PICTURE PER ELEMENT PER FRAME (PB-5, 2026-10-06). The blurred
+   * background is a second layer of the SAME clip, so the ladder ran twice per
+   * frame on one element: two servo writes, two health samples, and two scaled
+   * copies at two sizes, which re-made the scratch canvas and the GPU texture
+   * twice a frame. A layer on an element already resolved this frame gets the
+   * same picture, sized for the largest layer on it (zoomByKey).
+   */
+  const sameElement = new Map<string, TexImageSource | null>()
+  const elementKey = (layer: RenderLayer): string | null => {
+    if (!playing || layer.title || transitionFrom?.has(layer) || !elementDriven(layer)) return null
+    if (assets[layer.assetId]?.kind !== 'video') return null
+    const key = videoPoolKeyFor(layer.assetId, ownElementSides?.has(layer) === true)
+    return `${key}|${layer.sourceTimeS}|${transitionSides?.has(layer) === true ? 1 : 0}`
+  }
+  /**
+   * ⛔ ONLY A VOUCHED PICTURE IS HELD FOR THE SECOND LAYER (sweep S-B). The
+   * second layer on an element re-holds the shared picture for its own clip, but
+   * the ladder only held it when it was confident of it. A late element showing
+   * another clip's footage was refused by the first layer and then held anyway
+   * by the foreground over a blurred background, and the dissolve out of that
+   * clip froze on a shot from the clip before it. `vouchedPic` is what
+   * confident() last vouched for during this resolve.
+   */
+  let vouchedPic: TexImageSource | null = null
+  const vouchedKeys = new Set<string>()
+  const resolveOnce = (layer: RenderLayer): TexImageSource | null => {
+    const key = elementKey(layer)
+    if (key === null) return resolveLayer(layer)
+    if (sameElement.has(key)) {
+      const pic = sameElement.get(key) ?? null
+      if (pic && vouchedKeys.has(key) && holdClips?.has(layer.clipId)) holdGoodFrame(layer.clipId, pic)
+      return pic
+    }
+    vouchedPic = null
+    const pic = resolveLayer(layer)
+    if (pic && pic === vouchedPic) vouchedKeys.add(key)
+    sameElement.set(key, pic)
+    return pic
+  }
+  /** The upload size for this element this frame: the largest any layer on it needs. */
+  const zoomOn = (poolKey: Id, layer: RenderLayer, el: HTMLVideoElement): number =>
+    zoomByKey?.get(poolKey) ?? liveZoom(layer.transform, el.videoWidth, el.videoHeight, frameW, frameH)
+  const resolveLayer = (layer: RenderLayer): TexImageSource | null => {
     // Titles are generated, not imported. Rasterize them at PREVIEW size, not at
     // sequence size: a 1080x1920 caption canvas is an 8.3 MB allocation plus a
     // full-frame text raster on the main thread plus a texture upload and a
@@ -871,6 +1250,10 @@ function makeTextureSource(
     if (asset.kind !== 'video') return null
 
     const srcT = layer.sourceTimeS
+    // The frame the picture holds at the start of this run of play, if it holds
+    // one: see heldAtStart. Registered before anything can return, so an element
+    // that is still warming up is not started ahead of the hold either.
+    if (startingRun && elementDriven(layer)) heldAtStart.set(videoPoolKeyFor(asset.id, ownElementSides?.has(layer) === true), srcT)
     // One side of a live pair transition. Its picture is composited against the
     // other clip for the whole window, so it may only ever be the RIGHT frame.
     const guarded = transitionSides?.has(layer) === true
@@ -884,10 +1267,23 @@ function makeTextureSource(
     /** A picture the ladder is confident is this clip's own frame. */
     const confident = (src: TexImageSource): TexImageSource => {
       if (holding) holdGoodFrame(layer.clipId, src)
+      vouchedPic = src
       return src
     }
     /** No provable picture: the last one there was, never a wrong one. */
     const held = (): TexImageSource | null => heldFrames.get(layer.clipId) ?? null
+    /**
+     * The element is showing this clip's own footage, late or not: the frame its
+     * probe says is on screen lies inside the source span this clip shows
+     * (holdSpansFor). Worth holding for a dissolve when nothing exact is. See
+     * the last rung of the ladder.
+     */
+    const showsOwnFootage = (p: PooledVideo): boolean => {
+      const span = holding ? holdSpans?.get(layer.clipId) : undefined
+      if (!span || !p.probe.live) return false
+      const at = p.probe.mediaTime
+      return at >= span[0] - OWN_SPAN_SLACK_S && at <= span[1] + OWN_SPAN_SLACK_S && Math.abs(at - srcT) <= OWN_FOOTAGE_NEAR_S
+    }
 
     if (playing && transitionFrom?.has(layer)) {
       // Outgoing side of a live pair transition, sampled past its cut. The
@@ -915,7 +1311,13 @@ function makeTextureSource(
       prefetchAround(asset, srcT)
       // The cache only ever yields OffscreenCanvas/ImageBitmap (valid texture
       // sources), but its return type is the wider CanvasImageSource.
-      if (exact) return confident(exact as TexImageSource)
+      if (exact) {
+        // Served from the cache, so the element is wherever it last stopped.
+        // Park it here once he stops moving, so Space starts on this frame.
+        parkWhenStill(pooled, poolKey, srcT, asset.fps || fps)
+        refineWhenStill(layer.clipId, asset, srcT)
+        return confident(exact as TexImageSource)
+      }
       // No exact frame yet. Fall back to a nearest <video> seek, but the seek
       // is ASYNC, so this frame is NOT final: mark it pending so the draw loop
       // keeps polling until the exact decode lands (else it freezes mid-seek).
@@ -928,6 +1330,44 @@ function makeTextureSource(
       // has not landed, so the element is showing some other part of the take.
       if (guarded && !elementShowsNear(pooled, srcT)) return held()
       return pooled.el
+    }
+
+    if (!elementDriven(layer)) {
+      // REVERSED, FROZEN, OR UNDER J: the wanted frame does not move forward in
+      // real time, and a <video> only plays forward. Driving one here played it
+      // the wrong way with a jump back every fifth of a second. So the picture
+      // comes from the frame cache, the same frames the export decodes, and on
+      // a miss the clip's last good frame is held. See nextBackwardLow.
+      const frozen = layer.frozen === true
+      if (!frozen) {
+        const rate = Math.abs((layer.speed || 1) * transportRate)
+        const low = nextBackwardLow(backwardLow.get(layer.clipId), srcT, backwardChunkS(rate, asset.fps || fps))
+        backwardLow.set(layer.clipId, low)
+        // Every frame, anchored at the low edge: the request is cheap, the
+        // queue keeps one ascending order, and frames past the queue cap are
+        // picked up as the earlier ones land.
+        prefetchRange(asset, Math.max(0, low), srcT)
+      }
+      // Frozen asks for its one frame; reversed only peeks, because the range
+      // above already feeds the reader in the one order it can serve.
+      const exact = frozen ? getFrameAt(asset, srcT) : peekFrameAt(asset, srcT)
+      if (exact) {
+        keepLastExact(layer.clipId, exact as TexImageSource, srcT)
+        recordServedFrame(0, true)
+        return confident(exact as TexImageSource)
+      }
+      markPending()
+      const last = lastExact.get(layer.clipId)
+      if (last) {
+        recordServedFrame(last.atS - srcT, false)
+        return last.src
+      }
+      const hold = held()
+      if (hold) return hold
+      // Nothing of its own yet: a parked element only if it is showing this part.
+      const parked = videoPool.get(poolKey)
+      if (!guarded && parked?.ready && parked.el.paused && elementShowsNear(parked, srcT)) return parked.el
+      return null
     }
 
     const pooled = warmVideo(asset, poolKey)
@@ -946,10 +1386,10 @@ function makeTextureSource(
     // the clip's own speed TIMES the transport rate. Leaving the transport out
     // is what made J/L a slideshow: at 2x the playhead ran twice as fast as the
     // picture, drift crossed the tolerance every ~150ms, and every crossing was a
-    // hard seek. Native <video> can't play backward, so a reversed clip (or a
-    // reversed shuttle) keeps rate 1 and rides the seek path.
-    const speed = layer.speed * Math.abs(transportRate)
-    const wantRate = layer.speed > 0 && transportRate > 0 ? Math.min(16, Math.max(0.0625, speed)) : 1
+    // hard seek. Native <video> can't play backward, so a layer that runs
+    // backward never gets here (see elementDriven above); a reversed clip under
+    // a reversed shuttle runs FORWARD and plays at its real rate.
+    const wantRate = Math.min(16, Math.max(0.0625, Math.abs((layer.speed || 1) * transportRate)))
 
     // NO SPECIAL CASE FOR A CLIP CHANGE, and the reason is worth keeping.
     //
@@ -978,9 +1418,17 @@ function makeTextureSource(
     const tol = ELEMENT_TOL_FRAMES / (asset.fps && asset.fps > 0 ? asset.fps : fps)
 
     if (el.paused) {
-      el.currentTime = srcT
+      // Parked on this frame already (a settled scrub, parkWhenStill): no seek,
+      // so what it shows is the frame. Otherwise seek, and do not trust its
+      // picture until it has presented one after the seek (below).
+      if (el.seeking || Math.abs(el.currentTime - srcT) > 1 / (2 * (asset.fps || fps))) {
+        el.currentTime = srcT
+        pooled.lastSeekAt = performance.now()
+        pooled.playSeekAt = pooled.lastSeekAt
+      }
       el.playbackRate = wantRate
-      void el.play().catch(() => {})
+      // Parked on the frame the picture holds, until the picture moves off it.
+      if (!pictureStillHeld(poolKey, srcT)) void el.play().catch(() => {})
     } else if (Math.abs(trueErr) > HARD_SEEK_S) {
       // A real jump. Seeking is correct, but a <video> seek takes long enough
       // that on a run of short pieces the next cut lands before this one has
@@ -1036,10 +1484,48 @@ function makeTextureSource(
       return held()
     }
 
+    // ⛔ PRESSING PLAY SHOWED THE ELEMENT'S OLD PICTURE (PB-6, 2026-10-06). A
+    // paused frame served from the cache leaves the element wherever it last
+    // stopped. Play seeks it, and until that seek presents a frame its probe is
+    // stale, the error reads from `el.currentTime` (just set to srcT, so zero),
+    // and the ladder drew the old picture as on time: on his long GOP capture
+    // for up to a few seconds. So until the element presents a frame after the
+    // seek, the cache serves (the paused draw just decoded this frame and the
+    // half second around it), else this clip's last exact frame.
+    if (pooled.playSeekAt !== undefined) {
+      if (!hasFrameIdentity() || (pooled.probe.live && pooled.probe.at > pooled.playSeekAt)) {
+        pooled.playSeekAt = undefined
+      } else {
+        const misses = liveMisses.get(poolKey) ?? 0
+        if (misses < LIVE_MISS_LIMIT) decodeAhead(asset, poolKey, srcT, wantRate, asset.fps || fps)
+        const exact = misses < LIVE_MISS_LIMIT ? getFrameAt(asset, srcT) : peekFrameAt(asset, srcT)
+        if (exact) {
+          liveMisses.delete(poolKey)
+          keepLastExact(layer.clipId, exact as TexImageSource, srcT)
+          recordServedFrame(0, true)
+          return confident(exact as TexImageSource)
+        }
+        if (misses < LIVE_MISS_LIMIT) liveMisses.set(poolKey, misses + 1)
+        markPending()
+        const last = lastExact.get(layer.clipId)
+        if (last) {
+          recordServedFrame(last.atS - srcT, false)
+          return last.src
+        }
+        // Nothing of its own yet: the element, as before. Straight from here:
+        // the rungs below would ask the cache for this same frame again and
+        // count the one miss twice, tripping the miss limit at half its length.
+        recordServedFrame(trueErr, false)
+        const old = livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el))
+        // Held only when what it shows is this clip's own footage (the last rung).
+        return showsOwnFootage(pooled) ? confident(old) : old
+      }
+    }
+
     if (Math.abs(trueErr) <= tol) {
       liveMisses.delete(poolKey)
       recordServedFrame(trueErr, true)
-      return confident(livePreviewSource(el, poolKey, liveZoom(layer.transform, el.videoWidth, el.videoHeight, frameW, frameH)))
+      return confident(livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el)))
     }
     // NEVER ASK THE DECODER FOR WHAT IT CANNOT DELIVER IN TIME.
     //
@@ -1061,6 +1547,7 @@ function makeTextureSource(
     // moment the picture is inside tolerance again (above), and on play/pause.
     const misses = liveMisses.get(poolKey) ?? 0
     if (misses < LIVE_MISS_LIMIT) {
+      decodeAhead(asset, poolKey, srcT, wantRate, asset.fps || fps)
       const exact = getFrameAt(asset, srcT)
       if (exact) {
         liveMisses.delete(poolKey)
@@ -1071,8 +1558,21 @@ function makeTextureSource(
       markPending() // the decode is queued; keep polling so it lands
     }
     recordServedFrame(trueErr, false)
-    return livePreviewSource(el, poolKey, liveZoom(layer.transform, el.videoWidth, el.videoHeight, frameW, frameH))
+    const late = livePreviewSource(el, poolKey, zoomOn(poolKey, layer, el))
+    // ⛔ THE OUTGOING SIDE OF A DISSOLVE HAD NOTHING TO HOLD (2026-10-08, red in
+    // e2e/transition-stale-frame.spec.ts since PB-6: 0 frames of the outgoing
+    // clip in 38). Off its frame here, but showing this clip's own footage, is
+    // still this clip's picture, and when the cache cannot keep up it is the
+    // only one there is: on a long GOP source without a preview copy the
+    // element runs late, or sits mid-seek, all the way into a cut. Before PB-6 a
+    // seek in flight counted as on time, and that false confidence was what the
+    // outgoing side held. Without it nothing was held, the outgoing side drew
+    // nothing, and a dissolve on one take was a cut to the incoming clip. The
+    // dissolve freezes on the outgoing clip instead, which is what its held
+    // frame is for. A picture of another part of the take is still never held.
+    return showsOwnFootage(pooled) ? confident(late) : late
   }
+  return resolveOnce
 }
 
 // --- Live-playback texture sizing -------------------------------------------
@@ -1359,13 +1859,21 @@ export function renderPreview(
   warmSoon(renderer, seq)
   // Health describes ONE continuous run of playback. Starting or stopping makes
   // every sample before it describe a different run, so the window starts over.
+  startingRun = playing && !wasPlaying
   if (playing !== wasPlaying) {
     wasPlaying = playing
+    heldAtStart.clear()
     resetPreviewHealth()
     resetPreviewPacing()
     liveMisses.clear()
+    backwardLow.clear()
+    aheadHigh.clear()
+    // A frame held from before a scrub is not this run's picture.
+    lastExact.clear()
     // Never transcode a preview copy while he is watching the preview.
     setProxyBuildingPaused(playing)
+    // Nor redo a paused frame from his footage under the playback (PB-13).
+    if (playing) cancelRefine()
   }
   // Keep the scrub cache's Full-quality decode cap matched to this raster.
   setPreviewSequenceHeight(seq.height)
@@ -1382,14 +1890,19 @@ export function renderPreview(
       }
     }
   }
-  // Pause any pooled video no longer referenced this frame.
+  // Pause any pooled video no longer referenced this frame, and any whose only
+  // layers are drawn from the cache (reversed, frozen, under J): left running it
+  // plays on forward for nothing and costs a decoder.
   if (playing) {
     const active = new Set<Id>()
+    const mark = (l: RenderLayer): void => {
+      if (elementDriven(l)) active.add(l.assetId)
+    }
     for (const op of frame.ops) {
-      if (op.type === 'layer') active.add(op.layer.assetId)
+      if (op.type === 'layer') mark(op.layer)
       else if (op.type === 'transition') {
-        active.add(op.from.assetId)
-        active.add(op.to.assetId)
+        mark(op.from)
+        mark(op.to)
       }
       // adjustment ops reference no asset
     }
@@ -1409,6 +1922,7 @@ export function renderPreview(
     holdClips.add(w.toClipId)
   }
   heldCap = Math.max(HELD_FRAME_CAP, holdClips?.size ?? 0)
+  const holdSpans = holdClips ? holdSpansFor(seq, windows) : undefined
 
   // The from-layers served from the frame cache this frame, and BOTH sides of
   // every live pair transition. whiteFlash and lone-edge stand-ins (from/to are
@@ -1447,6 +1961,22 @@ export function renderPreview(
     prerollTransitions(windows, assets, tS)
     prerollCuts(seq, assets, tS)
   }
+  // The largest upload each playing element needs this frame, so every layer
+  // on it shares one picture at one size (see sameElement in makeTextureSource).
+  const zoomByKey = new Map<Id, number>()
+  if (playing) {
+    for (const op of frame.ops) {
+      const ls = op.type === 'layer' ? [op.layer] : op.type === 'transition' ? [op.from, op.to] : []
+      for (const l of ls) {
+        if (l.title || !elementDriven(l)) continue
+        const key = videoPoolKeyFor(l.assetId, ownElementSides?.has(l) === true)
+        const el = videoPool.get(key)?.el
+        if (!el) continue
+        const z = liveZoom(l.transform, el.videoWidth, el.videoHeight, frame.width, frame.height)
+        zoomByKey.set(key, Math.max(zoomByKey.get(key) ?? 0, z))
+      }
+    }
+  }
   // A frame is "complete" only when every layer resolved to its FINAL texture
   // (the exact decoded frame / loaded image), not a still-seeking <video>
   // fallback. While anything is pending, the caller keeps polling so the async
@@ -1465,6 +1995,8 @@ export function renderPreview(
     transitionSides,
     holdClips,
     ownElementSides,
+    zoomByKey,
+    holdSpans,
   )
   // ⛔ A CUT NEVER FLASHES BLACK, 2026-09-28. His words: *"it seems like it has
   // dark cuts even though clips are completely together."* At a plain cut the
@@ -1486,8 +2018,30 @@ export function renderPreview(
   }
   if (missingAtCut && lastComplete.get(canvas) === true) return false
   renderer.render(frame, (l) => (pictures.has(l) ? pictures.get(l)! : source(l)))
+  if (playing) playedFrameS = tS
   lastComplete.set(canvas, complete)
   return complete
+}
+
+/**
+ * The playhead of the last frame the monitor DREW while playing, or null when
+ * this run of play has drawn none yet. What he saw, so a pause can land on it.
+ *
+ * ⛔ NOT THE TRANSPORT'S LAST TICK. The monitor's animation frame loop starts
+ * when it mounts, long before any play, so in every frame it ran FIRST and
+ * drew the playhead the transport set one frame earlier; a pause between two
+ * frames found the store one tick ahead of the picture, one frame past what he
+ * saw on a 60 fps edit. The draw now ticks the clock first (Transport.tickFrame),
+ * and this stays the truth for the frames a tick does not draw: the redraw cap,
+ * a frame still decoding, the hold over a cut.
+ */
+let playedFrameS: number | null = null
+
+export const lastPlayedFrameS = (): number | null => playedFrameS
+
+/** A new run of play starts: the last run's frame is not what is on screen any more. */
+export function forgetPlayedFrame(): void {
+  playedFrameS = null
 }
 
 /** Whether the canvas's last drawn frame had every picture it needed. */

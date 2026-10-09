@@ -94,6 +94,8 @@ function layerFor(clip: Clip, t: number, fps: number, shutterS = 0): RenderLayer
     isImage: false,
     title: clip.title,
     speed: clip.speed,
+    // Stamped only when frozen, so every other layer keeps its exact shape.
+    ...(clip.freezeAtS !== undefined ? { frozen: true as const } : {}),
     frameSeed: Math.round(t * fps),
     transform: now,
     ...(atShutter ? { transformAtShutter: atShutter } : {}),

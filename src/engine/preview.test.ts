@@ -15,6 +15,11 @@ import {
   incomingNeedsOwnElement,
   videoPoolKeyFor,
   TO_SIDE_SUFFIX,
+  headSourceS,
+  playOrderRange,
+  nextBackwardLow,
+  nextAheadHigh,
+  holdSpansFor,
 } from './preview'
 import type { Clip, Sequence, Track } from './types'
 
@@ -198,6 +203,22 @@ describe('upcomingCutHeads', () => {
   })
 })
 
+// A held frame for a dissolve must be the clip's own footage: what the clip
+// shows from its in point to past its cut on the outgoing side, never another
+// part of the same take (2026-10-08).
+describe('holdSpansFor', () => {
+  it('spans each side of a window: the outgoing clip to past its cut, the incoming from its in point', () => {
+    const s = seq([track([a, b])])
+    const spans = holdSpansFor(s, transitionWindowsNear(s, 1))
+    expect(spans.get('a')).toEqual([0, 2.5])
+    expect(spans.get('b')).toEqual([5, 7])
+  })
+
+  it('is empty with no window near', () => {
+    expect(holdSpansFor(seq([track([a, b])]), []).size).toBe(0)
+  })
+})
+
 describe('transitionWindowsNear', () => {
   const s = seq([track([a, b])])
 
@@ -372,5 +393,65 @@ describe('what the live upload cap is told about zoom', () => {
     const stretched = { ...tf, fit: 'stretch' as const }
     expect(liveZoom(stretched, 640, 480, 1920, 1080)).toBeCloseTo(4 / 3, 6)
     expect(liveZoom(tf, 640, 480, 1920, 1080)).toBeCloseTo(1, 6)
+  })
+})
+
+describe('headSourceS and playOrderRange (the cut warm-up, in play order)', () => {
+  const base = { inS: 4, outS: 8 }
+  it('forward starts at inS and runs up', () => {
+    expect(headSourceS({ ...base, speed: 1 })).toBe(4)
+    expect(playOrderRange({ ...base, speed: 1 }, 0.75)).toEqual([4, 4.75])
+  })
+  it('reversed starts at outS and runs DOWN, as resolve shows it', () => {
+    expect(headSourceS({ ...base, speed: -1 })).toBe(8)
+    expect(playOrderRange({ ...base, speed: -2 }, 0.75)).toEqual([8, 7.25])
+  })
+  it('frozen, either way round, is its held frame and nothing else', () => {
+    expect(headSourceS({ ...base, speed: 1, freezeAtS: 5.5 })).toBe(5.5)
+    expect(playOrderRange({ ...base, speed: -1, freezeAtS: 5.5 }, 0.75)).toEqual([5.5, 5.5])
+  })
+  it('never reaches past the clip span', () => {
+    expect(playOrderRange({ inS: 4, outS: 4.25, speed: 1 }, 0.75)).toEqual([4, 4.25])
+  })
+})
+
+describe('nextBackwardLow (reversed play feeds the decoder in chunks)', () => {
+  it('starts two chunks below the playhead', () => {
+    expect(nextBackwardLow(undefined, 8, 0.5)).toBe(7)
+  })
+  it('holds the edge while more than a chunk is left above it', () => {
+    expect(nextBackwardLow(7, 7.6, 0.5)).toBe(7)
+  })
+  it('reaches one chunk further down once within a chunk of the edge', () => {
+    expect(nextBackwardLow(7, 7.4, 0.5)).toBe(6.5)
+  })
+  it('starts over after a jump either way', () => {
+    expect(nextBackwardLow(7, 6.9, 0.5)).toBeCloseTo(5.9, 9)
+    expect(nextBackwardLow(7, 20, 0.5)).toBe(19)
+  })
+  // n-B (sweep review 2): the edge is never more than two chunks below the
+  // playhead while playing backward, so a playhead further above it than that
+  // has jumped, and the old edge is a decode the new place does not want.
+  it('starts over once the playhead is more than two chunks above the edge, not three', () => {
+    expect(nextBackwardLow(7, 8.2, 0.5)).toBeCloseTo(7.2, 9)
+    // Exactly two chunks above is where a fresh start sits: nothing to redo.
+    expect(nextBackwardLow(7, 8, 0.5)).toBe(7)
+  })
+})
+
+describe('nextAheadHigh (an element off its frame keeps the decoder ahead of it)', () => {
+  it('starts one chunk above the playhead', () => {
+    expect(nextAheadHigh(undefined, 2, 0.25)).toBe(2.25)
+  })
+  it('asks for nothing while more than half a chunk is left above the playhead', () => {
+    expect(nextAheadHigh(2.25, 2.1, 0.25)).toBeNull()
+  })
+  it('reaches one chunk further up once the playhead is half way through', () => {
+    expect(nextAheadHigh(2.25, 2.2, 0.25)).toBe(2.5)
+  })
+  it('starts over when the playhead outruns it or jumps back', () => {
+    expect(nextAheadHigh(2.25, 2.25, 0.25)).toBe(2.5)
+    expect(nextAheadHigh(2.25, 9, 0.25)).toBe(9.25)
+    expect(nextAheadHigh(9.25, 2, 0.25)).toBe(2.25)
   })
 })
