@@ -106,7 +106,8 @@ async function lumaGrid(page: Page): Promise<number[]> {
 }
 
 /**
- * Wait until the title is really on the monitor.
+ * Wait until the picture is really on the monitor (a title, or a clip with a white
+ * block in it: both have a pixel this bright).
  *
  * ⛔ A "NOTHING CHANGED" CHECK PASSES ON TWO EMPTY FRAMES. The two tests that
  * prove blur leaves a picture alone compare a read with blur on against one with
@@ -119,9 +120,9 @@ async function lumaGrid(page: Page): Promise<number[]> {
  * the fallback face and one in the real one would differ for a reason that has
  * nothing to do with blur.
  */
-async function untilTitleShows(page: Page): Promise<void> {
+async function untilPictureShows(page: Page): Promise<void> {
   await expect
-    .poll(async () => Math.max(...(await lumaGrid(page))), { timeout: 10_000, message: 'the title never reached the monitor' })
+    .poll(async () => Math.max(...(await lumaGrid(page))), { timeout: 10_000, message: 'the picture never reached the monitor' })
     .toBeGreaterThan(100)
   await page.evaluate(async () => {
     await document.fonts.ready
@@ -135,6 +136,34 @@ const meanDiff = (a: number[], b: number[]): number => {
   for (let i = 0; i < n; i++) sum += Math.abs(a[i] - b[i])
   return n > 0 ? sum / n : 0
 }
+
+/**
+ * Wait until the monitor shows something other than `before`: the change just made
+ * has reached the picture.
+ *
+ * ⛔ THE TWO TESTS THAT PROVE BLUR CHANGES THE PICTURE NEED THIS, NOT A BARE READ.
+ * Read straight after a change, the picture may still be the one from before it,
+ * and a read of the wrong picture can pass for the right reason or the wrong one:
+ * with the monitor made to paint 1.5 s late the slide test read a blank frame
+ * twice and failed on 0 < 0, and had the blank frame come first against a real
+ * one it would have passed with blur doing nothing at all. Polling for the
+ * picture to move off `before` is what says the read that follows is of the
+ * change. `before` is read after the picture is up, so blank never counts as a move.
+ */
+async function untilPictureLeaves(page: Page, before: number[], floor = MOVED): Promise<void> {
+  await expect
+    .poll(async () => meanDiff(before, await lumaGrid(page)), { timeout: 10_000, message: 'the animated picture never reached the monitor' })
+    .toBeGreaterThan(floor)
+}
+
+/** A mean luma difference that only a real move of the picture reaches, not codec noise. */
+const MOVED = 1
+/**
+ * The same for the witness, which only hides and shows a title: that costs a title's
+ * share of the frame's mean luma, measured 0.45 for the small one the still test
+ * uses. The zoom test measured the noise under 0.01, so 0.1 sits well between.
+ */
+const WITNESS_MOVED = 0.1
 
 /**
  * Animate one channel on the only clip, fast, and park the playhead at a WHOLE
@@ -202,6 +231,44 @@ async function blurOff(page: Page): Promise<void> {
   await expect(page.getByTestId('frame-settings-menu')).toHaveCount(0)
 }
 
+/** Set every clip's opacity: a change nothing but the picture can show. */
+async function setOpacity(page: Page, opacity: number): Promise<void> {
+  await page.evaluate(async (opacity) => {
+    const storeMod = '/src/state/store.ts'
+    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+      updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
+    }
+    type Clip = { opacity: number }
+    updateActiveSequence('witness for test', (sq) => {
+      const seq = sq as { tracks: { clips: Clip[] }[] }
+      return { ...seq, tracks: seq.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c, opacity })) })) }
+    })
+  }, opacity)
+}
+
+/**
+ * Switch motion blur off and read the picture, once that switch has surely reached
+ * the monitor.
+ *
+ * ⛔ A "STAYS THE SAME" CHECK HAS NOTHING TO POLL: the right answer after the switch
+ * is the picture from before it, so a read taken while the monitor still shows the
+ * blur-on frame is equal to itself and passes whether blur touched the picture or
+ * not. With the monitor made to paint 1.5 s late, a title that DID smear passed
+ * both tests that use this. What can be polled is a witness: hide the clip BEFORE
+ * the switch, then bring it back AFTER, and wait for the monitor to show the clip
+ * again. Edits reach the monitor in the order they were made, so
+ * the frame that has the opacity back is a frame that has the switch.
+ */
+async function blurOffAndRead(page: Page, withBlurOn: number[]): Promise<number[]> {
+  await setOpacity(page, 0)
+  await untilPictureLeaves(page, withBlurOn, WITNESS_MOVED)
+  const hidden = await lumaGrid(page)
+  await blurOff(page)
+  await setOpacity(page, 1)
+  await untilPictureLeaves(page, hidden, WITNESS_MOVED)
+  return lumaGrid(page)
+}
+
 test('the control is there and starts at the film standard', async ({ page }) => {
   await page.goto('/')
   await page.getByTestId('add-title').click()
@@ -218,16 +285,23 @@ test('a fast slide smears, and switching motion blur off makes it sharp again', 
   await page.getByTestId('add-title').click()
   await expect(page.getByTestId('clip')).toHaveCount(1)
 
+  // The title standing still, up on the monitor, is what "moved" is measured from.
+  await untilPictureShows(page)
+  const still = await lumaGrid(page)
+
   // 900 px over four frames: a whip, and its smear is uniform across the frame.
   await animate(page, 'posX', 0, 900)
+  await untilPictureLeaves(page, still)
   const smeared = await edgeEnergy(page)
+  expect(smeared).toBeGreaterThan(0) // a smear softens the edges, it does not erase the picture
 
+  // A smear spreads every edge, so it MUST cost edge energy, and switching it off
+  // must give that energy back. POLLED: the frame read right after the switch can
+  // still be the smeared one, and that is equal to itself, not sharper.
   await blurOff(page)
-  const sharp = await edgeEnergy(page)
-
-  // A smear spreads every edge, so it MUST cost edge energy.
-  expect(smeared).toBeLessThan(sharp * 0.9)
-  expect(sharp).toBeGreaterThan(0)
+  await expect
+    .poll(() => edgeEnergy(page), { timeout: 10_000, message: 'switching motion blur off never sharpened the slide' })
+    .toBeGreaterThan(smeared / 0.9)
 })
 
 test('a fast zoom changes the picture too, which is the shader other half', async ({ page }) => {
@@ -244,17 +318,22 @@ test('a fast zoom changes the picture too, which is the shader other half', asyn
 
   // 1 to 2.4 over four frames. The radial half of the shader is a different branch
   // from the sideways half, so it gets its own proof.
+  await untilPictureShows(page)
+  const still = await lumaGrid(page)
   await animate(page, 'scale', 1, 2.4)
+  await untilPictureLeaves(page, still)
   const smeared = await lumaGrid(page)
   await blurOff(page)
-  const sharp = await lumaGrid(page)
 
   // The picture must genuinely differ. Measured 2026-08-17: this zoom moves the
   // frame's mean luma by 0.26 of a level, while the still clip below moves it by
   // under 0.01. The floor sits between those two, an order of magnitude above the
   // noise and well under the real signal, rather than at a round number nobody
-  // measured.
-  expect(meanDiff(smeared, sharp)).toBeGreaterThan(0.1)
+  // measured. POLLED, because the read right after the switch can still be the
+  // smeared frame, which differs from itself by nothing.
+  await expect
+    .poll(async () => meanDiff(smeared, await lumaGrid(page)), { timeout: 10_000, message: 'switching motion blur off never changed the zoom' })
+    .toBeGreaterThan(0.1)
 })
 
 test('a title growing in place stays sharp, the way his reference pop is', async ({ page }) => {
@@ -264,11 +343,15 @@ test('a title growing in place stays sharp, the way his reference pop is', async
 
   // The same fast zoom that smears footage above. A caption is read, not tracked by
   // a camera, so its shutter sample holds its scale and the blur has nothing to do.
+  // The animated title must be the picture on the monitor before the two reads: a
+  // stale, still title would match itself with blur on or off, so this test would
+  // pass on a title that DOES smear.
+  await untilPictureShows(page)
+  const still = await lumaGrid(page)
   await animate(page, 'scale', 1, 2.4)
-  await untilTitleShows(page)
+  await untilPictureLeaves(page, still)
   const withBlurOn = await lumaGrid(page)
-  await blurOff(page)
-  const withBlurOff = await lumaGrid(page)
+  const withBlurOff = await blurOffAndRead(page, withBlurOn)
   expect(meanDiff(withBlurOn, withBlurOff)).toBeLessThan(0.01)
 })
 
@@ -284,10 +367,9 @@ test('a still clip is untouched, so nothing he has not animated goes soft', asyn
     }
     useStore.getState().setUI({ playheadS: 15 / 30 })
   })
-  await untilTitleShows(page)
+  await untilPictureShows(page)
   const withBlurOn = await lumaGrid(page)
-  await blurOff(page)
-  const withBlurOff = await lumaGrid(page)
+  const withBlurOff = await blurOffAndRead(page, withBlurOn)
 
   // The same picture, pixel for pixel: a clip with no keyframes never gets a second
   // sample, so there is nothing to smear and nothing to pay for.
