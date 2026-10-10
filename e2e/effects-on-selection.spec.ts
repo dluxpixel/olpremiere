@@ -9,6 +9,7 @@
 // step. The unit tests prove the rules; this proves the doors are wired to them.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const EFFECT_MIME = 'application/x-olpremiere-effect'
 
@@ -39,13 +40,15 @@ async function openWithThreePictures(page: Page): Promise<void> {
 }
 
 async function selectAll(page: Page): Promise<void> {
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { clips: { id: string }[] }[] }
     }
     const ids = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips.map((c) => c.id))
@@ -54,13 +57,15 @@ async function selectAll(page: Page): Promise<void> {
 }
 
 async function select(page: Page, indexes: number[]): Promise<void> {
-  await page.evaluate(async (picks) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  await page.evaluate((picks) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { clips: { id: string }[] }[] }
     }
     const ids = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips.map((c) => c.id))

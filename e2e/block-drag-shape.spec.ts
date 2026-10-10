@@ -13,6 +13,7 @@
 // Title clips are used so every clip has an exact, known length with no media to load.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, setUI, type ParkedWindow } from './storeWrites'
 
 interface Spot {
   lane: string
@@ -22,21 +23,23 @@ interface Spot {
 
 /** Seed the active sequence: three video lanes and the default audio lanes, clips by lane name. */
 async function seed(page: Page, lanes: Record<string, [id: string, startS: number, durS: number][]>, selection: string[]) {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts', '/src/engine/timeline.ts'])
   await page.evaluate(
-    async ({ lanes, selection }) => {
+    ({ lanes, selection }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const storeMod = '/src/state/store.ts'
       const typesMod = '/src/engine/types.ts'
       const tlMod = '/src/engine/timeline.ts'
-      const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { useStore, updateActiveSequence } = mods[storeMod] as {
         useStore: { getState: () => { setUI: (p: unknown) => void } }
         updateActiveSequence: (label: string, fn: (s: Record<string, unknown>) => Record<string, unknown>) => void
       }
-      const types = (await import(/* @vite-ignore */ typesMod)) as {
+      const types = mods[typesMod] as {
         newTrack: (kind: string, name: string) => Record<string, unknown>
         newTitleClip: (def: unknown, startS: number, durS: number) => Record<string, unknown>
         defaultTitleDef: (text: string) => unknown
       }
-      const { recomputeDuration } = (await import(/* @vite-ignore */ tlMod)) as {
+      const { recomputeDuration } = mods[tlMod] as {
         recomputeDuration: (s: Record<string, unknown>) => Record<string, unknown>
       }
       updateActiveSequence('seed', (sq) => {
@@ -195,11 +198,7 @@ test('dragging past the top lane takes the selection as high as it can go, not b
 
 /** Set UI state (zoom, snapping) the way the toolbar does. */
 async function ui(page: Page, patch: Record<string, unknown>) {
-  await page.evaluate(async (patch) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { setUI: (p: unknown) => void } } }
-    useStore.getState().setUI(patch)
-  }, patch)
+  await setUI(page, patch)
 }
 
 async function undoDepth(page: Page): Promise<number> {

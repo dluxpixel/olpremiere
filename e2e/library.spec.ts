@@ -3,6 +3,7 @@
 // the other.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -33,13 +34,15 @@ async function saveFirstAssetToLibrary(page: Page): Promise<void> {
 async function selectFirstVideoClip(page: Page): Promise<string> {
   await page.getByTestId('asset-card').first().dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-  return page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  return page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { kind: string; clips: { id: string }[] }[] }
     }
     const seq = activeSequence(useStore.getState().project)
@@ -126,13 +129,15 @@ test('an effect preset saves, survives a reload, and applies to another clip', a
   // Apply it to a SECOND clip and verify the stack (with the saved value).
   await page.getByRole('tab', { name: 'Media' }).click()
   await page.getByTestId('asset-card').dblclick() // second clip
-  const target = await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  const target = await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { kind: string; clips: { id: string; effects: unknown[] }[] }[] }
     }
     const seq = activeSequence(useStore.getState().project)

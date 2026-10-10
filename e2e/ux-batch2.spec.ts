@@ -3,6 +3,7 @@
 // engine fns; modifier precedence is covered by the existing slip/stretch specs.)
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -60,13 +61,15 @@ test('clicking one clip of a multi-selection collapses the selection to it', asy
   await page.getByTestId('ruler').click({ position: { x: 60, y: 10 } }) // t = 1s @60px/s
   await page.keyboard.press('c')
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { kind: string; clips: { id: string }[] }[] }
     }
     const seq = activeSequence(useStore.getState().project)

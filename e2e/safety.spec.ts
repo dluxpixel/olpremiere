@@ -2,6 +2,7 @@
 // destructive bin-delete offers Undo, and undo/redo say what they changed.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -11,13 +12,15 @@ async function importAndPlace(page: Page): Promise<string> {
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-  return page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  return page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { kind: string; clips: { id: string }[] }[] }
     }
     const seq = activeSequence(useStore.getState().project)
@@ -28,14 +31,16 @@ async function importAndPlace(page: Page): Promise<string> {
 }
 
 async function lockClipTrack(page: Page, clipId: string): Promise<void> {
-  await page.evaluate(async (id) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  await page.evaluate((id) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { id: string; tracks: { clips: { id: string }[]; locked: boolean }[] }
     }
     const seq = activeSequence(useStore.getState().project) as {

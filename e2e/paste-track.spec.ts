@@ -8,6 +8,7 @@
 // Chromium, with the clipboard of the test browser (never his).
 
 import { expect, test, type Page } from '@playwright/test'
+import { selectClips, setUI } from './storeWrites'
 
 test.beforeEach(async ({ context, baseURL }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(baseURL!).origin })
@@ -75,11 +76,7 @@ async function seed(page: Page, byTrack: Record<string, { text: string; startS: 
 
 async function select(page: Page, texts: string[]): Promise<void> {
   const ids = (await titles(page)).filter((t) => texts.includes(t.text)).map((t) => t.id)
-  await page.evaluate(async (sel) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { setUI: (p: unknown) => void } } }
-    useStore.getState().setUI({ selection: sel })
-  }, ids)
+  await selectClips(page, ids)
 }
 
 async function playhead(page: Page): Promise<number> {
@@ -249,11 +246,7 @@ test('with no track clicked, Ctrl+V still puts a clip back on the track it came 
   await seed(page, { V2: [{ text: 'copied', startS: 0, durS: 2 }] })
   await select(page, ['copied'])
   await page.keyboard.press('ControlOrMeta+c')
-  await page.evaluate(async () => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { setUI: (p: unknown) => void } } }
-    useStore.getState().setUI({ playheadS: 5, selection: [] })
-  })
+  await setUI(page, { playheadS: 5, selection: [] })
   await page.keyboard.press('ControlOrMeta+v')
   await expect.poll(async () => (await titles(page)).length).toBe(2)
   expect((await titles(page)).filter((t) => t.track === 'V2')).toHaveLength(2)

@@ -4,6 +4,7 @@
 // shared renderer the export uses, so these are parity checks too.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, setUI, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -13,13 +14,15 @@ async function addClip(page: Page, fixture: string = FIXTURE): Promise<string> {
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-  return page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  return page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { clips: { id: string }[] }[] }
     }
     const seq = activeSequence(useStore.getState().project)
@@ -308,13 +311,7 @@ async function setLoneTransition(page: Page, clipId: string, kind: string, durat
 }
 
 async function setPlayhead(page: Page, tS: number): Promise<void> {
-  await page.evaluate(async (t) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (p: unknown) => void } }
-    }
-    useStore.getState().setUI({ playheadS: t, selection: [] })
-  }, tS)
+  await setUI(page, { playheadS: tS, selection: [] })
 }
 
 test('a lone Dip to White dips through WHITE, not through black', async ({ page }) => {

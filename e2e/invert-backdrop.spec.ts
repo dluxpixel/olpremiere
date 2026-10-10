@@ -18,6 +18,7 @@
 // white text leaves it white.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 /**
  * Every pixel across the vertical middle of the program monitor, every 4th
@@ -52,14 +53,16 @@ async function centreRow(page: Page): Promise<[number, number, number][]> {
  */
 async function build(page: Page, invert: boolean): Promise<void> {
   await page.goto('/')
-  await page.evaluate(async (inv) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  await page.evaluate((inv) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { updateActiveSequence, useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence, useStore } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
       useStore: { getState: () => { setUI: (p: unknown) => void } }
     }
-    const { defaultTitleDef, newTitleClip } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { defaultTitleDef, newTitleClip } = mods[typesMod] as {
       defaultTitleDef: (t?: string) => Record<string, unknown>
       newTitleClip: (def: unknown, startS: number, durS?: number) => Record<string, unknown>
     }

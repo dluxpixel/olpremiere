@@ -2,6 +2,7 @@
 // Captions tab style picker, and the timeline label mirroring lowercase (B3).
 
 import { expect, test, type Page } from '@playwright/test'
+import { setUI } from './storeWrites'
 
 async function addTitle(page: Page): Promise<string> {
   const before = await titleIds(page)
@@ -23,16 +24,6 @@ async function titleIds(page: Page): Promise<string[]> {
     const seq = activeSequence(useStore.getState().project)
     return seq.tracks.flatMap((t) => t.clips).filter((c) => c.title).map((c) => c.id)
   })
-}
-
-async function setUI(page: Page, patch: Record<string, unknown>): Promise<void> {
-  await page.evaluate(async (p) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (x: unknown) => void } }
-    }
-    useStore.getState().setUI(p)
-  }, patch)
 }
 
 async function titles(page: Page): Promise<{ textCase?: string; outline?: { widthPx: number } }[]> {

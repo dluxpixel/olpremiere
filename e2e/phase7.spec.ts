@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
 import { shrinkSequence } from './exportHelpers'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 // Headless Chromium HAS showSaveFilePicker, and a real OS picker cannot be driven
 // from a test. Shadowing it exercises the documented Firefox path: buffer the file
@@ -25,13 +26,15 @@ async function addClip(page: Page): Promise<string> {
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-  const clipId = await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  const clipId = await page.evaluate(() => {
+  const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { clips: { id: string }[] }[] }
     }
     const seq = activeSequence(useStore.getState().project)
@@ -43,10 +46,12 @@ async function addClip(page: Page): Promise<string> {
 }
 
 async function setChannel(page: Page, clipId: string, channel: string, value: number): Promise<void> {
+  await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
-    async ({ clipId, channel, value }) => {
+    ({ clipId, channel, value }) => {
+  const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
-      const { setChannel } = (await import(/* @vite-ignore */ editsMod)) as {
+      const { setChannel } = mods[editsMod] as {
         setChannel: (id: string, ch: string, v: number) => void
       }
       setChannel(clipId, channel, value)
@@ -136,10 +141,12 @@ async function sampleExportedAt(page: Page, tS: number, fx: number, fy: number):
 }
 
 async function setSpeed(page: Page, clipId: string, speed: number): Promise<void> {
+  await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
-    async ({ clipId, speed }) => {
+    ({ clipId, speed }) => {
+  const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
-      const { setClipSpeed } = (await import(/* @vite-ignore */ editsMod)) as {
+      const { setClipSpeed } = mods[editsMod] as {
         setClipSpeed: (id: string, s: number) => void
       }
       setClipSpeed(clipId, speed)
@@ -162,17 +169,19 @@ test('applying the colour effects exposes lift/gamma/gain/temperature/tint', asy
   // 2026-07-28 (his call, "most of the effects I won't ever use"). They still
   // render, and any project that already carries one still has to be editable,
   // which is exactly what this test now guards.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/clipEdits.ts', '/src/state/store.ts', '/src/engine/types.ts'])
+  await page.evaluate(() => {
+  const mods = (window as unknown as ParkedWindow).__e2eMods
     const editsMod = '/src/state/clipEdits.ts'
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { applyEffect } = (await import(/* @vite-ignore */ editsMod)) as {
+    const { applyEffect } = mods[editsMod] as {
       applyEffect: (clipId: string, type: string) => void
     }
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { clips: { id: string }[] }[] }
     }
     const id = activeSequence(useStore.getState().project).tracks.flatMap((t) => t.clips)[0].id
@@ -298,9 +307,11 @@ test('drag a corner handle in the preview to scale the selected clip', async ({ 
 test('clicking a clip in the preview selects it and shows the gizmo', async ({ page }) => {
   const clipId = await addClip(page)
   // Deselect, so the gizmo is hidden to start.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+  const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { setUI: (p: unknown) => void } }
     }
     useStore.getState().setUI({ selection: [] })

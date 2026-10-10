@@ -2,6 +2,7 @@
 // numeric fields, per-section channel reset, and delete-keyframe in the lane.
 
 import { expect, test, type Page } from '@playwright/test'
+import { selectClips } from './storeWrites'
 
 async function addTitle(page: Page): Promise<string> {
   const before = await titleIds(page)
@@ -26,13 +27,7 @@ async function titleIds(page: Page): Promise<string[]> {
 }
 
 async function setSelection(page: Page, ids: string[]): Promise<void> {
-  await page.evaluate(async (sel) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (p: unknown) => void } }
-    }
-    useStore.getState().setUI({ selection: sel })
-  }, ids)
+  await selectClips(page, ids)
 }
 
 async function firstTitle(page: Page): Promise<{ textCase?: string; fontSizePx: number }> {

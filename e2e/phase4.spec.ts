@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
 import { shrinkSequence } from './exportHelpers'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 // Headless Chromium HAS showSaveFilePicker, and a real OS picker cannot be driven
 // from a test. Shadowing it exercises the documented Firefox path: buffer the file
@@ -26,13 +27,15 @@ async function addClip(page: Page): Promise<string> {
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
   // Select the clip and return its id.
-  const clipId = await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  const clipId = await page.evaluate(() => {
+  const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { clips: { id: string }[] }[] }
     }
     const seq = activeSequence(useStore.getState().project)
@@ -45,10 +48,12 @@ async function addClip(page: Page): Promise<string> {
 }
 
 async function setChannel(page: Page, clipId: string, channel: string, value: number): Promise<void> {
+  await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
-    async ({ clipId, channel, value }) => {
+    ({ clipId, channel, value }) => {
+  const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
-      const { setChannel } = (await import(/* @vite-ignore */ editsMod)) as {
+      const { setChannel } = mods[editsMod] as {
         setChannel: (id: string, ch: string, v: number) => void
       }
       setChannel(clipId, channel, value)

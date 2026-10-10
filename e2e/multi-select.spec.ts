@@ -4,6 +4,7 @@
 
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
+import { selectClips } from './storeWrites'
 
 const VERIFY = '_verify/multi-select'
 
@@ -46,13 +47,7 @@ async function selection(page: Page): Promise<string[]> {
 }
 
 async function setSelection(page: Page, ids: string[]): Promise<void> {
-  await page.evaluate(async (sel) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (p: unknown) => void } }
-    }
-    useStore.getState().setUI({ selection: sel })
-  }, ids)
+  await selectClips(page, ids)
 }
 
 async function boldFlags(page: Page): Promise<boolean[]> {

@@ -27,6 +27,7 @@
 
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
+import { selectClips } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const VERIFY = '_verify/effect-drop'
@@ -85,13 +86,7 @@ async function videoClipIds(page: Page): Promise<string[]> {
 }
 
 async function select(page: Page, ids: string[]): Promise<void> {
-  await page.evaluate(async (sel) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (patch: unknown) => void } }
-    }
-    useStore.getState().setUI({ selection: sel })
-  }, ids)
+  await selectClips(page, ids)
 }
 
 /** The clip's effect stack, straight from the store, in stack order. */

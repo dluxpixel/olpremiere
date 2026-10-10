@@ -3,6 +3,7 @@
 // enable/disable (Shift+E).
 
 import { expect, test, type Page } from '@playwright/test'
+import { setUI } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -51,16 +52,6 @@ async function seqFps(page: Page): Promise<number> {
     }
     return activeSequence(useStore.getState().project).fps
   })
-}
-
-async function setUI(page: Page, patch: Record<string, unknown>) {
-  await page.evaluate(async (p) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (patch: unknown) => void } }
-    }
-    useStore.getState().setUI(p)
-  }, patch)
 }
 
 const select = (page: Page, id: string) => setUI(page, { selection: [id] })

@@ -4,6 +4,7 @@
 
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
+import { parkModules, setUI, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const VERIFY = '_verify/effects'
@@ -18,13 +19,15 @@ async function addClip(page: Page): Promise<string> {
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-  return page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  return page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { clips: { id: string }[] }[] }
     }
     const seq = activeSequence(useStore.getState().project)
@@ -153,15 +156,17 @@ test('right-click an effect → Apply to every clip hits them all, in one undo',
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(2)
   // Video-track clips only, because the imported webm carries linked audio, and a
   // visual effect deliberately never lands on an audio clip.
-  const ids = await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  const ids = await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     // Same indirection as the helpers above: a literal specifier would make tsc
     // try to resolve these browser-only paths at build time.
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { kind: string; clips: { id: string }[] }[] }
     }
     useStore.getState().setUI({ selection: [] })
@@ -264,14 +269,7 @@ test('White Flash: drop on the in edge → opens near-white, resolves to footage
   // Drive the playhead EXACTLY (a ruler click lands frames late, which is deep
   // enough into a 200 ms flash to fail a whiteness threshold). At t=0 the
   // curve is alpha=1 → the monitor must be essentially pure white.
-  const setPlayhead = (tS: number) =>
-    page.evaluate(async (t) => {
-      const storeMod = '/src/state/store.ts'
-      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-        useStore: { getState: () => { setUI: (p: unknown) => void } }
-      }
-      useStore.getState().setUI({ playheadS: t })
-    }, tS)
+  const setPlayhead = (tS: number) => setUI(page, { playheadS: tS })
 
   await setPlayhead(0)
   await expect
@@ -297,19 +295,21 @@ test('White Flash: drop on the out edge → footage ends on near-white', async (
   const clipId = await addClip(page)
   // Right half of the clip = the OUT edge.
   await dropOnClip(page, 'application/x-olpremiere-transition', 'whiteFlash', 0.9)
-  const info = await page.evaluate(async (id) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts', '/src/engine/timeline.ts'])
+  const info = await page.evaluate((id) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
     const timelineMod = '/src/engine/timeline.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => {
         tracks: { clips: { id: string; transitionOut?: { type: string; durationS: number } }[] }[]
       }
     }
-    const { clipEndS } = (await import(/* @vite-ignore */ timelineMod)) as {
+    const { clipEndS } = mods[timelineMod] as {
       clipEndS: (c: unknown) => number
     }
     const seq = activeSequence(useStore.getState().project)
@@ -447,9 +447,11 @@ test('a transition is drawn on the clip, at its own width', async ({ page }) => 
   const clipId = await addClip(page)
   await expect(page.getByTestId('transition-overlay')).toHaveCount(0)
 
-  await page.evaluate(async (id) => {
+  await parkModules(page, ['/src/state/clipEdits.ts'])
+  await page.evaluate((id) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const editsMod = '/src/state/clipEdits.ts'
-    const { setClipTransition } = (await import(/* @vite-ignore */ editsMod)) as {
+    const { setClipTransition } = mods[editsMod] as {
       setClipTransition: (id: string, edge: 'in' | 'out', kind: string, durationS?: number) => void
     }
     setClipTransition(id, 'in', 'glitch')
@@ -461,9 +463,11 @@ test('a transition is drawn on the clip, at its own width', async ({ page }) => 
 
   // A longer transition draws a wider mark: it reports the DURATION, not just
   // that something is there.
-  await page.evaluate(async (id) => {
+  await parkModules(page, ['/src/state/clipEdits.ts'])
+  await page.evaluate((id) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const editsMod = '/src/state/clipEdits.ts'
-    const { setClipTransition } = (await import(/* @vite-ignore */ editsMod)) as {
+    const { setClipTransition } = mods[editsMod] as {
       setClipTransition: (id: string, edge: 'in' | 'out', kind: string, durationS?: number) => void
     }
     setClipTransition(id, 'in', 'crossDissolve', 2)

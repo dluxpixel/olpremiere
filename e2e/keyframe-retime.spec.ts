@@ -4,6 +4,7 @@
 // answers to keyframe-track; the gesture and everything it proves are unchanged.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, setUI, type ParkedWindow } from './storeWrites'
 
 async function addTitle(page: Page): Promise<string> {
   await page.goto('/')
@@ -25,13 +26,15 @@ async function addTitle(page: Page): Promise<string> {
 
 /** Seed two scale keyframes (t=1, t=3) on the clip and leave the playhead at 0. */
 async function seedScaleKeyframes(page: Page, id: string): Promise<void> {
-  await page.evaluate(async (clipId) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/state/clipEdits.ts'])
+  await page.evaluate((clipId) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const ceMod = '/src/state/clipEdits.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { setUI: (p: unknown) => void } }
     }
-    const ce = (await import(/* @vite-ignore */ ceMod)) as {
+    const ce = mods[ceMod] as {
       toggleChannelAnimation: (id: string, ch: string) => void
       addKeyframeAtPlayhead: (id: string, ch: string) => void
     }
@@ -41,17 +44,6 @@ async function seedScaleKeyframes(page: Page, id: string): Promise<void> {
     ce.addKeyframeAtPlayhead(clipId, 'scale')
     useStore.getState().setUI({ playheadS: 0 })
   }, id)
-}
-
-/** Set UI state from the browser side. The import path lives INSIDE the callback. */
-async function setUI(page: Page, patch: Record<string, unknown>): Promise<void> {
-  await page.evaluate(async (p) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (patch: unknown) => void } }
-    }
-    useStore.getState().setUI(p)
-  }, patch)
 }
 
 async function scaleTimes(page: Page): Promise<number[]> {

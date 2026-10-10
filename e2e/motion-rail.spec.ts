@@ -27,6 +27,7 @@
 // it is left unwritten and reported instead.
 
 import { expect, test, type Page } from '@playwright/test'
+import { setUI } from './storeWrites'
 
 /** The sequence default, and the frame grid every keyframe here snaps to. */
 const FPS = 30
@@ -43,16 +44,6 @@ const GRABBABLE_PX = 40
  * test below checks that the words are TRUE, not only that they are there.
  */
 const PUNCH_HEADER = 'Zoom 100 to 120 over 0.17s · Position follows'
-
-async function setUI(page: Page, patch: Record<string, unknown>): Promise<void> {
-  await page.evaluate(async (p) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (x: unknown) => void } }
-    }
-    useStore.getState().setUI(p)
-  }, patch)
-}
 
 /**
  * A title on the timeline, stretched to the 20 seconds his brief describes.

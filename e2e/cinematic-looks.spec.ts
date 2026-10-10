@@ -6,6 +6,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
 import { shrinkSequence } from './exportHelpers'
+import { setUI } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const VERIFY = '_verify/looks'
@@ -39,16 +40,6 @@ async function clips(page: Page): Promise<{ id: string; effects: { type: string;
       .tracks.filter((t) => t.kind === 'video')
       .flatMap((t) => t.clips.map((c) => ({ id: c.id, effects: c.effects })))
   })
-}
-
-async function setUI(page: Page, ui: Record<string, unknown>): Promise<void> {
-  await page.evaluate(async (ui) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (u: Record<string, unknown>) => void } }
-    }
-    useStore.getState().setUI(ui)
-  }, ui)
 }
 
 /**

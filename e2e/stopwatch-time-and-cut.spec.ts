@@ -10,6 +10,7 @@
 // timecode field, and the real C key.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, setUI, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const CLOCK = /^\d+:\d\d\.\d\d$/
@@ -20,16 +21,6 @@ async function boot(page: Page): Promise<void> {
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-}
-
-async function setUI(page: Page, patch: Record<string, unknown>): Promise<void> {
-  await page.evaluate(async (p) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (patch: unknown) => void } }
-    }
-    useStore.getState().setUI(p)
-  }, patch)
 }
 
 async function playheadS(page: Page): Promise<number> {
@@ -67,9 +58,11 @@ async function v1Frames(page: Page): Promise<{ id: string; start: number; end: n
  * frames. The sound is lifted off so V1 is the whole story.
  */
 async function seedOffGridEdit(page: Page): Promise<void> {
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { updateActiveSequence, useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence, useStore } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: Seq) => Seq) => void
       useStore: { getState: () => { setUI: (p: unknown) => void } }
     }

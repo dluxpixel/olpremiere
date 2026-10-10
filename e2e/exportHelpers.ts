@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { Writable } from 'node:stream'
 import type { Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 /**
  * Shrink the sequence so a test export encodes in seconds.
@@ -15,10 +16,12 @@ import type { Page } from '@playwright/test'
  * placed them.
  */
 export async function shrinkSequence(page: Page, width = 640, height = 360): Promise<void> {
+  await parkModules(page, ['/src/state/store.ts'])
   await page.evaluate(
-    async ({ w, h }) => {
+    ({ w, h }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const storeMod = '/src/state/store.ts'
-      const { setActiveSequenceFormat } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { setActiveSequenceFormat } = mods[storeMod] as {
         setActiveSequenceFormat: (w: number, h: number, refit?: boolean) => void
       }
       setActiveSequenceFormat(w, h, false)
