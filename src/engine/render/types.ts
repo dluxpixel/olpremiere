@@ -67,6 +67,12 @@ export interface ResolvedTransform {
 export interface ResolvedEffect {
   type: string
   params: Record<string, number>
+  /**
+   * The colour table this effect reads, a key of `Project.luts` (LUT effect only).
+   * The renderer fetches the table by this id from the LUT bank (effects/lutBank.ts),
+   * which the preview and the export worker each fill from the same project.
+   */
+  lut?: string
 }
 
 /**

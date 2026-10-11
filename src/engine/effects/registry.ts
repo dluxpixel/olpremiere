@@ -22,6 +22,7 @@ import { evalChannel } from '../keyframes'
 import type { ResolvedEffect } from '../render/types'
 import type { ClipFilters, EffectInstance, Keyframe } from '../types'
 import { LOOK_EFFECT_DEFS } from './looks'
+import { LUT_GLSL, MAX_LUTS_PER_CLIP } from './lutShader'
 
 /**
  * 'look' is a finished grade (looks.ts): one effect, one Amount slider. Looks sit
@@ -115,6 +116,14 @@ export interface EffectDef {
    * list. A look's clarity, halation and bloom arrive this way.
    */
   companions?: (params: Record<string, number>) => ResolvedEffect[]
+  /**
+   * This effect reads a colour table (a .cube file). The renderer declares a 3D
+   * sampler and the table's description for it, which the glsl body reaches as
+   * `u('lut')`, `u('lutInfo')`, `u('lutMin')` and `u('lutMax')`, and binds the
+   * table named by the instance's `lut` id (effects/lutBank.ts). An instance
+   * with no table is not drawn at all (resolveEffect).
+   */
+  lut?: true
 }
 
 const p = (
@@ -343,6 +352,27 @@ export const EFFECTS: EffectDef[] = [
       float vSat = vMax - vMin;
       float vLuma = dot(c, vec3(0.2126, 0.7152, 0.0722));
       c = mix(vec3(vLuma), c, 1.0 + ${u('vibrance')} * (1.0 - vSat));
+    `,
+  },
+  {
+    // A colour table from a .cube file, the way a colourist's LUT or a phone
+    // camera's "log to Rec.709" table is applied. The table is applied to the
+    // picture AS ENCODED (display referred, 0..1), which is what creative and
+    // conversion LUTs for Rec.709 footage expect. Amount fades it in over the
+    // picture; at its neutral 0 the effect is skipped altogether, so the picture
+    // passes through untouched.
+    type: 'lut',
+    label: 'LUT',
+    description: 'Apply a colour table from a .cube file. Amount fades it in over the picture.',
+    category: 'color',
+    pass: 'pointwise',
+    lut: true,
+    initialParams: { amount: 1 },
+    params: [p('amount', 'Amount', 0, 1, 0.01, 0)],
+    glslHelpers: [LUT_GLSL],
+    glsl: (u) => `
+      vec3 lutOut = olpLut(${u('lut')}, ${u('lutInfo')}, ${u('lutMin')}, ${u('lutMax')}, c);
+      c = mix(c, lutOut, clamp(${u('amount')}, 0.0, 1.0));
     `,
   },
   {
@@ -605,6 +635,8 @@ export const CANONICAL_ORDER = [
   'contrast',
   'saturation',
   'vibrance',
+  // A LUT is a finished grade too, and sits with the looks: after his own fixes.
+  'lut',
   // The looks land after his own colour fixes and before the vignette, grain and
   // blurs, which is where a finished grade goes in any editor. Every entry of
   // looks.ts LOOK_TYPES, by name (a test holds the two lists together).
@@ -691,7 +723,11 @@ export function resolveEffect(inst: EffectInstance, localT: number): ResolvedEff
   if (!inst.enabled) return null
   const def = getEffect(inst.type)
   if (!def) return null
-  return { type: def.type, params: resolveEffectParams(def, inst, localT) }
+  // A LUT with no table to read has nothing to draw: left out, so the picture
+  // passes through and no program is compiled for it.
+  if (def.lut && !inst.lut) return null
+  const params = resolveEffectParams(def, inst, localT)
+  return def.lut ? { type: def.type, params, lut: inst.lut } : { type: def.type, params }
 }
 
 /**
@@ -703,10 +739,14 @@ export function resolveEffect(inst: EffectInstance, localT: number): ResolvedEff
  */
 export function resolveStack(insts: readonly EffectInstance[], localT: number): ResolvedEffect[] {
   const out: ResolvedEffect[] = []
+  let luts = 0
   for (const inst of insts) {
     if (isNeutral(inst)) continue
     const resolved = resolveEffect(inst, localT)
     if (!resolved) continue
+    // Each LUT holds a texture unit while it draws, so a clip reads at most
+    // MAX_LUTS_PER_CLIP of them; any more are left out, the same on both threads.
+    if (resolved.lut !== undefined && ++luts > MAX_LUTS_PER_CLIP) continue
     out.push(resolved)
     const extra = getEffect(resolved.type)?.companions?.(resolved.params)
     if (extra) for (const e of extra) out.push(e)

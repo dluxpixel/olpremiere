@@ -66,7 +66,7 @@ export function parseCube(text: string): ParsedCube {
   if (text.includes('\u0000')) {
     throw new CubeError('This is not a text .cube LUT file (it holds binary data).')
   }
-  const lines = text.replace(/^﻿/, '').split(/\r\n|\r|\n/)
+  const lines = text.replace(/^\uFEFF/, '').split(/\r\n|\r|\n/)
 
   let title = ''
   let size1d = 0

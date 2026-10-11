@@ -2,7 +2,7 @@
 // the pure math both sides share. Keep this file DOM/worker-global-free so
 // the helpers run under node for unit tests.
 
-import type { Id, MediaAsset, Sequence } from '../types'
+import type { Id, LutAsset, MediaAsset, Sequence } from '../types'
 import type { StageTimes } from './stageClock'
 
 /**
@@ -116,6 +116,13 @@ export type ExportRequest =
       sequence: Sequence
       assets: ExportAsset[]
       audio: AudioStreamMeta | null
+      /**
+       * The colour tables (LUTs) the sequence's effects read, from
+       * `Project.luts`. The worker has its own LUT bank and fills it from these
+       * before it renders, so the export draws the same tables the preview does
+       * (effects/lutBank.ts). Absent when no clip uses a LUT.
+       */
+      luts?: LutAsset[]
       /**
        * NATIVE (Electron ffmpeg) mode: skip the WebCodecs encoder + muxer + audio
        * entirely. The worker only RENDERS with the shared WebGL pipeline and
