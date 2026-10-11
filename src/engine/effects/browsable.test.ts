@@ -19,9 +19,10 @@ describe('the Effects browser is short', () => {
   it('still hides the duplicates and the colourist-only tools', () => {
     // His call, 2026-10-10 (gym filters): the list may grow back by exactly the
     // tools a gym edit uses. It is still held to a ceiling, so it cannot drift
-    // back to the fifteen it was cut down from on 2026-07-28.
+    // back to the fifteen it was cut down from on 2026-07-28. The seventeenth is
+    // the LUT effect (a .cube file graded in the shared renderer), added with the gym looks.
     const tools = BROWSABLE_EFFECTS.filter((e) => e.category !== 'look')
-    expect(tools.length).toBeLessThanOrEqual(16)
+    expect(tools.length).toBeLessThanOrEqual(17)
   })
 
   it('keeps the looks off the tools list and on their own shelf', () => {

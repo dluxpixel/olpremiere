@@ -259,6 +259,8 @@ describe('every label in the source', () => {
 describe('every dynamic testid in the source', () => {
   /** Dynamic testids whose last part is something the APP chose: an id from its own tables. */
   const APP_CHOSEN = new Set([
+    'app-guide-',
+    'app-guides-',
     'caption-style-pos-',
     'channel-',
     'curve-chip-',
