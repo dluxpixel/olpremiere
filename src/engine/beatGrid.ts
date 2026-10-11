@@ -136,6 +136,15 @@ export async function sequenceWithBeats(seq: Sequence, assets: Record<Id, MediaA
   return withGrid(seq, gridNow(clips))
 }
 
+/**
+ * Forget an asset's beats (every slice), so music put back after a missing-file
+ * read is detected again instead of staying beatless until a restart.
+ */
+export function forgetStrobeBeats(assetId: Id): void {
+  for (const k of [...cache.keys()]) if (k.startsWith(`${assetId}|`)) cache.delete(k)
+  version++
+}
+
 /** For tests. */
 export function clearBeatGridCache(): void {
   cache.clear()

@@ -11,6 +11,7 @@
 
 import { forgetAssetAudio } from './audio'
 import { forgetBeats } from './beatCache'
+import { forgetStrobeBeats } from './beatGrid'
 import { invalidateDenoise } from './denoise'
 import { forgetAssetPeaks } from './waveform'
 import type { Id } from './types'
@@ -20,5 +21,6 @@ export function forgetAssetSound(assetId: Id): void {
   forgetAssetAudio(assetId)
   forgetAssetPeaks(assetId)
   forgetBeats(assetId)
+  forgetStrobeBeats(assetId)
   invalidateDenoise(assetId)
 }

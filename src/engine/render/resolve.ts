@@ -42,13 +42,14 @@ function withStrobeFlash(
   t: number,
   localT: number,
   beatGridS: readonly number[] | undefined,
+  fps: number,
 ): ResolvedEffect {
   const flash = strobeFlash(beatGridS, t, localT, {
     everyN: e.params.everyN ?? 1,
     flashMs: e.params.flashMs ?? 120,
     bpm: e.params.bpm ?? 120,
     firstBeatS: e.params.firstBeatS ?? 0,
-  })
+  }, fps)
   return { ...e, params: { ...e.params, flash } }
 }
 
@@ -79,7 +80,7 @@ function layerFor(
   // the identity at its defaults, so an ungraded clip compiles one program. A
   // look brings its own neighbour passes (clarity, halation, bloom) along.
   const effects: ResolvedEffect[] = resolveStack(clip.effects, localT).map((e) =>
-    e.type === 'strobe' ? withStrobeFlash(e, t, localT, beatGridS) : e,
+    e.type === 'strobe' ? withStrobeFlash(e, t, localT, beatGridS, fps) : e,
   )
   const transformAt = (at: number): RenderLayer['transform'] => ({
     x: resolveChannel(clip, 'posX', at),

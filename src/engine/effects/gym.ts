@@ -68,11 +68,13 @@ export function strobeAge(
 
 /**
  * The flash at `age` seconds after its beat: 1 on the beat, falling to 0 over the
- * flash length (a squared ease-out, so it hits hard and clears fast).
+ * flash length (a squared ease-out, so it hits hard and clears fast). With `fps`
+ * the flash lasts at least one frame, so a short flash never falls between two
+ * frames and vanishes.
  */
-export function strobeEnvelope(age: number | null, flashMs: number): number {
+export function strobeEnvelope(age: number | null, flashMs: number, fps?: number): number {
   if (age === null) return 0
-  const len = Math.max(0.01, flashMs / 1000)
+  const len = Math.max(0.01, flashMs / 1000, fps && fps > 0 ? 1 / fps : 0)
   if (age >= len) return 0
   const k = 1 - age / len
   return k * k
@@ -84,8 +86,9 @@ export function strobeFlash(
   seqT: number,
   localT: number,
   s: StrobeSettings,
+  fps?: number,
 ): number {
-  return strobeEnvelope(strobeAge(beats, seqT, localT, s), s.flashMs)
+  return strobeEnvelope(strobeAge(beats, seqT, localT, s), s.flashMs, fps)
 }
 
 /** One music clip's beats, as the beat cache holds them. */
@@ -119,7 +122,7 @@ export function beatGridFrom(clips: readonly MusicBeats[]): number[] {
   return out
 }
 
-/** Offsets (in frame px, y down) the red and blue channels slide by: red +, blue -. */
+/** Offsets (in frame px, y down) the red and blue channels slide by: red moves minus, blue moves plus. */
 export function rgbSplitOffsets(amountPx: number, angleDeg: number): { dx: number; dy: number } {
   const a = (angleDeg * Math.PI) / 180
   return { dx: amountPx * Math.cos(a), dy: amountPx * Math.sin(a) }

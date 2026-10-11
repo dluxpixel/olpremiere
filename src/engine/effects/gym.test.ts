@@ -129,3 +129,35 @@ describe('cinematic bar sizes', () => {
     expect(BAR_RATIOS.map((r) => r.label)).toEqual(['2.39:1', '2:1', '1.85:1'])
   })
 })
+
+describe('a short flash is at least one frame long', () => {
+  it('at 30 fps a 20 ms flash still lands on a frame for every beat', () => {
+    const fps = 30
+    const beats = Array.from({ length: 40 }, (_, i) => 1 + i * 0.5 + (i % 7) * 0.0123)
+    const s: StrobeSettings = { everyN: 1, flashMs: 20, bpm: 120, firstBeatS: 0 }
+    for (const b of beats) {
+      let lit = false
+      for (let f = Math.floor(b * fps) - 1; f <= Math.ceil(b * fps) + 1; f++) {
+        const t = f / fps
+        if (strobeFlash(beats, t, t, s, fps) > 0) lit = true
+      }
+      expect(lit).toBe(true)
+    }
+  })
+
+  it('without the frame length the same flash misses beats', () => {
+    const fps = 30
+    const beats = Array.from({ length: 40 }, (_, i) => 1 + i * 0.5 + (i % 7) * 0.0123)
+    const s: StrobeSettings = { everyN: 1, flashMs: 20, bpm: 120, firstBeatS: 0 }
+    let missed = 0
+    for (const b of beats) {
+      let lit = false
+      for (let f = Math.floor(b * fps) - 1; f <= Math.ceil(b * fps) + 1; f++) {
+        const t = f / fps
+        if (strobeFlash(beats, t, t, s) > 0) lit = true
+      }
+      if (!lit) missed++
+    }
+    expect(missed).toBeGreaterThan(0)
+  })
+})

@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   api: undefined as unknown,
   audioPlan: null as unknown,
   audioOpts: [] as unknown[],
+  beatCalls: [] as unknown[][],
 }))
 
 vi.mock('../../platform', () => ({
@@ -31,6 +32,14 @@ vi.mock('../../platform', () => ({
 }))
 vi.mock('../../state/mediaMirror', () => ({
   blobForExport: () => Promise.resolve(new Blob([new Uint8Array(8)])),
+}))
+// The music's beats: the real strobe check, a stand-in for the audio decode.
+vi.mock('../beatGrid', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../beatGrid')>()),
+  sequenceWithBeats: (...args: unknown[]) => {
+    h.beatCalls.push(args)
+    return Promise.resolve({ ...(args[0] as object), beatGridS: [1, 2] })
+  },
 }))
 vi.mock('./audioRender', () => ({
   planAudioMix: (...args: unknown[]) => {
@@ -192,6 +201,7 @@ beforeEach(() => {
   h.api = main.api
   h.audioPlan = null
   h.audioOpts.length = 0
+  h.beatCalls.length = 0
   progress = []
   FakeWorker.made = 0
   vi.stubGlobal('Worker', FakeWorker)
@@ -606,5 +616,33 @@ describe('⛔ no message holds the whole mix', () => {
     const all = main.audio.chunks.flatMap((c) => [...new Float32Array(c)])
     expect(all).toHaveLength(30 * SEG * 2)
     for (let k = 0; k < 30 * SEG; k += 997) expect([all[2 * k], all[2 * k + 1]]).toEqual([k, -k])
+  })
+})
+
+describe('the shipped export carries the music beats', () => {
+  const sentSequence = () => (FakeWorker.last.posted[0] as Extract<ExportRequest, { type: 'init' }>).sequence
+  const run = (p: Project) => {
+    const settings = planExport(activeSequence(p)).settings
+    const r = exportNative(p, settings, { encoder: 'x264', quality: 14, suggestedName: 'Holiday.mp4' }, () => undefined, new AbortController().signal)
+    r.catch(() => undefined)
+    return r
+  }
+
+  it('a strobe clip sends the worker a sequence with the beat grid', async () => {
+    const p = project()
+    activeSequence(p).tracks[0].clips[0].effects = [
+      { id: 'e1', type: 'strobe', enabled: true, params: {} },
+    ] as unknown as Clip['effects']
+    run(p)
+    await flush()
+    expect(h.beatCalls).toHaveLength(1)
+    expect(sentSequence().beatGridS).toEqual([1, 2])
+  })
+
+  it('a project with no strobe never asks for beats', async () => {
+    run(project())
+    await flush()
+    expect(h.beatCalls).toHaveLength(0)
+    expect(sentSequence().beatGridS).toBeUndefined()
   })
 })
