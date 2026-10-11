@@ -23,6 +23,7 @@ import {
   resetPreviewPacing,
   type FrameProbe,
 } from './previewTruth'
+import { previewSequence } from './beatGrid'
 import { hasProxy, setProxyBuildingPaused } from './proxyMedia'
 import { createRenderer, type LayerShape, type Renderer } from './render/glRenderer'
 import { pairTransitionAt, resolveFrame } from './render/resolve'
@@ -1879,7 +1880,9 @@ export function renderPreview(
   setPreviewSequenceHeight(seq.height)
   // The live raster drives how big preview-only rasters (titles) need to be.
   previewRasterH = canvas.height
-  const frame = resolveFrame(seq, tS)
+  // A Strobe on the Beat needs the music's beats; the copy carries what is known so
+  // far and the monitor repaints when more arrive.
+  const frame = resolveFrame(previewSequence(seq, assets, invalidatePreview), tS)
   // Apply the live drag override to its layer (frame is freshly built, safe to mutate).
   if (liveTransform) {
     for (const op of frame.ops) {

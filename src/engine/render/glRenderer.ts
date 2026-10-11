@@ -6,6 +6,7 @@
 // touches GL; all transform math lives in the pure, unit-tested mat.ts.
 
 import { CLARITY_GRAIN_GLSL, LOOK_COMMON_GLSL, PASS_FLOOR } from '../effects/lookMath'
+import { rgbSplitOffsets } from '../effects/gym'
 import { getEffect, stackSignature } from '../effects/registry'
 import { computeQuad, cropUV, edgeU, quadScale } from './mat'
 import { deriveMotionBlur, quadCentre, quadRadius } from './motionBlur'
@@ -747,6 +748,24 @@ void main() {
   outColor = vec4(clamp(cC.rgb + hp * uAmount, vec3(0.0), vec3(cC.a)), cC.a);
 }`
 
+// RGB split (a gym filter): red reads from one side of the pixel, blue from the other,
+// green stays put. Runs on the layer's premultiplied FBO like sharpen, so the
+// channels are clamped to the widest alpha of the three taps and a split edge
+// cannot come out brighter than it is opaque.
+const RGB_SPLIT_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uOffset; // uv offset of the red tap; blue takes the opposite
+out vec4 outColor;
+void main() {
+  vec4 cc = texture(uTex, vUV);
+  vec4 rr = texture(uTex, vUV + uOffset);
+  vec4 bb = texture(uTex, vUV - uOffset);
+  float a = max(cc.a, max(rr.a, bb.a));
+  outColor = vec4(min(vec3(rr.r, cc.g, bb.b), vec3(a)), a);
+}`
+
 // Dest-sampling blend modes (overlay / soft light): fixed-function blending
 // cannot read the destination, so the target is captured to a texture and the
 // blend computed in a full-screen pass. Both inputs premultiplied; math runs
@@ -1296,6 +1315,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   // BLIT_DEEP_FS); everything else keeps the blit it always had.
   const blitProg = link(gl, FULL_VS, deepFormat !== null ? BLIT_DEEP_FS : BLIT_FS)
   const sharpenProg = link(gl, FULL_VS, SHARPEN_FS)
+  const rgbSplitProg = link(gl, FULL_VS, RGB_SPLIT_FS)
   const smearProg = link(gl, FULL_VS, MOTION_SMEAR_FS)
   const glowProg = link(gl, FULL_VS, GLOW_FS)
   const blendModeProg = link(gl, FULL_VS, BLENDMODE_FS)
@@ -1466,6 +1486,11 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uTexel: gl.getUniformLocation(sharpenProg, 'uTexel'),
     uAmount: gl.getUniformLocation(sharpenProg, 'uAmount'),
     uRadius: gl.getUniformLocation(sharpenProg, 'uRadius'),
+  }
+  const rgbSplitLoc = {
+    aPos: gl.getAttribLocation(rgbSplitProg, 'aPos'),
+    uTex: gl.getUniformLocation(rgbSplitProg, 'uTex'),
+    uOffset: gl.getUniformLocation(rgbSplitProg, 'uOffset'),
   }
   const smearLoc = {
     aPos: gl.getAttribLocation(smearProg, 'aPos'),
@@ -2182,6 +2207,25 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     blitFbo(scratch)
   }
 
+  // RGB split: one pass into scratch, copied back, exactly like sharpen. The offset
+  // is in sequence px with y DOWN; the FBO's v runs UP the screen (the layer
+  // vertex shader flips y), so the v half of the offset is negated.
+  function rgbSplitFbo(srcFbo: Fbo, scratch: Fbo, dxPx: number, dyPx: number): void {
+    gl.useProgram(rgbSplitProg)
+    bindFull(rgbSplitLoc.aPos)
+    gl.uniform1i(rgbSplitLoc.uTex, 0)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.disable(gl.BLEND)
+    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+    gl.uniform2f(rgbSplitLoc.uOffset, dxPx / fboW, -dyPx / fboH)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    blitFbo(scratch)
+  }
+
   /**
    * One pass, one bounce through scratch, exactly like sharpen.
    *
@@ -2378,6 +2422,12 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       // full pass to change no pixels.
       if (Math.abs(dxPx) > 0.5 || Math.abs(dyPx) > 0.5 || Math.abs(zoom) > 0.0005) {
         motionSmearFbo(fbo, scratch, dxPx, dyPx, zoom, fx.params.cx ?? 0.5, fx.params.cy ?? 0.5)
+      }
+    } else if (fx.type === 'rgbSplit') {
+      const amount = fx.params.amount ?? 0
+      if (amount > 0.01) {
+        const o = rgbSplitOffsets(amount, fx.params.angleDeg ?? 0)
+        rgbSplitFbo(fbo, scratch, o.dx, o.dy)
       }
     } else if (fx.type === 'sharpen') {
       const amount = fx.params.amount ?? 0
@@ -2744,6 +2794,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.deleteProgram(blitProg)
     if (codeLut) gl.deleteTexture(codeLut)
     gl.deleteProgram(sharpenProg)
+    gl.deleteProgram(rgbSplitProg)
     gl.deleteProgram(glowProg)
     gl.deleteProgram(blendModeProg)
     lookBrightPass.dispose()

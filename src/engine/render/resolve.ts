@@ -7,6 +7,7 @@
 
 import { contentBox, type ContentBox } from '../contentFrame'
 import { resolveChannel } from '../effects/channels'
+import { strobeFlash } from '../effects/gym'
 import { resolveStack } from '../effects/registry'
 import { clipDurationS, clipEndS } from '../timeline'
 import { DEFAULT_SHUTTER_ANGLE, shutterSeconds } from './motionBlur'
@@ -31,6 +32,28 @@ const coerceKind = (type: string): TransitionKind =>
   (TRANSITION_KINDS as string[]).includes(type) ? (type as TransitionKind) : 'crossDissolve'
 
 /**
+ * Strobe on the beat: the one number the shader needs, worked out HERE so the
+ * preview and the export worker are handed the identical flash for a frame. The
+ * beats are sequence seconds, attached to the sequence as `beatGridS` by the main
+ * thread (engine/beatGrid.ts); without any, the BPM setting stands in.
+ */
+function withStrobeFlash(
+  e: ResolvedEffect,
+  t: number,
+  localT: number,
+  beatGridS: readonly number[] | undefined,
+  fps: number,
+): ResolvedEffect {
+  const flash = strobeFlash(beatGridS, t, localT, {
+    everyN: e.params.everyN ?? 1,
+    flashMs: e.params.flashMs ?? 120,
+    bpm: e.params.bpm ?? 120,
+    firstBeatS: e.params.firstBeatS ?? 0,
+  }, fps)
+  return { ...e, params: { ...e.params, flash } }
+}
+
+/**
  * Build a fully-resolved layer for `clip` at sequence time `t`. `sourceTimeS`
  * maps sequence time to source-media time (respecting |speed|); a still's
  * TextureSource ignores it. `isImage` is ALWAYS false here: resolve has no
@@ -38,7 +61,13 @@ const coerceKind = (type: string): TransitionKind =>
  * `t` may lie past the clip's own [startS, endS) (a transition samples A past
  * its out point); the caller clamps to the source handles.
  */
-function layerFor(clip: Clip, t: number, fps: number, shutterS = 0): RenderLayer {
+function layerFor(
+  clip: Clip,
+  t: number,
+  fps: number,
+  shutterS = 0,
+  beatGridS?: readonly number[],
+): RenderLayer {
   const localT = t - clip.startS
   const rate = Math.abs(clip.speed || 1)
   // Reverse (speed < 0): walk the source backward from outS as time advances.
@@ -50,7 +79,9 @@ function layerFor(clip: Clip, t: number, fps: number, shutterS = 0): RenderLayer
   // effect resolves to null; a neutral one is dropped because every GLSL body is
   // the identity at its defaults, so an ungraded clip compiles one program. A
   // look brings its own neighbour passes (clarity, halation, bloom) along.
-  const effects: ResolvedEffect[] = resolveStack(clip.effects, localT)
+  const effects: ResolvedEffect[] = resolveStack(clip.effects, localT).map((e) =>
+    e.type === 'strobe' ? withStrobeFlash(e, t, localT, beatGridS, fps) : e,
+  )
   const transformAt = (at: number): RenderLayer['transform'] => ({
     x: resolveChannel(clip, 'posX', at),
     y: resolveChannel(clip, 'posY', at),
@@ -222,7 +253,13 @@ function activeIndex(clips: readonly Clip[], t: number): number {
  * track shows nothing (no active clip, or the only candidate is fully inside a
  * transition it does not own).
  */
-function resolveTrack(track: Track, at: number, fps: number, shutterS = 0): RenderOp | null {
+function resolveTrack(
+  track: Track,
+  at: number,
+  fps: number,
+  shutterS = 0,
+  beatGridS?: readonly number[],
+): RenderOp | null {
   const clips = track.clips
   let t = at
   let i = activeIndex(clips, t)
@@ -259,8 +296,8 @@ function resolveTrack(track: Track, at: number, fps: number, shutterS = 0): Rend
           kind: coerceKind(pair.tr.type),
           progress: (t - clip.startS) / pair.d,
           // A sampled PAST its out point (t is beyond A's end).
-          from: layerFor(prev, t, fps, shutterS),
-          to: layerFor(clip, t, fps, shutterS),
+          from: layerFor(prev, t, fps, shutterS, beatGridS),
+          to: layerFor(clip, t, fps, shutterS, beatGridS),
         }
       }
     }
@@ -270,7 +307,7 @@ function resolveTrack(track: Track, at: number, fps: number, shutterS = 0): Rend
     // there is no double-draw. ---
     const endS = clipEndS(clip)
     if (t >= clip.startS && t < endS) {
-      const layer = layerFor(clip, t, fps, shutterS)
+      const layer = layerFor(clip, t, fps, shutterS, beatGridS)
       const dur = clipDurationS(clip)
 
       // A transitionIn/Out with NO partner clip still runs its REAL form: the
@@ -430,7 +467,13 @@ export function resolveFrame(seq: Sequence, t: number): RenderFrame {
   const ops: RenderOp[] = []
   for (const track of seq.tracks) {
     if (track.kind !== 'video' || track.muted) continue
-    const op = resolveTrack(track, t, seq.fps, shutterSeconds(seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE, seq.fps))
+    const op = resolveTrack(
+      track,
+      t,
+      seq.fps,
+      shutterSeconds(seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE, seq.fps),
+      seq.beatGridS,
+    )
     if (op) ops.push(op)
   }
   // The inner content box, if this sequence has one. Computed ONCE here and

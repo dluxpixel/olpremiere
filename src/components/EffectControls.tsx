@@ -101,6 +101,7 @@ import {
   setClipMask,
   setClipTransition,
   setEffectParamValue,
+  setEffectParamValues,
   toggleChannelAnimation,
   toggleEffectEnabled,
   toggleEffectParamKeyframes,
@@ -880,6 +881,9 @@ function EffectCard({ clip, effect, index, count, localT }: {
   // would change the hook order between one card and the next.
   const folded = useEffectFold((s) => s.folded[effect.id] === true)
   const [dragOver, setDragOver] = useState(false)
+  // The frame the quick picks measure against (Cinematic bars: 2.39:1 of THIS frame).
+  const seqW = useStore((s) => activeSequence(s.project).width)
+  const seqH = useStore((s) => activeSequence(s.project).height)
 
   // An effect type the registry no longer knows: show it honestly, let it be
   // removed, but never pretend to render controls for it.
@@ -1004,9 +1008,27 @@ function EffectCard({ clip, effect, index, count, localT }: {
 
       {!folded && (
         <div className={`flex flex-col gap-1 ${effect.enabled ? '' : 'opacity-40'}`}>
-          {def.params.map((param) => (
-            <EffectParamRow key={param.key} clip={clip} effect={effect} param={param} localT={localT} />
-          ))}
+          {def.params
+            .filter((param) => !param.internal)
+            .map((param) => (
+              <EffectParamRow key={param.key} clip={clip} effect={effect} param={param} localT={localT} />
+            ))}
+          {def.quickPicks && (
+            <div className="flex items-center gap-1.5" data-testid="effect-quickpicks">
+              {def.quickPicks.map((pick) => (
+                <button
+                  key={pick.label}
+                  type="button"
+                  data-testid="effect-quickpick"
+                  data-pick={pick.label}
+                  onClick={() => setEffectParamValues(clip.id, effect.id, pick.params({ width: seqW, height: seqH }))}
+                  className="rounded-field bg-bg-input px-2 py-0.5 text-ui-sm text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated"
+                >
+                  {pick.label}
+                </button>
+              ))}
+            </div>
+          )}
           <EffectEaseRow clip={clip} effect={effect} />
         </div>
       )}

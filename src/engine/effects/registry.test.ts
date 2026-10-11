@@ -49,6 +49,7 @@ describe('registry integrity', () => {
         return `u_fx0_${key}`
       })
       for (const param of def.params) {
+        if (param.resolverOnly) continue
         expect(asked.has(param.key), `${def.type}.${param.key} is declared but never read by its GLSL`).toBe(true)
       }
     }

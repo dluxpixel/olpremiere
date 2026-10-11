@@ -65,7 +65,7 @@ function SharedEffectCard({ type, clips, ids }: { type: string; clips: Clip[]; i
         </IconButton>
       </div>
       <div className="flex flex-col gap-1">
-        {def.params.map((param) => {
+        {def.params.filter((param) => !param.internal).map((param) => {
           // Read at the playhead without subscribing to it: a panel that
           // re-renders every played frame is the lag his big edits already paid for.
           const { value, mixed } = sharedParamValue(clips, type, param.key, playheadLocalT)

@@ -1037,6 +1037,16 @@ export function setEffectParamValue(clipId: string, effectId: Id, key: string, v
   )
 }
 
+/**
+ * Several params of one effect in ONE undo step: a quick pick (a Cinematic bars
+ * ratio, a Strobe colour) writes more than one value and must undo as one click.
+ */
+export function setEffectParamValues(clipId: string, effectId: Id, values: Record<string, number>): void {
+  mapClip(clipId, 'Set effect', (c) =>
+    Object.entries(values).reduce((acc, [key, v]) => ops.setEffectParam(acc, effectId, key, v, playheadLocalT(c)), c),
+  )
+}
+
 export function toggleEffectParamKeyframes(clipId: string, effectId: Id, key: string): void {
   mapClip(clipId, `Toggle ${key} keyframes`, (c) => ops.toggleEffectParamAnimation(c, effectId, key, playheadLocalT(c)))
 }

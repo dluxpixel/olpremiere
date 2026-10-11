@@ -8,6 +8,7 @@ import type { NativeEncoder, NativeStartResult } from '../../../electron/ipc-typ
 import { blobForExport } from '../../state/mediaMirror'
 import { useToasts } from '../../state/toasts'
 import { olApi } from '../../platform'
+import { hasStrobe, sequenceWithBeats } from '../beatGrid'
 import { budgets } from '../memoryBudget'
 import type { Id, Project } from '../types'
 import { planAudioMix } from './audioRender'
@@ -81,6 +82,11 @@ export async function exportNative(
     if (!blob) throw new Error(`"${asset.name}" is not on this computer. Find my media in the Media panel puts it back`)
     exportAssets.push({ id, kind: asset.kind, name: asset.name, blob, fps: asset.fps })
   }
+  if (signal.aborted) throw abortError()
+  // The sequence the worker draws from: the same one, plus the music's beats when a
+  // clip carries a Strobe on the Beat (the worker cannot decode audio to find them).
+  // (Only when one does: an export with no strobe takes exactly the steps it always did.)
+  const renderSequence = hasStrobe(sequence) ? await sequenceWithBeats(sequence, project.assets) : sequence
   if (signal.aborted) throw abortError()
 
   // ⛔ WHERE IT GOES IS ASKED BEFORE THE SOUND IS MADE. The save dialog used to
@@ -330,7 +336,7 @@ export async function exportNative(
     worker.postMessage({
       type: 'init',
       settings,
-      sequence,
+      sequence: renderSequence,
       assets: exportAssets,
       audio: null,
       native: true,

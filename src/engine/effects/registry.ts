@@ -21,6 +21,7 @@
 import { evalChannel } from '../keyframes'
 import type { ResolvedEffect } from '../render/types'
 import type { ClipFilters, EffectInstance, Keyframe } from '../types'
+import { BAR_RATIOS, barFractionForRatio } from './gym'
 import { LOOK_EFFECT_DEFS } from './looks'
 
 /**
@@ -51,6 +52,25 @@ export interface EffectParamDef {
   unit?: string
   /** Value units per pixel of horizontal drag. Defaults to half a step. */
   sens?: number
+  /**
+   * Set by the resolver, never by him: kept out of the Inspector. The strobe's
+   * per-frame flash rides in on one (render/resolve.ts), so the shader reads it as
+   * a uniform like any other param while the preview and the export are handed the
+   * very same number.
+   */
+  internal?: boolean
+  /**
+   * Read by the resolver (render/resolve.ts) to work out another param, not by the
+   * shader. The registry test skips these when it checks the GLSL reads every param.
+   */
+  resolverOnly?: boolean
+}
+
+/** A one click setting for an effect's params, drawn as a button in its card. */
+export interface EffectQuickPick {
+  label: string
+  /** The params it sets, worked out from the sequence frame (bars depend on it). */
+  params: (frame: { width: number; height: number }) => Record<string, number>
 }
 
 /** Drag sensitivity for a param, with the sane default applied. */
@@ -91,6 +111,8 @@ export interface EffectDef {
    * identity and a hand-zeroed instance is still skipped.
    */
   initialParams?: Record<string, number>
+  /** One click settings shown under the card's params (Cinematic bars ratios). */
+  quickPicks?: readonly EffectQuickPick[]
   params: EffectParamDef[]
   /**
    * Pointwise GLSL. Mutates `vec3 c` (0..1 sRGB-encoded RGB, see the file
@@ -193,12 +215,16 @@ export const EFFECTS: EffectDef[] = [
     glsl: (u) => `c *= pow(2.0, ${u('exposure')});`,
   },
   {
+    // ON THE SHELF AGAIN, 2026-10-10 (gym filters): the skin and highlight tools. It
+    // was hidden on 2026-07-29 only to shorten the list, never for a bug.
     type: 'colorWheels',
-    hidden: true,
     label: 'Lift / Gamma / Gain',
     description: 'ASC-CDL three-way grade: out = (in * slope + offset) ^ power.',
     category: 'color',
     pass: 'pointwise',
+    // Dropped with a small highlight lift so it is visible at once; Reset still
+    // returns to identity.
+    initialParams: { gain: 0.15 },
     params: [
       p('lift', 'Lift', -1, 1, 0.01, 0),
       p('gamma', 'Gamma', -1, 1, 0.01, 0),
@@ -212,12 +238,16 @@ export const EFFECTS: EffectDef[] = [
     `,
   },
   {
+    // ON THE SHELF AGAIN, 2026-10-10 (gym filters): warms or cools skin. Hidden on
+    // 2026-07-29 only to shorten the list, never for a bug.
     type: 'whiteBalance',
-    hidden: true,
     label: 'White Balance',
     description: 'Temperature pushes red and pulls blue; tint pushes green.',
     category: 'color',
     pass: 'pointwise',
+    // Dropped warm, which is the way a gym clip under cold overhead light is
+    // usually fixed; Reset still returns to identity.
+    initialParams: { temperature: 0.15 },
     params: [
       p('temperature', 'Temperature', -1, 1, 0.01, 0),
       p('tint', 'Tint', -1, 1, 0.01, 0),
@@ -369,8 +399,9 @@ export const EFFECTS: EffectDef[] = [
     `,
   },
   {
+    // ON THE SHELF AGAIN, 2026-10-10 (gym filters). Hidden on 2026-07-29 only to
+    // shorten the list; its shader and frame seed were never at fault.
     type: 'grain',
-    hidden: true,
     label: 'Film Grain',
     description: 'Animated luma noise. Size sets the grain cell in pixels.',
     category: 'stylize',
@@ -387,8 +418,9 @@ export const EFFECTS: EffectDef[] = [
     `,
   },
   {
+    // ON THE SHELF AGAIN, 2026-10-10 (gym filters). Hidden on 2026-07-29 only to
+    // shorten the list, never for a bug.
     type: 'sharpen',
-    hidden: true,
     label: 'Sharpen',
     description: 'Unsharp-mask detail boost. Radius sets the detail scale.',
     category: 'stylize',
@@ -405,12 +437,20 @@ export const EFFECTS: EffectDef[] = [
     params: [p('blur', 'Radius', 0, 64, 0.5, 0, 'px', 0.25)],
   },
   {
+    // SHOWN AS "MOTION BLUR", 2026-10-10 (gym filters). The type stays
+    // `directionalBlur` so every saved project and the whip keep rendering. Of the
+    // two blurs that could carry the name, this is the one he can use: an Angle
+    // and a Strength he sets by eye. `motionSmear` stays hidden because it is
+    // built per frame from how far a move travelled, in pixels (Travel X, Travel
+    // Y, Growth), and typed in by hand it would do nothing sensible.
     type: 'directionalBlur',
-    hidden: true,
-    label: 'Directional Blur',
-    description: 'Motion smear along an angle, the whip-transition workhorse.',
+    label: 'Motion Blur',
+    description: 'Smears the picture along an angle, like a fast camera move or a whip. Strength sets how far.',
     category: 'blur',
     pass: 'neighborhood',
+    // Dropped at a visible smear (about 19 px at 1080p); `default` stays 0 so Reset
+    // and the neutral-skip still work.
+    initialParams: { strength: 0.3 },
     params: [p('angleDeg', 'Angle', 0, 360, 1, 0, '°'), p('strength', 'Strength', 0, 1, 0.01, 0)],
   },
   {
@@ -538,6 +578,78 @@ export const EFFECTS: EffectDef[] = [
       p('threshold', 'Threshold', 0, 1, 0.01, 0.6),
     ],
   },
+  {
+    // GYM FILTER (2026-10-10): flashes the frame on the music's beats. The beats come
+    // from the app's own onset detection on the sequence's music (beatCache.ts),
+    // handed to the resolver as a list, which turns them into `flash` for every
+    // frame (render/resolve.ts, effects/gym.ts). With no music or no beats it falls
+    // back to the BPM grid, so it still works. `flash` is the resolver's, not his.
+    type: 'strobe',
+    label: 'Strobe on the Beat',
+    description: 'Flashes the picture on the music beats. Strength, flash length, every N beats and flash colour; with no music it follows the BPM you set.',
+    category: 'stylize',
+    pass: 'pointwise',
+    initialParams: { strength: 0.8 },
+    quickPicks: [
+      { label: 'White', params: () => ({ colorR: 1, colorG: 1, colorB: 1 }) },
+      { label: 'Red', params: () => ({ colorR: 1, colorG: 0.1, colorB: 0.1 }) },
+      { label: 'Gold', params: () => ({ colorR: 1, colorG: 0.82, colorB: 0.2 }) },
+    ],
+    params: [
+      p('strength', 'Strength', 0, 1, 0.01, 0),
+      { ...p('flashMs', 'Flash length', 20, 500, 5, 120, 'ms', 2), resolverOnly: true },
+      { ...p('everyN', 'Every N beats', 1, 16, 1, 1), resolverOnly: true },
+      p('colorR', 'Color R', 0, 1, 0.01, 1),
+      p('colorG', 'Color G', 0, 1, 0.01, 1),
+      p('colorB', 'Color B', 0, 1, 0.01, 1),
+      { ...p('bpm', 'BPM (no music)', 30, 300, 1, 120), resolverOnly: true },
+      { ...p('firstBeatS', 'First beat (no music)', 0, 4, 0.01, 0, 's'), resolverOnly: true },
+      { ...p('flash', 'Flash', 0, 1, 0.001, 0), internal: true },
+    ],
+    glsl: (u) => `
+      float sbAmt = clamp(${u('flash')} * ${u('strength')}, 0.0, 1.0);
+      c = mix(c, vec3(${u('colorR')}, ${u('colorG')}, ${u('colorB')}), sbAmt);
+    `,
+  },
+  {
+    // GYM FILTER (2026-10-10): the red and blue channels slide apart along an angle.
+    // A neighborhood pass because it has to read pixels beside the one it writes
+    // (glRenderer.ts rgbSplitFbo). Amount and Angle animate like any param, so a
+    // hit or a drop is two keyframes.
+    type: 'rgbSplit',
+    label: 'RGB Split',
+    description: 'Splits the red and blue channels apart along an angle, for hits and drops. Amount sets how far.',
+    category: 'stylize',
+    pass: 'neighborhood',
+    initialParams: { amount: 10 },
+    params: [p('amount', 'Amount', 0, 64, 0.5, 0, 'px', 0.25), p('angleDeg', 'Angle', 0, 360, 1, 0, '°')],
+  },
+  {
+    // GYM FILTER (2026-10-10): black bars top and bottom. Size is each bar's height
+    // as a percent of the FRAME (vSeqPos over uFrame, not the clip), so it reads the
+    // same on 16:9 and on the tall Phone frame. The quick picks work the size out
+    // from the sequence so the window left between the bars is 2.39:1, 2:1 or
+    // 1.85:1 of the frame's width (effects/gym.ts).
+    type: 'cinematicBars',
+    label: 'Cinematic Bars',
+    description: 'Black bars top and bottom for a widescreen film look. Size is the bar height; quick picks fit 2.39:1, 2:1 or 1.85:1 to the frame.',
+    category: 'stylize',
+    pass: 'pointwise',
+    initialParams: { size: 12 },
+    quickPicks: BAR_RATIOS.map((r) => ({
+      label: r.label,
+      params: (f) => ({ size: Math.round(barFractionForRatio(r.ratio, f.width, f.height) * 1000) / 10 }),
+    })),
+    params: [p('size', 'Size', 0, 50, 0.1, 0, '%', 0.25)],
+    glsl: (u) => `
+      float cbH = max(uFrame.y, 1.0);
+      float cbY = vSeqPos.y / cbH;
+      float cbBar = ${u('size')} / 100.0;
+      float cbE = 0.75 / cbH;
+      float cbKeep = smoothstep(cbBar - cbE, cbBar + cbE, cbY) * (1.0 - smoothstep(1.0 - cbBar - cbE, 1.0 - cbBar + cbE, cbY));
+      c *= mix(1.0, cbKeep, step(0.0001, cbBar));
+    `,
+  },
   // The cinematic looks (looks.ts). Each is pointwise, one Amount slider.
   ...LOOK_EFFECT_DEFS,
   {
@@ -620,9 +732,12 @@ export const CANONICAL_ORDER = [
   'lookSoftFilm',
   'vignette',
   'grain',
+  'strobe',
+  'cinematicBars',
   'sharpen',
   'gaussianBlur',
   'directionalBlur',
+  'rgbSplit',
   'glow',
   // A look's own neighbour passes. Never in a stored stack: `companions` adds them
   // to the RESOLVED stack, right after the look that made them.

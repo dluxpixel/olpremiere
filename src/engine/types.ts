@@ -99,6 +99,15 @@ export interface Sequence {
   height: number
   sampleRate: number
   /**
+   * RUNTIME ONLY, never saved: the music's beats in sequence seconds, for the
+   * Strobe on the Beat effect. The export worker has no beat cache, so the main
+   * thread works the beats out (engine/beatGrid.ts) and sends them along with the
+   * sequence; the pure resolver then turns them into one flash number per frame,
+   * the same one for the preview and the export. Absent means "no beats found":
+   * the strobe falls back to its BPM setting.
+   */
+  beatGridS?: readonly number[]
+  /**
    * Fill the empty frame with a blurred copy of the picture instead of black.
    *
    * His ask, 2026-08-14, with a Shorts screenshot: 16:9 gameplay in a 9:16
