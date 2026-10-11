@@ -3,7 +3,7 @@
 // Hold to compare is a VIEW: the preview draws the picture without its effects while it is held,
 // and the project, the undo stack and the clips never hear about it.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { previewBeforeActive, previewEpoch, resolveForPreview } from '../engine/preview'
 import { resolveFrame } from '../engine/render/resolve'
 import { recomputeDuration } from '../engine/timeline'
@@ -121,5 +121,94 @@ describe('hold to compare', () => {
     seed()
     holdBefore()
     expect(count(resolveFrame(activeSequence(useStore.getState().project), 1).ops)).toBeGreaterThan(0)
+  })
+})
+
+/** Pretend the page is shown or hidden, the way a tab switch does. */
+function setVisibility(state: 'visible' | 'hidden'): void {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+  document.dispatchEvent(new Event('visibilitychange'))
+}
+
+describe('a hold that has no key or pointer to end it', () => {
+  afterEach(() => {
+    delete (document as unknown as Record<string, unknown>).visibilityState
+  })
+
+  it('ends when the window loses focus', () => {
+    seed()
+    holdBefore()
+    expect(isHoldingBefore()).toBe(true)
+    window.dispatchEvent(new Event('blur'))
+    expect(isHoldingBefore()).toBe(false)
+    expect(previewBeforeActive()).toBe(false)
+  })
+
+  it('ends when the page is hidden, and not when it is shown', () => {
+    seed()
+    holdBefore()
+    setVisibility('visible')
+    expect(isHoldingBefore()).toBe(true)
+    setVisibility('hidden')
+    expect(isHoldingBefore()).toBe(false)
+    expect(previewBeforeActive()).toBe(false)
+  })
+
+  it('listens only while held: the listeners come off on release and none stack up', () => {
+    seed()
+    const add = vi.spyOn(window, 'addEventListener')
+    const remove = vi.spyOn(window, 'removeEventListener')
+    holdBefore()
+    holdBefore()
+    expect(add.mock.calls.filter((c) => (c[0] as string) === 'blur')).toHaveLength(1)
+    releaseBefore()
+    expect(remove.mock.calls.filter((c) => (c[0] as string) === 'blur')).toHaveLength(1)
+    // Letting go again, or a blur after the release, does nothing.
+    const e = previewEpoch()
+    releaseBefore()
+    window.dispatchEvent(new Event('blur'))
+    expect(previewEpoch()).toBe(e)
+    add.mockRestore()
+    remove.mockRestore()
+  })
+})
+
+describe('the project changing under a hold', () => {
+  it('ends the hold when a clip is deleted mid hold, so the badge never sits over the real picture', () => {
+    seed()
+    holdBefore()
+    expect(isHoldingBefore()).toBe(true)
+    updateActiveSequence('delete', (sq) =>
+      recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== 'a') })) }),
+    )
+    expect(isHoldingBefore()).toBe(false)
+    expect(previewBeforeActive()).toBe(false)
+    expect(effectsAt(1)).toBe(1)
+  })
+
+  it('ends the hold on an undo', () => {
+    seed()
+    holdBefore()
+    useStore.getState().undo()
+    expect(isHoldingBefore()).toBe(false)
+    expect(previewBeforeActive()).toBe(false)
+  })
+
+  it('keeps the hold through anything that is not the project: the selection and the playhead', () => {
+    seed()
+    holdBefore()
+    useStore.getState().setUI({ selection: ['b'] })
+    useStore.getState().setUI({ playheadS: 2 })
+    expect(isHoldingBefore()).toBe(true)
+    expect(previewBeforeActive()).toBe(true)
+  })
+
+  it('stops watching the project once released, so a later edit does not touch a new hold twice', () => {
+    seed()
+    holdBefore()
+    releaseBefore()
+    const e = previewEpoch()
+    updateActiveSequence('edit', (sq) => sq)
+    expect(previewEpoch()).toBe(e)
   })
 })

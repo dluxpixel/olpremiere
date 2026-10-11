@@ -136,6 +136,21 @@ test('the app guides sit over a tall picture, switch app, and say why they are g
 })
 
 /**
+ * What the preview module says right now, read in the page and written to nothing. A held picture
+ * that equals the real one has two possible causes, and this tells them apart: the hold is on and
+ * the epoch went up but the draw loop did not redraw, or something let go of the hold.
+ */
+const previewState = (page: Page): Promise<{ before: boolean; epoch: number }> =>
+  page.evaluate(async () => {
+    const mod = '/src/engine/preview.ts'
+    const { previewBeforeActive, previewEpoch } = (await import(/* @vite-ignore */ mod)) as {
+      previewBeforeActive: () => boolean
+      previewEpoch: () => number
+    }
+    return { before: previewBeforeActive(), epoch: previewEpoch() }
+  })
+
+/**
  * A clip with an effect that visibly changes the picture, and three snapshots to hold against.
  *
  * ⛔ THE EFFECT MUST SHOW. Gaussian Blur is added at a radius of 0, so it changes nothing, and a
@@ -151,6 +166,8 @@ async function clipWithVisibleEffect(page: Page): Promise<{ undo: number }> {
   expect(await litShare(page, 'plain')).toBeGreaterThan(0.9)
   await addEffect(page, 'vignette')
   const undo = await undoDepth(page)
+  // Adding the effect is an undo step, so a count of 0 would mean this read a store of its own.
+  expect(undo).toBeGreaterThan(0)
   await snap(page, 'real')
   expect(await diff(page, 'plain', 'real')).toBeGreaterThan(1)
   return { undo }
@@ -158,9 +175,15 @@ async function clipWithVisibleEffect(page: Page): Promise<{ undo: number }> {
 
 test('holding R shows the picture without its effects, and letting go brings them back, with no undo step', async ({ page }) => {
   const { undo } = await clipWithVisibleEffect(page)
+  const idle = await previewState(page)
+  expect(idle.before).toBe(false)
 
   await page.keyboard.down('r')
   await expect(page.getByTestId('before-badge')).toBeVisible()
+  // The preview itself is told: the hold is on and the epoch went up, so a paused frame redraws.
+  const held = await previewState(page)
+  expect(held.before).toBe(true)
+  expect(held.epoch).toBeGreaterThan(idle.epoch)
   await snap(page, 'held')
   // The held picture is the one without the effect, and not the real one.
   expect(await diff(page, 'plain', 'held')).toBeLessThan(0.01)
@@ -168,6 +191,9 @@ test('holding R shows the picture without its effects, and letting go brings the
 
   await page.keyboard.up('r')
   await expect(page.getByTestId('before-badge')).toHaveCount(0)
+  const released = await previewState(page)
+  expect(released.before).toBe(false)
+  expect(released.epoch).toBeGreaterThan(held.epoch)
   await snap(page, 'back')
   expect(await diff(page, 'real', 'back')).toBeLessThan(0.01)
   expect(await diff(page, 'plain', 'back')).toBeGreaterThan(1)
@@ -176,17 +202,25 @@ test('holding R shows the picture without its effects, and letting go brings the
 
 test('the Before button holds while the pointer is down and lets go when it comes up', async ({ page }) => {
   const { undo } = await clipWithVisibleEffect(page)
+  const idle = await previewState(page)
+  expect(idle.before).toBe(false)
 
   const b = (await page.getByTestId('before-hold').boundingBox())!
   await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2)
   await page.mouse.down()
   await expect(page.getByTestId('before-badge')).toBeVisible()
+  const held = await previewState(page)
+  expect(held.before).toBe(true)
+  expect(held.epoch).toBeGreaterThan(idle.epoch)
   await snap(page, 'held')
   expect(await diff(page, 'plain', 'held')).toBeLessThan(0.01)
   expect(await diff(page, 'real', 'held')).toBeGreaterThan(1)
 
   await page.mouse.up()
   await expect(page.getByTestId('before-badge')).toHaveCount(0)
+  const released = await previewState(page)
+  expect(released.before).toBe(false)
+  expect(released.epoch).toBeGreaterThan(held.epoch)
   await snap(page, 'back')
   expect(await diff(page, 'real', 'back')).toBeLessThan(0.01)
   expect(await diff(page, 'plain', 'back')).toBeGreaterThan(1)

@@ -346,7 +346,10 @@ function BeforeBadge({ canvas }: { canvas: HTMLCanvasElement | null }) {
  * key does the same. It is a button you HOLD, so it takes the pointer on press and lets go on release,
  * on a cancel, and if the pointer is lost, which is every way a hold can end.
  */
-function BeforeButton({ holding }: { holding: boolean }) {
+export function BeforeButton({ holding }: { holding: boolean }) {
+  // The button can go away without the Monitor (the timeline is emptied, the monitor goes to full
+  // screen) while a press on it is still down, and nothing else would ever let go.
+  useEffect(() => () => releaseBefore(), [])
   return (
     <div className="absolute right-2 top-2 z-10">
       <Tooltip label="Hold to see the picture without effects, to compare" shortcut="R" side="bottom">
