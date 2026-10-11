@@ -39,6 +39,7 @@ import { activeSequence, type Project } from '../engine/types'
 import { isElectron } from '../platform'
 import { isPhoneLayout } from '../ui/phoneLayout'
 import { holdBlobKeys } from './exportHolds'
+import { findPreset, setPresetFolder, type ExportPreset } from './exportPresets'
 import { healProjectMedia, isHealing, mirrorApi } from './mediaMirror'
 import { setPlatformLoudness, useSettings } from './settings'
 import { useStore } from './store'
@@ -72,16 +73,24 @@ interface ExportJobState {
   dialogOpen: boolean
   /** He pressed Export while this one was still going. */
   alreadyRunning: boolean
+  /** The window is asking which preset (askExport) and nothing has started. */
+  choosing: boolean
 }
 
-export const useExportJob = create<ExportJobState>(() => ({ job: null, dialogOpen: false, alreadyRunning: false }))
+export const useExportJob = create<ExportJobState>(() => ({
+  job: null,
+  dialogOpen: false,
+  alreadyRunning: false,
+  choosing: false,
+}))
 
 /**
  * The frozen copy the current job reads, the media keys it needs, and on the
  * desktop the file he chose for it: a restart (the loudness switch) and Try
- * again write there without asking again.
+ * again write there without asking again. `presetId`: the export preset it runs
+ * for, whose folder the file goes to.
  */
-let frozen: { project: Project; blobKeys: string[]; outPath?: string } | null = null
+let frozen: { project: Project; blobKeys: string[]; outPath?: string; presetId?: string } | null = null
 let abort: AbortController | null = null
 let nextJobId = 1
 /** A plan to start the moment the running export has finished cancelling. */
@@ -156,7 +165,7 @@ function patchJob(id: number, patch: (job: ExportJob) => Partial<ExportJob>): bo
 
 function forgetJob(): void {
   frozen = null
-  useExportJob.setState({ job: null, dialogOpen: false, alreadyRunning: false })
+  useExportJob.setState({ job: null, dialogOpen: false, alreadyRunning: false, choosing: false })
 }
 
 /**
@@ -164,8 +173,39 @@ function forgetJob(): void {
  * With one already running it opens that one instead and says so.
  */
 export function requestExport(project: Project = useStore.getState().project): void {
+  begin(project, undefined)
+}
+
+/**
+ * The top bar's Export button. On the desktop it asks which preset (or "just this
+ * once") before anything starts; anywhere else there are no folders to remember,
+ * and it is requestExport exactly as it was. With an export already running it
+ * opens that one, like requestExport.
+ */
+export function askExport(project: Project = useStore.getState().project): void {
+  const api = typeof window !== 'undefined' ? window.api : undefined
+  if (!isElectron || !api?.exportPickFolder || !api.exportPresetOutput || isExportRunning()) {
+    requestExport(project)
+    return
+  }
+  useExportJob.setState({ dialogOpen: true, alreadyRunning: false, choosing: true })
+}
+
+/**
+ * He chose in the window askExport opened: a preset, or null for "Just this once"
+ * (the save dialog, as ever). A preset exports with the window's settings as they
+ * are, the same as a one off, and the file goes to the preset's folder.
+ */
+export function startExport(presetId: string | null, project: Project = useStore.getState().project): void {
+  const preset = findPreset(presetId)
+  // A preset deleted since the list was drawn: stay on the list rather than export somewhere else.
+  if (presetId !== null && !preset) return
+  begin(project, preset)
+}
+
+function begin(project: Project, preset: ExportPreset | undefined): void {
   if (isExportRunning()) {
-    useExportJob.setState({ dialogOpen: true, alreadyRunning: true })
+    useExportJob.setState({ dialogOpen: true, alreadyRunning: true, choosing: false })
     return
   }
   // A deep copy, not the live object. Edits replace the store's project rather
@@ -173,8 +213,8 @@ export function requestExport(project: Project = useStore.getState().project): v
   // and the export takes minutes: one in-place write anywhere in that time
   // would change the file halfway through.
   const copy = structuredClone(project)
-  frozen = { project: copy, blobKeys: exportBlobKeys(copy) }
-  useExportJob.setState({ dialogOpen: true, alreadyRunning: false })
+  frozen = { project: copy, blobKeys: exportBlobKeys(copy), ...(preset ? { presetId: preset.id } : {}) }
+  useExportJob.setState({ dialogOpen: true, alreadyRunning: false, choosing: false })
   void drive(planExport(activeSequence(copy), { platformLoudness: useSettings.getState().platformLoudness }))
 }
 
@@ -277,6 +317,12 @@ useExportJob.subscribe((s) => {
  * there means no export; once encoding it stays up, as before.
  */
 export function closeExportDialog(): void {
+  // The list of presets is only a question: closing it starts nothing and leaves
+  // an earlier finished or failed export, and its chip, as they were.
+  if (useExportJob.getState().choosing) {
+    useExportJob.setState({ dialogOpen: false, alreadyRunning: false, choosing: false })
+    return
+  }
   const { job } = useExportJob.getState()
   if (job && isExportActive(job.stage)) {
     if (job.background) {
@@ -418,7 +464,14 @@ function fail(id: number, err: unknown): void {
   const raw = err instanceof Error ? err.message : String(err)
   const plain = plainExportError(raw)
   // The place itself was the problem: Try again asks for another.
-  if (plain.line === CANNOT_WRITE_THERE && frozen) frozen.outPath = undefined
+  // A preset keeps its folder: this line also covers an ffmpeg "No such file" about a
+  // temp file, so the folder is only replaced when it is really gone (presetDestination).
+  if (plain.line === CANNOT_WRITE_THERE && frozen) {
+    frozen.outPath = undefined
+  } else if (frozen?.presetId) {
+    // A preset names its file fresh each time (never over an earlier one), so Try again does too.
+    frozen.outPath = undefined
+  }
   const name = useExportJob.getState().job?.projectName ?? ''
   const stage: ExportStage = { kind: 'error', message: plain.line, ...(plain.details ? { details: plain.details } : {}) }
   if (!patchJob(id, () => ({ stage }))) return
@@ -442,6 +495,16 @@ async function runNative(id: number, project: Project, plan: ExportPlan, signal:
   const endCritical = beginCriticalWork()
   try {
     const f = frozen
+    // A preset's file goes to its own folder: asked once, then remembered. A path the
+    // job already holds (the loudness switch's restart) is used as it is.
+    if (f?.presetId && !f.outPath) {
+      const dest = await presetDestination(f.presetId, baseName, plan, signal)
+      if (dest === null) {
+        settleCancelled(id)
+        return
+      }
+      if (dest !== undefined && frozen === f) f.outPath = dest
+    }
     const res = await exportNative(
       project,
       plan.settings,
@@ -467,6 +530,47 @@ async function runNative(id: number, project: Project, plan: ExportPlan, signal:
   } finally {
     endCritical()
   }
+}
+
+/** The folder a preset had when it went missing: where the picker opens next. */
+const lastFolder = new Map<string, string>()
+
+/**
+ * Where a preset's video goes: a file name main made in the preset's folder. No
+ * folder yet, or the folder is gone: the system folder picker, and the answer is
+ * kept on the preset once main has made a name in it. Null when he dismisses the
+ * picker, and the preset keeps the folder it had; undefined when the preset was
+ * deleted meanwhile (the save dialog asks instead, as for any one off export).
+ */
+async function presetDestination(
+  presetId: string,
+  baseName: string,
+  plan: ExportPlan,
+  signal: AbortSignal,
+): Promise<string | null | undefined> {
+  const api = window.api
+  if (!api?.exportPickFolder || !api.exportPresetOutput) return undefined
+  // Two goes: a saved folder that has gone is asked for once more. The saved one is
+  // only replaced by a folder that works, never cleared on a failure.
+  for (let go = 0; go < 2; go++) {
+    const preset = findPreset(presetId)
+    if (!preset) return undefined
+    let folder = go > 0 ? null : preset.folder
+    if (!folder) {
+      folder = await api.exportPickFolder(`Folder for ${preset.name}`, lastFolder.get(presetId) ?? preset.folder)
+      if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
+      if (!folder) return null
+    }
+    const res = await api.exportPresetOutput(folder, baseName, plan.nativeEncoder)
+    if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
+    if (res.ok) {
+      if (folder !== preset.folder) setPresetFolder(presetId, folder)
+      return res.outPath
+    }
+    lastFolder.set(presetId, folder)
+  }
+  // plainExportError turns this into "Could not write the file there. Choose another folder".
+  throw new Error('No such file or directory: the preset folder')
 }
 
 async function runBrowser(id: number, project: Project, plan: ExportPlan, signal: AbortSignal): Promise<void> {

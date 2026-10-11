@@ -403,6 +403,10 @@ export interface OlApi {
   backupReveal(): Promise<void>
   /** Open Explorer with the exported file selected, so he can find what he just made. */
   exportReveal(filePath: string): Promise<void>
+  /** The system folder picker for an export preset. Null when he dismisses it. `hint` is where to open. */
+  exportPickFolder(title: string, hint: string | null): Promise<string | null>
+  /** A file name in the preset's folder that nothing there has. `no-folder` when the folder is gone. */
+  exportPresetOutput(folder: string, base: string, encoder: NativeEncoder): Promise<{ ok: true; outPath: string } | { ok: false; reason: 'no-folder' }>
   /** Show the export on the taskbar button: filling, red on failure, flashing when it ends unseen. */
   exportTaskbar(state: ExportTaskbarState): Promise<void>
 

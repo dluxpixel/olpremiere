@@ -31,7 +31,7 @@ import { canRecordVoice, closeStudio, openStudio, useRecorder } from '../state/v
 import { Button, IconButton } from '../ui/Button'
 import { MelonMark } from '../ui/MelonMark'
 import { displayVersion } from '../appVersion'
-import { requestExport } from '../state/exportJob'
+import { askExport } from '../state/exportJob'
 import { ExportChip } from './ExportChip'
 import { historyLabel, showHistoryToast } from './historyLabel'
 import { ExportDialog } from './ExportDialog'
@@ -170,7 +170,7 @@ function ExportButton() {
     <Button
       variant="primary"
       data-testid="export-open"
-      onClick={() => requestExport()}
+      onClick={() => askExport()}
       disabled={!canExport}
       title={canExport ? 'Export the video' : 'Put a clip on the timeline first, then this exports it'}
     >

@@ -7,7 +7,7 @@
 // second dialog; any other path is refused and he is asked again; dismissing the
 // dialog is a quiet cancel; and native:cancel never clears his answer.
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -40,6 +40,7 @@ afterAll(() => rmSync(h.dir, { recursive: true, force: true }))
 
 const { choseExportPath, exportFinished, exportPathFromPage } = await import('./exportChoice')
 const native = await import('./nativeExport')
+const { presetOutput } = await import('./exportPresetFolder')
 
 const ANSWER = path.join(h.dir, 'Videos', 'Green_2.mp4')
 const ELSEWHERE = 'C:\\Windows\\System32\\drivers\\etc\\hosts'
@@ -132,5 +133,42 @@ describe('native:cancel', () => {
     expect(finish).toBeGreaterThan(-1)
     expect(call).toBeGreaterThan(finish)
     expect(call - finish).toBeLessThan(400)
+  })
+})
+
+describe('a preset export', () => {
+  it('⛔ moves off a name that was taken after it was made, and never asks with a dialog', async () => {
+    const folder = path.join(h.dir, 'GymFolder')
+    mkdirSync(folder, { recursive: true })
+    const made = presetOutput(folder, 'Green', 'x264')
+    expect(made).toEqual({ ok: true, outPath: path.join(folder, 'Green.mp4') })
+    if (!made.ok) return
+    // The sound takes a while to make, and a file of that name shows up in the meantime.
+    writeFileSync(made.outPath, 'someone else')
+    const res = await native.start(config(exportPathFromPage(made.outPath)), win)
+    expect(res.error).toMatch(/^could not start ffmpeg/)
+    expect(h.opened).toBe(0)
+    expect(readFileSync(made.outPath, 'utf8')).toBe('someone else')
+    // The answer on record is now the next free name, so a restart can use it.
+    const next = path.join(folder, 'Green 2.mp4')
+    expect(exportPathFromPage(next)).toBe(path.resolve(next))
+  })
+
+  it('leaves a path from his own save dialog exactly as it is', async () => {
+    const folder = path.join(h.dir, 'DialogFolder')
+    mkdirSync(folder, { recursive: true })
+    const picked = path.join(folder, 'Mine.mp4')
+    writeFileSync(picked, 'old take')
+    choseExportPath(picked)
+    await native.start(config(exportPathFromPage(picked)), win)
+    expect(exportPathFromPage(picked)).toBe(path.resolve(picked))
+    expect(readFileSync(picked, 'utf8')).toBe('old take')
+  })
+
+  it('is wired in main: the folder picker and the file name each have a handler', () => {
+    expect(main).toContain("ipcMain.handle('export:pickFolder'")
+    expect(main).toContain('pickPresetFolder(mainWindow, title, hint)')
+    expect(main).toContain("ipcMain.handle('export:presetOutput'")
+    expect(main).toContain('presetOutput(folder, base, encoder)')
   })
 })
