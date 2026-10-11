@@ -57,6 +57,7 @@ import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, notSavedDialog, type CloseGate 
 import { createInstallWait } from './installWait'
 import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
 import { exportFinished, exportPathFromPage } from './exportChoice'
+import { pickPresetFolder, presetOutput } from './exportPresetFolder'
 import { appliedWhileAway, launchMode, parseQuietMarker, QUIET_START_FILE, secondInstanceAction } from './launchMode'
 import { centreIn, readWindowState, restoreBounds, WINDOW_STATE_FILE, writeWindowState, type Placement } from './windowState'
 import { fileQuietStore, startUpdateFlow, type UpdateFlow } from './updateFlow'
@@ -1040,6 +1041,14 @@ app.whenReady().then(() => {
     if (typeof filePath !== 'string' || !/\.(mp4|mov)$/i.test(filePath) || !existsSync(filePath)) return
     shell.showItemInFolder(filePath)
   })
+  // Export presets (src/state/exportPresets.ts): each remembers its own folder. Main picks the
+  // folder and makes the file name in it; see ./exportPresetFolder for why that is safe.
+  ipcMain.handle('export:pickFolder', (_e, title: unknown, hint: unknown) =>
+    mainWindow ? pickPresetFolder(mainWindow, title, hint) : null,
+  )
+  ipcMain.handle('export:presetOutput', (_e, folder: unknown, base: unknown, encoder: unknown) =>
+    presetOutput(folder, base, encoder),
+  )
   // The export on the taskbar button, so he sees it from whatever app he is in.
   ipcMain.handle('export:taskbar', (_e, state: ExportTaskbarState) => {
     if (mainWindow) showExportOnTaskbar(mainWindow, state)

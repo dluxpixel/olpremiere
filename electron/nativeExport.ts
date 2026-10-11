@@ -13,6 +13,7 @@ import path from 'node:path'
 import type { NativeCaps, NativeEncoder, NativeExportConfig, NativeFinishResult, NativeStartResult } from './ipc-types'
 import { buildArgs, containerExt } from './exportArgs'
 import { rememberFolder, suggestedPath } from './saveFiles'
+import { refreshPick } from './exportPresetFolder'
 
 /** The bundled ffmpeg.exe: extraResources in prod, vendor/ in dev. */
 function ffmpegPath(): string {
@@ -252,6 +253,9 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
     }
     outPath = picked
   }
+  // A file name main made for a preset can have been taken since (the sound is made in
+  // between): move to the next free one, never write over it. Any other path stays.
+  outPath = refreshPick(outPath)
 
   const audioPath = config.hasAudio ? pendingAudioPath : null
   pendingAudioPath = null

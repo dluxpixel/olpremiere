@@ -130,6 +130,9 @@ const api: OlApi = {
   backupRead: (filePath: string) => ipcRenderer.invoke('backup:read', filePath),
   backupReveal: () => ipcRenderer.invoke('backup:reveal'),
   exportReveal: (filePath: string) => ipcRenderer.invoke('export:reveal', filePath),
+  exportPickFolder: (title: string, hint: string | null) => ipcRenderer.invoke('export:pickFolder', title, hint),
+  exportPresetOutput: (folder: string, base: string, encoder: NativeEncoder) =>
+    ipcRenderer.invoke('export:presetOutput', folder, base, encoder),
   exportTaskbar: (state: ExportTaskbarState) => ipcRenderer.invoke('export:taskbar', state),
   projectWrite: (id: string, projectName: string, json: string) =>
     ipcRenderer.invoke('project:write', id, projectName, json),
