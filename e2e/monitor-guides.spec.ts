@@ -64,6 +64,13 @@ async function snap(page: Page, name: string): Promise<void> {
 
 /** Mean absolute difference, per colour channel out of 255, between two snapshots. */
 async function diff(page: Page, a: string, b: string): Promise<number> {
+  // Two snapshots of different sizes would compare misaligned rows, or stop at the shorter one.
+  const sizes = await page.evaluate(([x, y]) => {
+    const w = window as unknown as Record<string, ImageData>
+    return { aw: w[x].width, ah: w[x].height, bw: w[y].width, bh: w[y].height }
+  }, [a, b])
+  expect(sizes.bw, `${a} and ${b} have the same width`).toBe(sizes.aw)
+  expect(sizes.bh, `${a} and ${b} have the same height`).toBe(sizes.ah)
   return page.evaluate(([x, y]) => {
     const w = window as unknown as Record<string, ImageData>
     const p = w[x].data

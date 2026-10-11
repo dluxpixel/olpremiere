@@ -158,11 +158,15 @@ describe('a hold that has no key or pointer to end it', () => {
     seed()
     const add = vi.spyOn(window, 'addEventListener')
     const remove = vi.spyOn(window, 'removeEventListener')
+    const docAdd = vi.spyOn(document, 'addEventListener')
+    const docRemove = vi.spyOn(document, 'removeEventListener')
     holdBefore()
     holdBefore()
     expect(add.mock.calls.filter((c) => (c[0] as string) === 'blur')).toHaveLength(1)
+    expect(docAdd.mock.calls.filter((c) => (c[0] as string) === 'visibilitychange')).toHaveLength(1)
     releaseBefore()
     expect(remove.mock.calls.filter((c) => (c[0] as string) === 'blur')).toHaveLength(1)
+    expect(docRemove.mock.calls.filter((c) => (c[0] as string) === 'visibilitychange')).toHaveLength(1)
     // Letting go again, or a blur after the release, does nothing.
     const e = previewEpoch()
     releaseBefore()
@@ -170,6 +174,8 @@ describe('a hold that has no key or pointer to end it', () => {
     expect(previewEpoch()).toBe(e)
     add.mockRestore()
     remove.mockRestore()
+    docAdd.mockRestore()
+    docRemove.mockRestore()
   })
 })
 
@@ -203,12 +209,24 @@ describe('the project changing under a hold', () => {
     expect(previewBeforeActive()).toBe(true)
   })
 
-  it('stops watching the project once released, so a later edit does not touch a new hold twice', () => {
+  it('stops watching the project once released, and never subscribes twice', () => {
     seed()
+    // Count live store subscriptions: each subscribe adds one, each unsubscribe takes it away.
+    const real = useStore.subscribe
+    let live = 0
+    const spy = vi.spyOn(useStore, 'subscribe').mockImplementation(((...a: unknown[]) => {
+      live++
+      const off = (real as (...x: unknown[]) => () => void).apply(useStore, a)
+      return () => {
+        live--
+        off()
+      }
+    }) as never)
     holdBefore()
+    holdBefore()
+    expect(live).toBe(1)
     releaseBefore()
-    const e = previewEpoch()
-    updateActiveSequence('edit', (sq) => sq)
-    expect(previewEpoch()).toBe(e)
+    expect(live).toBe(0)
+    spy.mockRestore()
   })
 })
