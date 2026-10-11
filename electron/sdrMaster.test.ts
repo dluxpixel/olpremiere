@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { sdrMasterArgs } from './remuxArgs'
-import { convertToMp4, resetMasterChoice, runFfmpeg } from './remuxRun'
+import { convertToMp4, makeSdrMaster, resetMasterChoice, runFfmpeg, type FfmpegRun } from './remuxRun'
 
 const FFMPEG = join(import.meta.dirname, '..', 'vendor', 'ffmpeg', 'win-x64', 'ffmpeg.exe')
 
@@ -221,4 +221,80 @@ describe('a rescue is held to the frames it was given', () => {
     await convertToMp4(FFMPEG, flat, out, 'rescue')
     expect(frameTimes(out)).toHaveLength(60)
   }, 60_000)
+})
+
+describe('⛔ a graphics card that gives out half way gets one more try with no card in it', () => {
+  // A scripted ffmpeg: no process is spawned, each master try answers from the table, so the
+  // test can say "the card died after 12 frames" which a healthy machine will never do on cue.
+  const STREAMS = { durationS: 1, video: 'hevc', audio: 'aac', hdr: 'hlg' } as const
+  const SOURCE_FRAMES = 30
+  const ok: FfmpegRun = { code: 0, stderr: '', frames: SOURCE_FRAMES }
+
+  type Rung = 'libplacebo+software' | 'libplacebo+qsv' | 'zscale+software' | 'zscale+qsv'
+  const rungOf = (args: string[]): Rung =>
+    `${args.includes('vulkan=vk') ? 'libplacebo' : 'zscale'}+${args.some((a) => a.includes('qsv')) ? 'qsv' : 'software'}` as Rung
+
+  /** The runner for a table of answers, and the list of what it was asked in order. */
+  function scripted(answers: Partial<Record<Rung, FfmpegRun>>): { run: typeof runFfmpeg; asked: string[] } {
+    const asked: string[] = []
+    const run: typeof runFfmpeg = async (_ffmpeg, args) => {
+      // The frame count call reads the source and writes to the null muxer, so it ends in a dash.
+      if (args[args.length - 1] === '-') return ok
+      const rung = rungOf(args)
+      asked.push(rung)
+      return answers[rung] ?? { code: 1, stderr: 'no such device', frames: 0 }
+    }
+    return { run, asked }
+  }
+  const dies = (frames: number): FfmpegRun => ({ code: 1, stderr: 'Vulkan: device lost', frames })
+  const make = (run: typeof runFfmpeg) => makeSdrMaster('ffmpeg', 'in.mov', join(dir, 'out.mp4'), STREAMS, undefined, undefined, run)
+
+  it('a card that dies after its first frames: the processor route makes the master', async () => {
+    const { run, asked } = scripted({ 'libplacebo+software': dies(12), 'zscale+software': ok })
+    await expect(make(run)).resolves.toBeUndefined()
+    // Straight from the dead card to the processor route: not through QuickSync first.
+    expect(asked).toEqual(['libplacebo+software', 'zscale+software'])
+  })
+
+  it('a card that hands back a short file gets the same second try', async () => {
+    const { run, asked } = scripted({
+      'libplacebo+software': { code: 0, stderr: '', frames: SOURCE_FRAMES - 9 },
+      'zscale+software': ok,
+    })
+    await expect(make(run)).resolves.toBeUndefined()
+    expect(asked).toEqual(['libplacebo+software', 'zscale+software'])
+  })
+
+  it('QuickSync dying half way is a card too, so it also falls back to the processor route', async () => {
+    const { run, asked } = scripted({ 'libplacebo+software': { code: 1, stderr: 'no libx264', frames: 0 }, 'libplacebo+qsv': dies(4), 'zscale+software': ok })
+    await expect(make(run)).resolves.toBeUndefined()
+    expect(asked).toEqual(['libplacebo+software', 'libplacebo+qsv', 'zscale+software'])
+  })
+
+  it('when the processor route fails too the clip is refused, with that try as the reason, and nothing more is tried', async () => {
+    const { run, asked } = scripted({ 'libplacebo+software': dies(12), 'zscale+software': { code: 1, stderr: 'Invalid data found when processing input', frames: 7 } })
+    await expect(make(run)).rejects.toThrow('Invalid data found')
+    expect(asked).toEqual(['libplacebo+software', 'zscale+software'])
+  })
+
+  it('a rung with no card in it that fails half way is the file: no second try', async () => {
+    // The ladder reaches zscale only because the card routes could not even start.
+    const { run, asked } = scripted({ 'zscale+software': dies(5) })
+    await expect(make(run)).rejects.toThrow('device lost')
+    expect(asked).toEqual(['libplacebo+software', 'libplacebo+qsv', 'zscale+software'])
+  })
+
+  it('a rung that fails before its first frame still just moves down the ladder', async () => {
+    const { run, asked } = scripted({ 'zscale+software': ok })
+    await expect(make(run)).resolves.toBeUndefined()
+    expect(asked).toEqual(['libplacebo+software', 'libplacebo+qsv', 'zscale+software'])
+  })
+
+  it('the fallback is not remembered: the next clip tries the card route first again', async () => {
+    const first = scripted({ 'libplacebo+software': dies(12), 'zscale+software': ok })
+    await make(first.run)
+    const next = scripted({ 'libplacebo+software': ok })
+    await make(next.run)
+    expect(next.asked).toEqual(['libplacebo+software'])
+  })
 })

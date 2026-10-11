@@ -5,9 +5,13 @@
 // identical output in both places. This file is the sole engine exception that
 // touches GL; all transform math lives in the pure, unit-tested mat.ts.
 
+import type { ParsedCube } from '../effects/cube'
+import { getLut } from '../effects/lutBank'
+import { lutInfo, lutTexture } from '../effects/lutShader'
 import { CLARITY_GRAIN_GLSL, LOOK_COMMON_GLSL, PASS_FLOOR } from '../effects/lookMath'
 import { rgbSplitOffsets } from '../effects/gym'
 import { getEffect, stackSignature } from '../effects/registry'
+import { blurPlan } from './blurPlan'
 import { computeQuad, cropUV, edgeU, quadScale } from './mat'
 import { deriveMotionBlur, quadCentre, quadRadius } from './motionBlur'
 import type { RenderFrame, RenderLayer, RenderOp, ResolvedEffect, TextureSource, TransitionKind } from './types'
@@ -420,6 +424,18 @@ function buildLayerFs(pointwise: readonly ResolvedEffect[], withMask: boolean, b
     if (!def?.glsl) return
     for (const h of def.glslHelpers ?? []) if (!helpers.includes(h)) helpers.push(h)
     for (const param of def.params) decls.push(`uniform float ${uniformName(i, param.key)};`)
+    // A LUT effect also reads a colour table: its own 3D sampler (a 1D table is
+    // folded into one, effects/lutShader.ts), the table's kind and size, and the
+    // input range it maps onto the table. `highp` is spelled out because a
+    // sampler's default precision in a fragment shader is lowp.
+    if (def.lut) {
+      decls.push(
+        `uniform highp sampler3D ${uniformName(i, 'lut')};`,
+        `uniform vec2 ${uniformName(i, 'lutInfo')};`,
+        `uniform vec3 ${uniformName(i, 'lutMin')};`,
+        `uniform vec3 ${uniformName(i, 'lutMax')};`,
+      )
+    }
     bodies.push(`  { // ${def.type}\n${def.glsl((key) => uniformName(i, key))}\n  }`)
   })
   // Shape mask (source-UV space) modulates alpha before the effect chain, so
@@ -1188,7 +1204,23 @@ interface LayerProgram {
   }
   /** fx[stackIndex][paramKey] -> location */
   fx: Record<string, WebGLUniformLocation | null>[]
+  /** lut[stackIndex]: where a LUT effect's table is read from; null for every other effect. */
+  lut: (LutLocs | null)[]
 }
+
+/** The uniforms one LUT effect in a stack program reads its table through. */
+interface LutLocs {
+  tex: WebGLUniformLocation | null
+  info: WebGLUniformLocation | null
+  min: WebGLUniformLocation | null
+  max: WebGLUniformLocation | null
+}
+
+/** The first texture unit a LUT table is bound to. Units 0 to 3 stay the picture's and the passes'. */
+const LUT_UNIT0 = 4
+
+/** Tables kept on the GPU at once. A table is at most a few MB; a project rarely uses more than a handful. */
+const LUT_TEX_CAP = 32
 
 /** A full screen pass program, and where its inputs live. */
 interface PassProgram<L> {
@@ -1434,9 +1466,99 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         for (const param of def?.params ?? []) locs[param.key] = gl.getUniformLocation(prog, uniformName(i, param.key))
         return locs
       }),
+      lut: pointwise.map((fx, i) =>
+        getEffect(fx.type)?.lut
+          ? {
+              tex: gl.getUniformLocation(prog, uniformName(i, 'lut')),
+              info: gl.getUniformLocation(prog, uniformName(i, 'lutInfo')),
+              min: gl.getUniformLocation(prog, uniformName(i, 'lutMin')),
+              max: gl.getUniformLocation(prog, uniformName(i, 'lutMax')),
+            }
+          : null,
+      ),
     }
     layerPrograms.set(key, entry)
     return entry
+  }
+
+  // --- LUT tables on the GPU ---
+  // One RGB32F 3D texture per table, read with texelFetch and blended in the
+  // shader (effects/lutShader.ts), so NEAREST is the right filter and no float
+  // filtering extension is needed. Keyed by the table's id, which is a hash of
+  // its content, so a hit is always the same numbers. A table the bank does not
+  // hold yet (a project still loading) binds the 1x1 dummy and draws as a pass
+  // through; it uploads on the first frame the bank has it.
+  const lutTextures = new Map<string, WebGLTexture>()
+  let lutDummy: WebGLTexture | null = null
+
+  function uploadLut(width: number, height: number, depth: number, data: Float32Array | null): WebGLTexture {
+    const t = gl.createTexture()
+    if (!t) throw new Error('createTexture failed')
+    gl.bindTexture(gl.TEXTURE_3D, t)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB32F, width, height, depth, 0, gl.RGB, gl.FLOAT, data ?? new Float32Array(width * height * depth * 3))
+    return t
+  }
+
+  /** The texture a LUT effect reads this draw: its table's, or the dummy when there is none. */
+  function lutTextureFor(id: string | undefined, cube: ParsedCube | undefined): WebGLTexture {
+    if (id !== undefined && cube) {
+      const hit = lutTextures.get(id)
+      if (hit) {
+        // Most recently used goes last, so the cap drops the one used longest ago.
+        lutTextures.delete(id)
+        lutTextures.set(id, hit)
+        return hit
+      }
+      const tx = lutTexture(cube)
+      const t = uploadLut(tx.width, tx.height, tx.depth, tx.data)
+      lutTextures.set(id, t)
+      while (lutTextures.size > LUT_TEX_CAP) {
+        const oldest = lutTextures.keys().next().value as string
+        gl.deleteTexture(lutTextures.get(oldest) ?? null)
+        lutTextures.delete(oldest)
+      }
+      return t
+    }
+    if (!lutDummy) lutDummy = uploadLut(1, 1, 1, null)
+    return lutDummy
+  }
+
+  /**
+   * Bind a pointwise stack's inputs to the program built for it: every param as
+   * its float uniform, and every LUT effect's table on its own texture unit.
+   * Locations were resolved against THIS program, so index i lines up with
+   * pointwise[i] by construction. Leaves unit 0 active, which the rest of the
+   * renderer assumes.
+   */
+  function bindStackUniforms(lp: LayerProgram, pointwise: readonly ResolvedEffect[]): void {
+    let lutUnit = 0
+    pointwise.forEach((fx, i) => {
+      const locs = lp.fx[i]
+      if (locs) {
+        for (const key of Object.keys(locs)) {
+          const loc = locs[key]
+          if (loc) gl.uniform1f(loc, fx.params[key] ?? 0)
+        }
+      }
+      const ll = lp.lut[i]
+      if (!ll) return
+      const cube = getLut(fx.lut)
+      const unit = LUT_UNIT0 + lutUnit++
+      gl.activeTexture(gl.TEXTURE0 + unit)
+      gl.bindTexture(gl.TEXTURE_3D, lutTextureFor(fx.lut, cube))
+      gl.uniform1i(ll.tex, unit)
+      const [kind, size] = lutInfo(cube)
+      gl.uniform2f(ll.info, kind, size)
+      gl.uniform3f(ll.min, cube?.domainMin[0] ?? 0, cube?.domainMin[1] ?? 0, cube?.domainMin[2] ?? 0)
+      gl.uniform3f(ll.max, cube?.domainMax[0] ?? 1, cube?.domainMax[1] ?? 1, cube?.domainMax[2] ?? 1)
+    })
+    if (lutUnit > 0) gl.activeTexture(gl.TEXTURE0)
   }
 
   const blurLoc = {
@@ -2119,44 +2241,41 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       gl.uniform1i(lp.mask.kind, m.kind === 'ellipse' ? 1 : 0)
       gl.uniform1f(lp.mask.invert, m.invert ? 1 : 0)
     }
-    // Bind this draw's effect params. Locations were resolved against THIS
-    // program, so index i lines up with pointwise[i] by construction.
-    pointwise.forEach((fx, i) => {
-      const locs = lp.fx[i]
-      if (!locs) return
-      for (const key of Object.keys(locs)) {
-        const loc = locs[key]
-        if (loc) gl.uniform1f(loc, fx.params[key] ?? 0)
-      }
-    })
+    // Bind this draw's effect params (and any LUT tables).
+    bindStackUniforms(lp, pointwise)
     gl.drawArrays(gl.TRIANGLES, 0, 6)
   }
 
   // Separable gaussian on `srcFbo` into a scratch and back; result left in
-  // srcFbo. radiusPx is in OUTPUT px (== seq px since FBO is seq-sized).
+  // srcFbo. radiusPx is in OUTPUT px (== seq px since FBO is seq-sized). A radius
+  // past one pass's reach is drawn as several rounds (blurPlan.ts), so a look's
+  // glow keeps its size against the frame at 4K; up to 64 px it is ONE round,
+  // exactly as it always was.
   function blurFbo(srcFbo: Fbo, scratch: Fbo, radiusPx: number): void {
-    const r = Math.min(radiusPx, MAX_BLUR_PX)
+    const plan = blurPlan(radiusPx)
     gl.useProgram(blurProg)
     bindFull(blurLoc.aPos)
     gl.uniform1i(blurLoc.uTex, 0)
     gl.activeTexture(gl.TEXTURE0)
-
-    // Horizontal: srcFbo -> scratch.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
-    gl.viewport(0, 0, fboW, fboH)
     gl.disable(gl.BLEND)
-    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
-    gl.uniform2f(blurLoc.uDir, 1 / fboW, 0)
-    gl.uniform1f(blurLoc.uRadius, r)
-    gl.drawArrays(gl.TRIANGLES, 0, 3)
 
-    // Vertical: scratch -> srcFbo.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
-    gl.viewport(0, 0, fboW, fboH)
-    gl.bindTexture(gl.TEXTURE_2D, scratch.tex)
-    gl.uniform2f(blurLoc.uDir, 0, 1 / fboH)
-    gl.uniform1f(blurLoc.uRadius, r)
-    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    for (let round = 0; round < plan.passes; round++) {
+      // Horizontal: srcFbo -> scratch.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+      gl.viewport(0, 0, fboW, fboH)
+      gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+      gl.uniform2f(blurLoc.uDir, 1 / fboW, 0)
+      gl.uniform1f(blurLoc.uRadius, plan.radiusPx)
+      gl.drawArrays(gl.TRIANGLES, 0, 3)
+
+      // Vertical: scratch -> srcFbo.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+      gl.viewport(0, 0, fboW, fboH)
+      gl.bindTexture(gl.TEXTURE_2D, scratch.tex)
+      gl.uniform2f(blurLoc.uDir, 0, 1 / fboH)
+      gl.uniform1f(blurLoc.uRadius, plan.radiusPx)
+      gl.drawArrays(gl.TRIANGLES, 0, 3)
+    }
   }
 
   // Directional smear: the SAME separable-blur program run twice along one
@@ -2308,11 +2427,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   /**
    * A look's halation or bloom: bright pass into `extra`, blur it there, screen it
    * back over the layer through `scratch`. Radius arrives as a fraction of the
-   * frame's short side, so the glow keeps its size against the frame up to a short
-   * side of about 1830 px. Past that blurFbo's MAX_BLUR_PX cap (64) clips the
-   * widest ones: on a 2160 short side Golden Hour's bloom wants 76 px and gets 64,
-   * about 15% smaller. Preview and export still agree, because both blur the same
-   * sequence sized FBO; his 1080 x 1920 sequences never reach the cap.
+   * frame's short side, and blurFbo draws any radius (several rounds past 64 px,
+   * blurPlan.ts), so the glow is the same size against the frame at 1080 and at 4K.
+   * Preview and export agree, because both blur the same sequence sized FBO.
    */
   function lookGlowFbo(srcFbo: Fbo, scratch: Fbo, p: Record<string, number>): void {
     const bright = lookBrightPass.get()
@@ -2689,16 +2806,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     // Adjustment passes always write an intermediate FBO (the work buffer, then
     // the accumulator); the accumulator's blit to the canvas is what dithers.
     if (lp.uDither) gl.uniform1f(lp.uDither, 0)
-    // Bind the stack's effect params. Locations were resolved against THIS
-    // program, so index i lines up with pointwise[i] by construction.
-    pointwise.forEach((fx, i) => {
-      const locs = lp.fx[i]
-      if (!locs) return
-      for (const key of Object.keys(locs)) {
-        const loc = locs[key]
-        if (loc) gl.uniform1f(loc, fx.params[key] ?? 0)
-      }
-    })
+    // Bind the stack's effect params (and any LUT tables).
+    bindStackUniforms(lp, pointwise)
     if (mask && lp.mask) {
       // The mask spec is top-down (source space); this pass samples v-flipped.
       gl.uniform2f(lp.mask.center, mask.cx, 1 - mask.cy)
@@ -2793,6 +2902,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     gl.deleteProgram(combineProg)
     gl.deleteProgram(blitProg)
     if (codeLut) gl.deleteTexture(codeLut)
+    for (const t of lutTextures.values()) gl.deleteTexture(t)
+    lutTextures.clear()
+    if (lutDummy) gl.deleteTexture(lutDummy)
+    lutDummy = null
     gl.deleteProgram(sharpenProg)
     gl.deleteProgram(rgbSplitProg)
     gl.deleteProgram(glowProg)

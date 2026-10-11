@@ -25,6 +25,8 @@ export const copyEffects = (effects: readonly EffectInstance[], idFor: () => Id)
     type: e.type,
     enabled: e.enabled,
     params: Object.fromEntries(Object.entries(e.params).map(([k, v]) => [k, copyParam(v)])),
+    // A LUT effect keeps its table (a preset or a copied clip still has its LUT).
+    ...(e.lut !== undefined ? { lut: e.lut } : {}),
   }))
 
 /** "Lift / Gamma / Gain", "Exposure + Saturation", "Exposure + 3 more". */

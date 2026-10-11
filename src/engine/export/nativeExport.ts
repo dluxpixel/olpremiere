@@ -10,6 +10,7 @@ import { useToasts } from '../../state/toasts'
 import { olApi } from '../../platform'
 import { hasStrobe, sequenceWithBeats } from '../beatGrid'
 import { budgets } from '../memoryBudget'
+import { lutsUsedBy } from '../effects/lutBank'
 import type { Id, Project } from '../types'
 import { planAudioMix } from './audioRender'
 import type { ExportAsset, ExportProgress, ExportRequest, ExportResponse, ExportSettings } from './messages'
@@ -339,6 +340,7 @@ export async function exportNative(
       sequence: renderSequence,
       assets: exportAssets,
       audio: null,
+      luts: lutsUsedBy(sequence, project.luts),
       native: true,
       frameBudgetBytes: budgets().frames,
     } satisfies ExportRequest)

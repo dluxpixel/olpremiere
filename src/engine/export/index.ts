@@ -6,6 +6,7 @@ import { blobForExport } from '../../state/mediaMirror'
 import { useToasts } from '../../state/toasts'
 import { hasStrobe, sequenceWithBeats } from '../beatGrid'
 import { budgets } from '../memoryBudget'
+import { lutsUsedBy } from '../effects/lutBank'
 import type { Id, MediaAsset, Project } from '../types'
 import { planAudioMix } from './audioRender'
 import { NO_SOUND_IN_THIS_BROWSER, type ExportAsset, type ExportProgress, type ExportRequest, type ExportResponse, type ExportSettings } from './messages'
@@ -188,6 +189,7 @@ export async function exportSequence(
       sequence: renderSequence,
       assets: exportAssets,
       audio: audioPlan ? audioPlan.info : null,
+      luts: lutsUsedBy(sequence, project.luts),
       fileHandle,
       frameBudgetBytes: budgets().frames,
     }

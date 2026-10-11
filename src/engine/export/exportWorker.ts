@@ -28,6 +28,7 @@ import { budgets } from '../memoryBudget'
 import { stageClock } from './stageClock'
 import { browserConfigCheck, pickDecoderOptions } from './decoderChoice'
 import { createRenderer } from '../render/glRenderer'
+import { registerLutAssets } from '../effects/lutBank'
 import { resolveFrame } from '../render/resolve'
 import { rasterizeTitle } from '../render/titleRaster'
 
@@ -273,6 +274,8 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
   let outcome: { msg: ExportResponse; transfer: Transferable[] } | null = null
   try {
     const { settings, sequence, assets } = init
+    // The colour tables this sequence's LUT effects read, before any frame draws.
+    registerLutAssets(init.luts)
     const W = settings.width
     const H = settings.height
     const framesTotal = Math.max(1, Math.ceil((settings.endS - settings.startS) * settings.fps))
@@ -474,6 +477,8 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
   let outcome: { msg: ExportResponse; transfer: Transferable[] } | null = null
   try {
     const { settings, sequence, assets, audio, fileHandle } = init
+    // The colour tables this sequence's LUT effects read, before any frame draws.
+    registerLutAssets(init.luts)
     const framesTotal = Math.max(1, Math.ceil((settings.endS - settings.startS) * settings.fps))
     // HD+ gets the quality-tuned encode + BT.709 tag (the YouTube path); SD stays
     // byte-stable so the golden / preview==export tests are unaffected.

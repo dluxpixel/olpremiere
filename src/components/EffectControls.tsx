@@ -110,6 +110,7 @@ import { toggleClipsFlip } from '../state/bulkEdits'
 import { EFFECT_CARD_MIME, dragHasType } from '../state/dnd'
 import { allFolded, setEffectsFolded, toggleEffectFold, useEffectFold } from '../state/effectFold'
 import { saveSelectionAsPreset } from '../state/library'
+import { loadLutFile } from '../state/lutActions'
 import { EASE_SECONDS, setEaseSeconds, useSettings } from '../state/settings'
 import { createPendingEdit, type PendingEdit } from './pendingEdit'
 import { isCommitInPlace } from '../fieldCommit'
@@ -1008,6 +1009,7 @@ function EffectCard({ clip, effect, index, count, localT }: {
 
       {!folded && (
         <div className={`flex flex-col gap-1 ${effect.enabled ? '' : 'opacity-40'}`}>
+          {def.lut && <LutFileRow clip={clip} effect={effect} />}
           {def.params
             .filter((param) => !param.internal)
             .map((param) => (
@@ -1030,6 +1032,62 @@ function EffectCard({ clip, effect, index, count, localT }: {
             </div>
           )}
           <EffectEaseRow clip={clip} effect={effect} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The file picker of a LUT effect: choose a .cube file, see which one is loaded,
+ * and read in plain words why a file would not load. A broken file changes
+ * nothing in the project (state/lutActions.ts), so the previous LUT, if any,
+ * stays on the clip beside the message.
+ */
+function LutFileRow({ clip, effect }: { clip: Clip; effect: EffectInstance }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [error, setError] = useState<string | null>(null)
+  const name = useStore((s) => (effect.lut ? s.project.luts?.[effect.lut]?.name : undefined))
+  return (
+    <div className="flex flex-col gap-1" data-testid="lut-row">
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          data-testid="lut-choose"
+          onClick={() => inputRef.current?.click()}
+          className="shrink-0 rounded-field bg-bg-input px-2 py-0.5 text-ui-sm text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated"
+        >
+          Choose .cube file
+        </button>
+        <span
+          data-testid="lut-name"
+          title={name}
+          className={`min-w-0 flex-1 truncate text-ui-sm ${name ? 'text-text-primary' : 'text-text-secondary'}`}
+        >
+          {name ?? 'No LUT chosen yet'}
+        </span>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".cube"
+          className="hidden"
+          data-testid="lut-file"
+          aria-label="LUT file"
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0]
+            // Cleared so choosing the same file again still fires a change.
+            e.currentTarget.value = ''
+            if (!file) return
+            setError(null)
+            void loadLutFile(clip.id, effect.id, file).then((r) => {
+              if (!r.ok) setError(r.message)
+            })
+          }}
+        />
+      </div>
+      {error && (
+        <div role="alert" data-testid="lut-error" className="text-[11px] text-danger">
+          {error}
         </div>
       )}
     </div>

@@ -37,6 +37,30 @@ export interface Project {
    * an edit never opened from a file.
    */
   fileBaseUpdatedAt?: number
+  /**
+   * The colour tables (.cube files) this project's LUT effects use, by id. The
+   * table is stored HERE, inside the project, and not as a path to a file on his
+   * disk, so a project that is moved to another PC, sent as a project file or
+   * reopened next year still has its LUT. Ids are a hash of the table itself
+   * (effects/lutBank.ts), so the same file loaded twice is stored once.
+   *
+   * Optional on purpose: a project saved before LUTs existed has no field.
+   */
+  luts?: Record<Id, LutAsset>
+}
+
+/** A colour table loaded from a .cube file, in the form a project carries it. */
+export interface LutAsset {
+  id: Id
+  /** What the Inspector shows: the file's title, or its file name. */
+  name: string
+  kind: '1d' | '3d'
+  /** Steps per side (3D) or entries (1D). */
+  size: number
+  domainMin: [number, number, number]
+  domainMax: [number, number, number]
+  /** The table as little endian 32 bit floats, red fastest for a 3D table, in base64. */
+  data: string
 }
 
 /** An imported source file. */
@@ -541,6 +565,12 @@ export interface EffectInstance {
   type: EffectType
   params: Record<string, Keyframeable>
   enabled: boolean
+  /**
+   * The colour table a LUT effect applies: a key of `Project.luts`. Only the LUT
+   * effect has one. A LUT effect without one draws nothing (the picture passes
+   * through), which is what a freshly dropped LUT is until he picks a file.
+   */
+  lut?: Id
 }
 
 /**

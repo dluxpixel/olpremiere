@@ -38,6 +38,7 @@ import { activeSequence, type MediaAsset } from './engine/types'
 import { useToasts } from './state/toasts'
 import { initUpdateCheck } from './state/updateCheck'
 import { initUsageLog } from './state/usageWiring'
+import { startLutSync } from './state/lutSync'
 import { initUpdateFeed, whenUpdateChecked } from './state/updateStatus'
 import { plural } from './engine/plural'
 
@@ -90,6 +91,9 @@ const work: BootWork = {
     initSettings()
     // His private usage log, from the first event on, and only if its switch is on.
     initUsageLog()
+    // The colour tables of the open project, decoded for the preview as the
+    // project changes. See state/lutSync.ts.
+    startLutSync()
     // None of these three needs the project, so queueing them behind it would
     // cost real seconds to buy nothing. Their rows report them in order below.
     libraryReady = started(loadLibrary())
