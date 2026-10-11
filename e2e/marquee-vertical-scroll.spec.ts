@@ -6,6 +6,7 @@
 // of tracks he was drawing a selection box around lanes he could not see.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -18,9 +19,11 @@ async function tallStack(page: Page): Promise<void> {
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
     updateActiveSequence('test: many tracks', (s) => {

@@ -34,19 +34,21 @@ async function addClip(page: Page, fixture: string = FIXTURE): Promise<string> {
 
 /** Apply a registry effect to the clip and override params, all through the real actions. */
 async function applyEffectWithParams(page: Page, clipId: string, type: string, params: Record<string, number>) {
+  await parkModules(page, ['/src/state/clipEdits.ts', '/src/state/store.ts', '/src/engine/types.ts'])
   await page.evaluate(
-    async ({ clipId, type, params }) => {
+    ({ clipId, type, params }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
       const storeMod = '/src/state/store.ts'
       const typesMod = '/src/engine/types.ts'
-      const { applyEffect, setEffectParamValue } = (await import(/* @vite-ignore */ editsMod)) as {
+      const { applyEffect, setEffectParamValue } = mods[editsMod] as {
         applyEffect: (clipId: string, type: string) => void
         setEffectParamValue: (clipId: string, effectId: string, key: string, value: number) => void
       }
-      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { useStore } = mods[storeMod] as {
         useStore: { getState: () => { project: unknown } }
       }
-      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+      const { activeSequence } = mods[typesMod] as {
         activeSequence: (p: unknown) => { tracks: { clips: { id: string; effects: { id: string; type: string }[] }[] }[] }
       }
       applyEffect(clipId, type)
@@ -274,9 +276,11 @@ test('an adjustment layer grades the footage below it (and only inside its mask)
     .toBeLessThan(14) // grayscale = channels converge
 
   // Mask the adjustment to a small centered ellipse: the corner regains colour.
-  await page.evaluate(async (id) => {
+  await parkModules(page, ['/src/state/clipEdits.ts'])
+  await page.evaluate((id) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const editsMod = '/src/state/clipEdits.ts'
-    const { setClipMask } = (await import(/* @vite-ignore */ editsMod)) as {
+    const { setClipMask } = mods[editsMod] as {
       setClipMask: (clipId: string, mask: unknown) => void
     }
     setClipMask(id, { kind: 'ellipse', cx: 0.5, cy: 0.5, rx: 0.2, ry: 0.2, feather: 0.02, invert: false })
@@ -321,10 +325,12 @@ test('the new transitions are listed in the Effects browser', async ({ page }) =
 // Glitch. These sample the live monitor to prove each kind now runs its own form.
 
 async function setLoneTransition(page: Page, clipId: string, kind: string, durationS: number): Promise<void> {
+  await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
-    async ({ clipId, kind, durationS }) => {
+    ({ clipId, kind, durationS }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
-      const { setClipTransition } = (await import(/* @vite-ignore */ editsMod)) as {
+      const { setClipTransition } = mods[editsMod] as {
         setClipTransition: (id: string, edge: 'in' | 'out', kind: string, durationS?: number) => void
       }
       setClipTransition(clipId, 'in', kind, durationS)

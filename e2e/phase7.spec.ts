@@ -28,7 +28,7 @@ async function addClip(page: Page): Promise<string> {
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
   await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
   const clipId = await page.evaluate(() => {
-  const mods = (window as unknown as ParkedWindow).__e2eMods
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
     const { useStore } = mods[storeMod] as {
@@ -49,7 +49,7 @@ async function setChannel(page: Page, clipId: string, channel: string, value: nu
   await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
     ({ clipId, channel, value }) => {
-  const mods = (window as unknown as ParkedWindow).__e2eMods
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
       const { setChannel } = mods[editsMod] as {
         setChannel: (id: string, ch: string, v: number) => void
@@ -144,7 +144,7 @@ async function setSpeed(page: Page, clipId: string, speed: number): Promise<void
   await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
     ({ clipId, speed }) => {
-  const mods = (window as unknown as ParkedWindow).__e2eMods
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
       const { setClipSpeed } = mods[editsMod] as {
         setClipSpeed: (id: string, s: number) => void
@@ -171,7 +171,7 @@ test('applying the colour effects exposes lift/gamma/gain/temperature/tint', asy
   // which is exactly what this test now guards.
   await parkModules(page, ['/src/state/clipEdits.ts', '/src/state/store.ts', '/src/engine/types.ts'])
   await page.evaluate(() => {
-  const mods = (window as unknown as ParkedWindow).__e2eMods
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const editsMod = '/src/state/clipEdits.ts'
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
@@ -309,7 +309,7 @@ test('clicking a clip in the preview selects it and shows the gizmo', async ({ p
   // Deselect, so the gizmo is hidden to start.
   await parkModules(page, ['/src/state/store.ts'])
   await page.evaluate(() => {
-  const mods = (window as unknown as ParkedWindow).__e2eMods
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { setUI: (p: unknown) => void } }

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
 import { shrinkSequence } from './exportHelpers'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 // Export opens one demuxer plus one hardware decoder per CLIP, so a cut-heavy
 // timeline used to end up holding 24 of them at half-second cuts and 46 at
@@ -30,18 +31,20 @@ test.beforeAll(() => {
 
 /** Razor the single imported clip into `pieces` on the video track. */
 async function cutInto(page: Page, pieces: number): Promise<{ count: number; endS: number }> {
-  return page.evaluate(async (pieces: number) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/timeline.ts', '/src/engine/types.ts'])
+  return page.evaluate((pieces: number) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const timelineMod = '/src/engine/timeline.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
-    const { splitClip } = (await import(/* @vite-ignore */ timelineMod)) as {
+    const { splitClip } = mods[timelineMod] as {
       splitClip: (s: unknown, id: string, tS: number) => unknown
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => Seq
     }
     interface Clip {

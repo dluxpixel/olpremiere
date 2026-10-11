@@ -24,6 +24,10 @@
 //   })
 //
 // Reads (getState() with no write) may stay async. setUI and selectClips below cover the common case.
+//
+// THE GUARD. __e2eMods is a Proxy: reading a path that was never parked throws
+// "e2e: <path> not parked, call parkModules first" instead of handing back undefined, so a
+// missing parkModules line fails on the spot with its path named, not as a TypeError later.
 
 import type { Page } from '@playwright/test'
 
@@ -31,6 +35,7 @@ const STORE = '/src/state/store.ts'
 
 /** What parkModules leaves on window: each loaded module, under the path it was imported from. */
 export interface ParkedWindow {
+  /** Guarded: reading a path that was not parked throws, see THE GUARD above. */
   __e2eMods: Record<string, unknown>
 }
 
@@ -41,7 +46,14 @@ export interface ParkedWindow {
 export async function parkModules(page: Page, paths: string[]): Promise<void> {
   await page.evaluate(async (paths) => {
     const w = window as unknown as Partial<ParkedWindow>
-    const parked = w.__e2eMods ?? (w.__e2eMods = {})
+    const parked =
+      w.__e2eMods ??
+      (w.__e2eMods = new Proxy({} as Record<string, unknown>, {
+        get(target, key) {
+          if (typeof key === 'string' && !(key in target)) throw new Error(`e2e: ${key} not parked, call parkModules first`)
+          return Reflect.get(target, key)
+        },
+      }))
     for (const p of paths) parked[p] = await import(/* @vite-ignore */ p)
   }, paths)
 }

@@ -35,6 +35,7 @@ import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { shrinkSequence } from './exportHelpers'
+import { setUI, parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = path.join('e2e', '.fixtures', 'timecode-60s.mp4')
 
@@ -134,13 +135,7 @@ async function previewPixel(page: Page): Promise<[number, number, number]> {
 }
 
 async function setPlayhead(page: Page, tS: number): Promise<void> {
-  await page.evaluate(async (t) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (p: { playheadS: number }) => void } }
-    }
-    useStore.getState().setUI({ playheadS: t })
-  }, tS)
+  await setUI(page, { playheadS: tS })
 }
 
 /**
@@ -160,10 +155,12 @@ async function buildHisEdit(page: Page): Promise<void> {
   // behind: two clips, one asset, one pooled <video> element between them. The
   // app refuses to insert the same asset twice, so cloning is also the only way
   // to get there from here.
+  await parkModules(page, ['/src/state/store.ts'])
   await page.evaluate(
-    async ({ aIn, aOutSrc, aOut, bIn, bOut }) => {
+    ({ aIn, aOutSrc, aOut, bIn, bOut }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const storeMod = '/src/state/store.ts'
-      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { useStore } = mods[storeMod] as {
         useStore: { getState: () => { dispatch: (l: string, f: (p: unknown) => unknown) => void } }
       }
       // Immutable all the way down: the store compares identities to decide
@@ -216,10 +213,12 @@ async function buildHisEdit(page: Page): Promise<void> {
     return track.clips[1].id
   })
 
+  await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
-    async ({ id, d }) => {
+    ({ id, d }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
-      const { setClipTransition } = (await import(/* @vite-ignore */ editsMod)) as {
+      const { setClipTransition } = mods[editsMod] as {
         setClipTransition: (id: string, edge: 'in' | 'out', kind: string, durationS?: number) => void
       }
       setClipTransition(id, 'in', 'crossDissolve', d)
@@ -386,10 +385,12 @@ test('a transition on a clip with no neighbour never fades in the trimmed-off he
 
   // One clip, trimmed to the blue block, starting a second into the timeline so
   // there is genuinely nothing before it and no neighbour to pair with.
+  await parkModules(page, ['/src/state/store.ts'])
   const clipId = await page.evaluate(
-    async ({ bIn, bOut, startS }) => {
+    ({ bIn, bOut, startS }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const storeMod = '/src/state/store.ts'
-      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { useStore } = mods[storeMod] as {
         useStore: {
           getState: () => { dispatch: (l: string, f: (p: unknown) => unknown) => void; project: unknown }
         }
@@ -421,10 +422,12 @@ test('a transition on a clip with no neighbour never fades in the trimmed-off he
     { bIn: B_IN_S, bOut: B_OUT_S, startS: A_OUT_S },
   )
 
+  await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
-    async ({ id, d }) => {
+    ({ id, d }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
-      const { setClipTransition } = (await import(/* @vite-ignore */ editsMod)) as {
+      const { setClipTransition } = mods[editsMod] as {
         setClipTransition: (id: string, edge: 'in' | 'out', kind: string, durationS?: number) => void
       }
       setClipTransition(id, 'in', 'crossDissolve', d)

@@ -27,7 +27,7 @@
 // it is left unwritten and reported instead.
 
 import { expect, test, type Page } from '@playwright/test'
-import { setUI } from './storeWrites'
+import { setUI, parkModules, type ParkedWindow } from './storeWrites'
 
 /** The sequence default, and the frame grid every keyframe here snaps to. */
 const FPS = 30
@@ -57,20 +57,22 @@ async function addTwentySecondClip(page: Page): Promise<string> {
   await page.goto('/')
   await page.getByTestId('add-title').click()
   await expect(page.getByTestId('clip')).toHaveCount(1)
-  return page.evaluate(async (durationS) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts', '/src/engine/timeline.ts'])
+  return page.evaluate((durationS) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     type Clip = { id: string; inS: number; outS: number; title?: unknown }
     type Seq = { tracks: { clips: Clip[] }[] }
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
     const tlMod = '/src/engine/timeline.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
       updateActiveSequence: (label: string, fn: (seq: Seq) => Seq) => void
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => Seq
     }
-    const { recomputeDuration } = (await import(/* @vite-ignore */ tlMod)) as {
+    const { recomputeDuration } = mods[tlMod] as {
       recomputeDuration: (seq: Seq) => Seq
     }
     updateActiveSequence('length for test', (sq) =>
@@ -393,9 +395,11 @@ test('dragging a diamond that is already selected moves the whole selection toge
 
   // ⛔ ONE undo press, not two. A set that came back one diamond at a time would
   // mean each keyframe wrote its own history entry.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { undo: () => void } }
     }
     useStore.getState().undo()

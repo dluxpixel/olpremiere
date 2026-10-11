@@ -8,7 +8,7 @@
 // Chromium, with the clipboard of the test browser (never his).
 
 import { expect, test, type Page } from '@playwright/test'
-import { selectClips, setUI } from './storeWrites'
+import { selectClips, setUI, parkModules, type ParkedWindow } from './storeWrites'
 
 test.beforeEach(async ({ context, baseURL }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(baseURL!).origin })
@@ -45,18 +45,20 @@ async function titles(page: Page): Promise<TitleAt[]> {
 
 /** Titles by name on named tracks, seeded straight into the project the way a drag would leave them. */
 async function seed(page: Page, byTrack: Record<string, { text: string; startS: number; durS: number }[]>): Promise<void> {
-  await page.evaluate(async (spec) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts', '/src/engine/timeline.ts'])
+  await page.evaluate((spec) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
     const tlMod = '/src/engine/timeline.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
-    const types = (await import(/* @vite-ignore */ typesMod)) as {
+    const types = mods[typesMod] as {
       newTitleClip: (def: unknown, startS: number, durS: number) => unknown
       defaultTitleDef: (text: string) => unknown
     }
-    const tl = (await import(/* @vite-ignore */ tlMod)) as { recomputeDuration: (s: unknown) => unknown }
+    const tl = mods[tlMod] as { recomputeDuration: (s: unknown) => unknown }
     updateActiveSequence('seed', (sq) => {
       const seq = sq as { tracks: { name: string; clips: unknown[] }[] }
       return tl.recomputeDuration({
@@ -188,11 +190,7 @@ test('clicking a track header makes it the paste target too', async ({ page }) =
 
   await page.getByTestId('track-header-V3').click({ position: { x: 12, y: 8 } })
   await expect(page.getByTestId('track-header-V3')).toHaveAttribute('data-paste-target', 'true')
-  await page.evaluate(async () => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { setUI: (p: unknown) => void } } }
-    useStore.getState().setUI({ playheadS: 3 })
-  })
+  await setUI(page, { playheadS: 3 })
 
   await page.keyboard.press('ControlOrMeta+v')
   await expect.poll(async () => (await titles(page)).length).toBe(2)

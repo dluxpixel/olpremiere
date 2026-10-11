@@ -16,6 +16,7 @@
 // predicting exactly this). The preview never got it.
 
 import { expect, test } from '@playwright/test'
+import { setUI } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -140,13 +141,7 @@ test('scrubbing across many clips never leaves more decoders open than the cap',
   })
   for (let step = 0; step <= 24; step++) {
     const t = (seqEnd * step) / 24
-    await page.evaluate(async (at) => {
-      const storeMod = '/src/state/store.ts'
-      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-        useStore: { getState: () => { setUI: (p: unknown) => void } }
-      }
-      useStore.getState().setUI({ playheadS: at })
-    }, t)
+    await setUI(page, { playheadS: t })
   }
   // Give the pumps a moment to open whatever they are going to open.
   await expect

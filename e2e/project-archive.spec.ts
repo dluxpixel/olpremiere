@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 // His ask, 2026-08-05: *"I have a lot of projects that I finished that I just
 // don't want to delete because, why the hell would I delete them for no reason,
@@ -13,9 +14,11 @@ async function newNamedProject(page: Page, name: string): Promise<void> {
   await page.getByTestId('open-projects').click()
   await page.getByTestId('project-new').click()
   await expect(page.getByTestId('projects-dialog')).toHaveCount(0)
-  await page.evaluate(async (name: string) => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate((name: string) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const mod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ mod)) as {
+    const { useStore } = mods[mod] as {
       useStore: { getState: () => { dispatch: (label: string, fn: (p: unknown) => unknown) => void } }
     }
     useStore.getState().dispatch('Rename project', (p) => ({ ...(p as object), name }))

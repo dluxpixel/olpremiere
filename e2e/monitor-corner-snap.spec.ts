@@ -12,6 +12,7 @@
 // `engine/snapTransform.test.ts`.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -26,9 +27,11 @@ async function addClipAndShrink(page: Page): Promise<void> {
   // somewhere other than the frame's own. At scale 1 it fills the frame and an
   // edge snap would be indistinguishable from the centre snap that already
   // existed, which would make this test pass without testing anything.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
     updateActiveSequence('test: shrink', (s) => {

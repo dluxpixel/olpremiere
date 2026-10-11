@@ -3,6 +3,7 @@
 // anonymous save slot).
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 /** The active sequence's tracks, straight from the store. */
 async function tracks(page: Page) {
@@ -45,13 +46,15 @@ test('save the track setup as a named preset, then pick it to reshape the tracks
   await page.keyboard.press('Escape')
 
   // Change the layout, then apply the preset to put it back.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/timeline.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const timelineMod = '/src/engine/timeline.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
-    const { addTrack } = (await import(/* @vite-ignore */ timelineMod)) as {
+    const { addTrack } = mods[timelineMod] as {
       addTrack: (s: unknown, kind: 'video' | 'audio') => unknown
     }
     updateActiveSequence('test: add track', (sq) => addTrack(sq, 'audio'))

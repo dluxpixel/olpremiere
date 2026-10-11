@@ -7,15 +7,18 @@
 // header actually opens a menu with a delete in it, and that clicking it works.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 async function addTracks(page: Page, n: number): Promise<void> {
-  await page.evaluate(async (count) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/timeline.ts'])
+  await page.evaluate((count) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const tlMod = '/src/engine/timeline.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
-    const { addTrack } = (await import(/* @vite-ignore */ tlMod)) as {
+    const { addTrack } = mods[tlMod] as {
       addTrack: (seq: unknown, kind: 'video' | 'audio') => unknown
     }
     for (let i = 0; i < count; i++) updateActiveSequence('add v', (s) => addTrack(s, 'video'))
@@ -57,18 +60,20 @@ test('right-clicking a track header offers a delete, and it removes the track', 
 test('the delete refuses the last video track rather than leaving nowhere to drop a clip', async ({ page }) => {
   await page.goto('/')
   // Whatever the starting layout is, delete video tracks until one is left.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts', '/src/state/trackEdits.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
     const teMod = '/src/state/trackEdits.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
     }
-    const { activeSequence, videoTracks } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence, videoTracks } = mods[typesMod] as {
       activeSequence: (p: unknown) => unknown
       videoTracks: (s: unknown) => { id: string }[]
     }
-    const { deleteTrack } = (await import(/* @vite-ignore */ teMod)) as { deleteTrack: (id: string) => void }
+    const { deleteTrack } = mods[teMod] as { deleteTrack: (id: string) => void }
     const vids = () => videoTracks(activeSequence(useStore.getState().project))
     while (vids().length > 1) deleteTrack(vids()[vids().length - 1].id)
   })

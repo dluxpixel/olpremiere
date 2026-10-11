@@ -15,6 +15,7 @@
 // black anyway.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -66,9 +67,11 @@ async function setInner(page: Page, value: string): Promise<void> {
 
 /** Zoom the one clip, so the picture wants to cover the whole 9:16 frame. */
 async function zoom(page: Page, scale: number): Promise<void> {
-  await page.evaluate(async (scale) => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate((scale) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
     updateActiveSequence('e2e: zoom', (s) => {

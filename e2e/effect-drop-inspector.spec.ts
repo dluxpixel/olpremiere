@@ -27,7 +27,7 @@
 
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
-import { selectClips } from './storeWrites'
+import { selectClips, parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const VERIFY = '_verify/effect-drop'
@@ -221,16 +221,18 @@ const BLUR_KFS: Kf[] = [
 ]
 
 async function seedKeyframes(page: Page, clipId: string): Promise<void> {
+  await parkModules(page, ['/src/engine/effects/channels.ts', '/src/state/store.ts'])
   await page.evaluate(
-    async ({ clipId, scale, posX, posY, blur }) => {
+    ({ clipId, scale, posX, posY, blur }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       type C = { id: string }
       type Seq = { tracks: { clips: C[] }[] }
       const chMod = '/src/engine/effects/channels.ts'
       const storeMod = '/src/state/store.ts'
-      const { withChannelKeyframes } = (await import(/* @vite-ignore */ chMod)) as {
+      const { withChannelKeyframes } = mods[chMod] as {
         withChannelKeyframes: (clip: C, channel: string, kfs: Kf[]) => C
       }
-      const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { updateActiveSequence } = mods[storeMod] as {
         updateActiveSequence: (label: string, fn: (seq: Seq) => Seq) => void
       }
       const shape = (c: C): C =>

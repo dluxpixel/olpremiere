@@ -8,6 +8,7 @@
 // headless shell keeps its own clipboard, so none of this touches his.
 
 import { expect, test, type Page } from '@playwright/test'
+import { setUI } from './storeWrites'
 
 // The clipboard permissions come from playwright.config.ts, for every spec and
 // every port. This file used to grant them itself, for port 5178 only.
@@ -54,13 +55,7 @@ async function copyPicture(page: Page, text?: string): Promise<void> {
 }
 
 async function setPlayhead(page: Page, s: number): Promise<void> {
-  await page.evaluate(async (at) => {
-    const mod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ mod)) as {
-      useStore: { getState: () => { setUI: (p: unknown) => void } }
-    }
-    useStore.getState().setUI({ playheadS: at })
-  }, s)
+  await setUI(page, { playheadS: s })
 }
 
 interface PlacedClip {

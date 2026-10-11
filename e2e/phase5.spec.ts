@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
 import { shrinkSequence } from './exportHelpers'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 // Headless Chromium HAS showSaveFilePicker, and a real OS picker cannot be driven
 // from a test. Shadowing it exercises the documented Firefox path: buffer the file
@@ -38,10 +39,12 @@ async function addTitle(page: Page): Promise<string> {
 }
 
 async function updateTitle(page: Page, clipId: string, patch: Record<string, unknown>): Promise<void> {
+  await parkModules(page, ['/src/state/titleActions.ts'])
   await page.evaluate(
-    async ({ clipId, patch }) => {
+    ({ clipId, patch }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const mod = '/src/state/titleActions.ts'
-      const { updateTitle } = (await import(/* @vite-ignore */ mod)) as {
+      const { updateTitle } = mods[mod] as {
         updateTitle: (id: string, p: Record<string, unknown>) => void
       }
       updateTitle(clipId, patch)

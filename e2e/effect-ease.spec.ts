@@ -16,6 +16,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
 import { addEffect } from './addEffect'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 /** The blur radius the app's resolver reports at clip-local time `t`. */
 async function radiusAt(page: Page, t: number): Promise<number> {
@@ -53,17 +54,19 @@ test('Ease In makes the blur ARRIVE instead of appearing', async ({ page }) => {
   await expect(page.getByTestId('effect-ease').first()).toBeVisible()
 
   // Turn the radius up, through the real action, so there is something to ease into.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/state/clipEdits.ts', '/src/engine/types.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const editsMod = '/src/state/clipEdits.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
     }
-    const { setEffectParamValue } = (await import(/* @vite-ignore */ editsMod)) as {
+    const { setEffectParamValue } = mods[editsMod] as {
       setEffectParamValue: (clipId: string, effectId: string, key: string, v: number) => void
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { clips: { id: string; effects?: { id: string }[] }[] }[] }
     }
     const seq = activeSequence(useStore.getState().project)
@@ -96,21 +99,23 @@ test('Ease Out returns the picture to normal at the tail', async ({ page }) => {
   await addEffect(page, 'gaussianBlur')
   await expect(page.getByTestId('effect-ease').first()).toBeVisible()
 
-  const durS = await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/state/clipEdits.ts', '/src/engine/types.ts', '/src/engine/timeline.ts'])
+  const durS = await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const editsMod = '/src/state/clipEdits.ts'
     const typesMod = '/src/engine/types.ts'
     const tlMod = '/src/engine/timeline.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
     }
-    const { setEffectParamValue } = (await import(/* @vite-ignore */ editsMod)) as {
+    const { setEffectParamValue } = mods[editsMod] as {
       setEffectParamValue: (clipId: string, effectId: string, key: string, v: number) => void
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { tracks: { clips: { id: string; effects?: { id: string }[] }[] }[] }
     }
-    const { clipDurationS } = (await import(/* @vite-ignore */ tlMod)) as {
+    const { clipDurationS } = mods[tlMod] as {
       clipDurationS: (c: unknown) => number
     }
     const seq = activeSequence(useStore.getState().project)

@@ -140,9 +140,11 @@ test('the playhead reads 0:03.97 then 0:04.00, and the field takes both the new 
   await seedOffGridEdit(page)
   const timecode = page.getByTestId('monitor-timecode')
   // A typed time clamps to the end of the edit: give it room past 4 s.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: { durationS: number }) => unknown) => void
     }
     updateActiveSequence('long', (s) => ({ ...s, durationS: 10 }))

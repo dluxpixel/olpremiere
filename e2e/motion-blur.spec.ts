@@ -19,6 +19,7 @@
 // and the zoom is proved at the frame's edge where a zoom actually moves picture.
 
 import { expect, test, type Page } from '@playwright/test'
+import { setUI, parkModules, type ParkedWindow } from './storeWrites'
 
 /**
  * Repaint the monitor from the store as it is NOW, then let two frames pass.
@@ -177,12 +178,14 @@ const WITNESS_MOVED = 0.1
  * distance in the first instant, so two frames in there is nothing left to smear.
  */
 async function animate(page: Page, channel: string, from: number, to: number): Promise<void> {
+  await parkModules(page, ['/src/state/store.ts'])
   await page.evaluate(
-    async ({ channel, from, to }) => {
+    ({ channel, from, to }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       // A variable, not a literal: tsc cannot resolve an absolute dev-server path,
       // and it must live INSIDE the callback, because this body runs in the browser.
       const storeMod = '/src/state/store.ts'
-      const { updateActiveSequence, useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { updateActiveSequence, useStore } = mods[storeMod] as {
         updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
         useStore: { getState: () => { setUI: (p: { playheadS: number }) => void } }
       }
@@ -233,9 +236,11 @@ async function blurOff(page: Page): Promise<void> {
 
 /** Set every clip's opacity: a change nothing but the picture can show. */
 async function setOpacity(page: Page, opacity: number): Promise<void> {
-  await page.evaluate(async (opacity) => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate((opacity) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
     type Clip = { opacity: number }
@@ -360,13 +365,7 @@ test('a still clip is untouched, so nothing he has not animated goes soft', asyn
   await page.getByTestId('add-title').click()
   await expect(page.getByTestId('clip')).toHaveCount(1)
 
-  await page.evaluate(async () => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (p: { playheadS: number }) => void } }
-    }
-    useStore.getState().setUI({ playheadS: 15 / 30 })
-  })
+  await setUI(page, { playheadS: 15 / 30 })
   await untilPictureShows(page)
   const withBlurOn = await lumaGrid(page)
   const withBlurOff = await blurOffAndRead(page, withBlurOn)

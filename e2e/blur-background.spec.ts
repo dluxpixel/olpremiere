@@ -11,6 +11,7 @@
 // the switch did it.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -85,13 +86,15 @@ test('the blurred background fills the bars a wide clip leaves in a Shorts frame
   // clips, so the clip is put back to a plain contain fit afterwards: the bars
   // are the thing under test and a refit would have already removed them.
   await page.getByTestId('format-select').selectOption('9:16')
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; dispatch: (l: string, f: (p: unknown) => unknown) => void } }
     }
-    const { activeSequence, defaultTransform } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence, defaultTransform } = mods[typesMod] as {
       activeSequence: (p: unknown) => { id: string; tracks: { clips: unknown[] }[] }
       defaultTransform: () => unknown
     }
@@ -135,13 +138,15 @@ test('the blurred background fills the bars a wide clip leaves in a Shorts frame
 
   // And it SURVIVES A ZOOM OUT, which is the thing he actually asked for: the
   // clip shrinks away from the edges and the frame stays filled, not black.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; dispatch: (l: string, f: (p: unknown) => unknown) => void } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => unknown
     }
     useStore.getState().dispatch('test: zoom out', (p) => {

@@ -2,7 +2,7 @@
 // Captions tab style picker, and the timeline label mirroring lowercase (B3).
 
 import { expect, test, type Page } from '@playwright/test'
-import { setUI } from './storeWrites'
+import { setUI, parkModules, type ParkedWindow } from './storeWrites'
 
 async function addTitle(page: Page): Promise<string> {
   const before = await titleIds(page)
@@ -71,21 +71,23 @@ test('applying a style preset styles the whole selection', async ({ page }) => {
 // ever see it. This drives the same call the dialog and the right-click make.
 test('a fresh caption run lands the MEASURED house style, with no preset over it', async ({ page }) => {
   await page.goto('/')
-  const def = await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/captionActions.ts', '/src/state/captionStyles.ts', '/src/state/store.ts', '/src/engine/types.ts'])
+  const def = await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const capMod = '/src/state/captionActions.ts'
     const preMod = '/src/state/captionStyles.ts'
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { addCaptionsFromWords } = (await import(/* @vite-ignore */ capMod)) as {
+    const { addCaptionsFromWords } = mods[capMod] as {
       addCaptionsFromWords: (w: unknown[], o: Record<string, unknown>) => void
     }
-    const { defaultCaptionStyle } = (await import(/* @vite-ignore */ preMod)) as {
+    const { defaultCaptionStyle } = mods[preMod] as {
       defaultCaptionStyle: () => unknown
     }
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => { height: number; tracks: { clips: { title?: unknown }[] }[] }
     }
     addCaptionsFromWords([{ text: 'TNT', startS: 0, endS: 0.4 }], { style: defaultCaptionStyle() })
@@ -120,9 +122,11 @@ test('lowercase toggle is mirrored in the timeline clip label (B3)', async ({ pa
   await page.goto('/')
   const id = await addTitle(page)
   // Give it distinctive UPPERCASE text.
-  await page.evaluate(async (clipId) => {
+  await parkModules(page, ['/src/state/titleActions.ts'])
+  await page.evaluate((clipId) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const taMod = '/src/state/titleActions.ts'
-    const { updateTitle } = (await import(/* @vite-ignore */ taMod)) as {
+    const { updateTitle } = mods[taMod] as {
       updateTitle: (id: string, patch: Record<string, unknown>) => void
     }
     updateTitle(clipId, { text: 'HELLO' })

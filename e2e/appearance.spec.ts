@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { shrinkSequence } from './exportHelpers'
 import fs from 'node:fs'
+import { setUI, parkModules, type ParkedWindow } from './storeWrites'
 
 // Firefox download path (see phase5): a real save picker can't be driven headless.
 test.beforeEach(async ({ page }) => {
@@ -30,10 +31,12 @@ async function addTitle(page: Page): Promise<string> {
 }
 
 async function updateTitle(page: Page, clipId: string, patch: Record<string, unknown>): Promise<void> {
+  await parkModules(page, ['/src/state/titleActions.ts'])
   await page.evaluate(
-    async ({ clipId, patch }) => {
+    ({ clipId, patch }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const mod = '/src/state/titleActions.ts'
-      const { updateTitle } = (await import(/* @vite-ignore */ mod)) as {
+      const { updateTitle } = mods[mod] as {
         updateTitle: (id: string, p: Record<string, unknown>) => void
       }
       updateTitle(clipId, patch)
@@ -43,13 +46,7 @@ async function updateTitle(page: Page, clipId: string, patch: Record<string, unk
 }
 
 async function setPlayhead(page: Page, s: number): Promise<void> {
-  await page.evaluate(async (s) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (u: { playheadS: number }) => void } }
-    }
-    useStore.getState().setUI({ playheadS: s })
-  }, s)
+  await setUI(page, { playheadS: s })
 }
 
 interface ClipData {

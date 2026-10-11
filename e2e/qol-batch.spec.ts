@@ -2,7 +2,7 @@
 // numeric fields, per-section channel reset, and delete-keyframe in the lane.
 
 import { expect, test, type Page } from '@playwright/test'
-import { selectClips } from './storeWrites'
+import { selectClips, parkModules, type ParkedWindow } from './storeWrites'
 
 async function addTitle(page: Page): Promise<string> {
   const before = await titleIds(page)
@@ -97,9 +97,11 @@ test('per-section reset button clears Transform channels', async ({ page }) => {
   const id = await addTitle(page)
   await setSelection(page, [id])
   // Push scale off default via the store helper.
-  await page.evaluate(async (clipId) => {
+  await parkModules(page, ['/src/state/clipEdits.ts'])
+  await page.evaluate((clipId) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const ceMod = '/src/state/clipEdits.ts'
-    const ce = (await import(/* @vite-ignore */ ceMod)) as { setChannel: (id: string, ch: string, v: number) => void }
+    const ce = mods[ceMod] as { setChannel: (id: string, ch: string, v: number) => void }
     ce.setChannel(clipId, 'scale', 2.5)
   }, id)
   const scaleOf = async () =>

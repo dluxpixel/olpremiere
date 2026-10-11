@@ -8,6 +8,7 @@
 import type { Page } from '@playwright/test'
 // Timing spec: runs in the `timing` project, on a quiet box (see quietBox.ts).
 import { expect, test } from './quietBox'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -215,16 +216,18 @@ test('recording costs the interface nothing: a busy burst of edits and a playhea
   // does: a Playwright mouse move is a round trip long enough to hide the cost. And each
   // half is timed in the same run, seconds apart, on the same machine, alternating, because
   // a number is only meaningful against its own twin. It asserts a RATIO, never a time.
+  await parkModules(page, ['/src/state/store.ts', '/src/state/settings.ts', '/src/state/usageLog.ts', '/src/state/usageWiring.ts'])
   const result = await page.evaluate(async () => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const settingsMod = '/src/state/settings.ts'
     const logMod = '/src/state/usageLog.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { setUI: (p: unknown) => void } }
       updateActiveSequence: (label: string, fn: (s: { markers?: unknown[] }) => unknown, key?: string) => void
     }
-    const { setUsageLog } = (await import(/* @vite-ignore */ settingsMod)) as { setUsageLog: (on: boolean) => void }
-    const { usage } = (await import(/* @vite-ignore */ logMod)) as { usage: { flush: () => Promise<void>; stats: () => { recorded: number } } }
+    const { setUsageLog } = mods[settingsMod] as { setUsageLog: (on: boolean) => void }
+    const { usage } = mods[logMod] as { usage: { flush: () => Promise<void>; stats: () => { recorded: number } } }
 
     const median = (xs: number[]): number => [...xs].sort((a, b) => a - b)[xs.length >> 1]!
     // A drag: the playhead written on every pointer move, 6000 of them.
@@ -246,7 +249,7 @@ test('recording costs the interface nothing: a busy burst of edits and a playhea
     // the listeners and the store subscription are still installed and still run their checks),
     // and ABSENT (the whole wiring taken down: the app as it was before the log existed).
     const wiringMod = '/src/state/usageWiring.ts'
-    const wiring = (await import(/* @vite-ignore */ wiringMod)) as { initUsageLog: () => () => void }
+    const wiring = mods[wiringMod] as { initUsageLog: () => () => void }
     const bucket = () => ({ drag: [] as number[], edits: [] as number[] })
     const runs = { on: bucket(), off: bucket(), absent: bucket() }
     drag()

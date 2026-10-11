@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 // Verify the timeline scrolls vertically to reach many tracks AND the add-track
 // buttons stay reachable (David reported not being able to scroll to add tracks).
@@ -8,13 +9,15 @@ test('with many tracks, you can scroll to the add-track buttons and use them', a
 
   // Add tracks straight through the store so this test does not depend on the
   // very buttons it is checking being reachable.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/timeline.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const tlMod = '/src/engine/timeline.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
-    const { addTrack } = (await import(/* @vite-ignore */ tlMod)) as {
+    const { addTrack } = mods[tlMod] as {
       addTrack: (seq: unknown, kind: 'video' | 'audio') => unknown
     }
     for (let i = 0; i < 5; i++) updateActiveSequence('add v', (s) => addTrack(s, 'video'))
@@ -56,13 +59,15 @@ test('the wheel scrolls even with the cursor over the LEFT track headers', async
   await page.goto('/')
 
   // Enough tracks to overflow, added through the store (not the buttons).
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/timeline.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const tlMod = '/src/engine/timeline.ts'
-    const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { updateActiveSequence } = mods[storeMod] as {
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
-    const { addTrack } = (await import(/* @vite-ignore */ tlMod)) as {
+    const { addTrack } = mods[tlMod] as {
       addTrack: (seq: unknown, kind: 'video' | 'audio') => unknown
     }
     for (let i = 0; i < 5; i++) updateActiveSequence('add v', (s) => addTrack(s, 'video'))

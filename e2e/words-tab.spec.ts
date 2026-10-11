@@ -7,6 +7,7 @@
 // select, the cut on the timeline itself, and one Ctrl+Z bringing it all back.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const vclip = (page: Page) => page.locator('[data-clip-kind="video"]')
@@ -40,9 +41,11 @@ async function clips(page: Page): Promise<Row[]> {
  * (ac821d0); `legacy` seeds those, to prove that shift reaches the screen.
  */
 async function seedWords(page: Page, legacy = false): Promise<number> {
-  return page.evaluate(async (legacyWords) => {
+  await parkModules(page, ['/src/state/store.ts'])
+  return page.evaluate((legacyWords) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore } = mods[storeMod] as {
       useStore: {
         getState: () => {
           project: { assets: Record<string, { id: string; durationS: number }> }

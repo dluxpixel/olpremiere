@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 // Timing spec: runs in the `timing` project, on a quiet box (see quietBox.ts).
 import { expect, test } from './quietBox'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 // MEASUREMENT, not a fix. Finding 13 says pressing play builds one
 // AudioBufferSourceNode plus one GainNode for EVERY audible clip in the whole
@@ -39,30 +40,30 @@ const FIXTURE = 'e2e/.fixtures/clip.webm'
  * 400 clips while the timeline held about 51. It reports the REAL count now.
  */
 async function measure(page: Page, wanted: number): Promise<{ clips: number; nodes: number; ms: number }> {
-  return page.evaluate(async (wanted: number) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts', '/src/engine/audio.ts'])
+  interface Clip {
+    id: string
+    startS: number
+    inS: number
+    outS: number
+    speed: number
+  }
+  interface Seq {
+    tracks: { kind: string; clips: Clip[] }[]
+  }
+  // The write runs in a synchronous evaluate (see storeWrites.ts); the timing,
+  // which has to await, runs in the next one and writes nothing.
+  await page.evaluate((wanted: number) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const audioMod = '/src/engine/audio.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
-    const { activeSequence, newId } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence, newId } = mods[typesMod] as {
       activeSequence: (p: unknown) => Seq
       newId: () => string
-    }
-    const { scheduleAudio } = (await import(/* @vite-ignore */ audioMod)) as {
-      scheduleAudio: (s: unknown, a: unknown, fromS: number) => Promise<() => void>
-    }
-    interface Clip {
-      id: string
-      startS: number
-      inS: number
-      outS: number
-      speed: number
-    }
-    interface Seq {
-      tracks: { kind: string; clips: Clip[] }[]
     }
     const audioClips = (s: Seq): Clip[] => s.tracks.filter((t) => t.kind === 'audio').flatMap((t) => t.clips)
     const len = (c: Clip): number => (c.outS - c.inS) / Math.max(Math.abs(c.speed) || 1, 1e-6)
@@ -93,6 +94,24 @@ async function measure(page: Page, wanted: number): Promise<{ clips: number; nod
 
     const w = window as unknown as { __nodes: number }
     w.__nodes = 0
+  }, wanted)
+  return page.evaluate(async () => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
+    const storeMod = '/src/state/store.ts'
+    const typesMod = '/src/engine/types.ts'
+    const audioMod = '/src/engine/audio.ts'
+    const { useStore } = mods[storeMod] as {
+      useStore: { getState: () => { project: unknown } }
+    }
+    const { activeSequence } = mods[typesMod] as {
+      activeSequence: (p: unknown) => Seq
+    }
+    const { scheduleAudio } = mods[audioMod] as {
+      scheduleAudio: (s: unknown, a: unknown, fromS: number) => Promise<() => void>
+    }
+    const audioClips = (s: Seq): Clip[] => s.tracks.filter((t) => t.kind === 'audio').flatMap((t) => t.clips)
+
+    const w = window as unknown as { __nodes: number }
     const state = useStore.getState() as { project: { assets: unknown } }
     const seq = activeSequence(state.project)
     const clips = audioClips(seq).length
@@ -110,7 +129,7 @@ async function measure(page: Page, wanted: number): Promise<{ clips: number; nod
     const ms = performance.now() - t0
     stop()
     return { clips, nodes: w.__nodes, ms }
-  }, wanted)
+  })
 }
 
 // MEASURED 2026-08-05, real Chromium, on the numbers this spec printed:

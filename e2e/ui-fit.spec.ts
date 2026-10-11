@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 // THE SECOND WALK-THROUGH (2026-10-03). His ask was that nothing overlaps and everything works,
 // and the first pass left four things it had seen and not fixed, plus one that arrived with the
@@ -348,9 +349,11 @@ test.describe('Full screen', () => {
       await toggle.click()
       await expect.poll(() => inFullscreen(page)).toBe('monitor')
       // As wide as a toast gets, and up for a minute, so only a click could take it away.
-      await page.evaluate(async () => {
+      await parkModules(page, ['/src/state/toasts.ts'])
+      await page.evaluate(() => {
+        const mods = (window as unknown as ParkedWindow).__e2eMods
         const mod = '/src/state/toasts.ts'
-        const { useToasts } = (await import(/* @vite-ignore */ mod)) as {
+        const { useToasts } = mods[mod] as {
           useToasts: {
             getState: () => { show: (m: string, k: string, a: undefined, o: { durationMs: number }) => void }
           }
@@ -448,15 +451,17 @@ test.describe('Escape', () => {
   })
 
   test('closes the Export dialog and the Paste picture dialog', async ({ page }) => {
-    await page.evaluate(async () => {
+    await parkModules(page, ['/src/state/exportJob.ts', '/src/engine/export/exportPlan.ts', '/src/engine/types.ts', '/src/state/store.ts'])
+    await page.evaluate(() => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const jobMod = '/src/state/exportJob.ts'
       const planMod = '/src/engine/export/exportPlan.ts'
       const typesMod = '/src/engine/types.ts'
       const storeMod = '/src/state/store.ts'
-      const { useExportJob } = (await import(/* @vite-ignore */ jobMod)) as { useExportJob: { setState: (s: unknown) => void } }
-      const { planExport } = (await import(/* @vite-ignore */ planMod)) as { planExport: (s: unknown) => unknown }
-      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as { activeSequence: (p: unknown) => unknown }
-      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { project: unknown } } }
+      const { useExportJob } = mods[jobMod] as { useExportJob: { setState: (s: unknown) => void } }
+      const { planExport } = mods[planMod] as { planExport: (s: unknown) => unknown }
+      const { activeSequence } = mods[typesMod] as { activeSequence: (p: unknown) => unknown }
+      const { useStore } = mods[storeMod] as { useStore: { getState: () => { project: unknown } } }
       const plan = planExport(activeSequence(useStore.getState().project))
       useExportJob.setState({
         job: { id: 1, projectName: 'Untitled Project', plan, stage: { kind: 'error', message: 'Nothing to export' }, background: true },
@@ -468,9 +473,11 @@ test.describe('Escape', () => {
     await page.keyboard.press('Escape')
     await expect(page.getByTestId('export-dialog')).toHaveCount(0)
 
-    await page.evaluate(async () => {
+    await parkModules(page, ['/src/state/picturePaste.ts'])
+    await page.evaluate(() => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const f = '/src/state/picturePaste.ts'
-      const m = (await import(/* @vite-ignore */ f)) as { usePastePicture: { setState: (s: unknown) => void } }
+      const m = mods[f] as { usePastePicture: { setState: (s: unknown) => void } }
       const blob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
       m.usePastePicture.setState({
         picture: { file: new File([blob], 'p.png', { type: 'image/png' }), url: URL.createObjectURL(blob), atS: 0 },
@@ -508,12 +515,15 @@ test.describe('Escape', () => {
   test('closes a name prompt over Settings alone, from the field and from beside it', async ({ page }) => {
     await page.getByTestId('settings-open').click()
     await expect(page.getByTestId('settings-dialog')).toBeVisible()
-    const ask = () =>
-      page.evaluate(async () => {
+    const ask = async () => {
+      await parkModules(page, ['/src/state/namePrompt.ts'])
+      await page.evaluate(() => {
+        const mods = (window as unknown as ParkedWindow).__e2eMods
         const f = '/src/state/namePrompt.ts'
-        const { askForName } = (await import(/* @vite-ignore */ f)) as { askForName: (r: unknown) => Promise<unknown> }
+        const { askForName } = mods[f] as { askForName: (r: unknown) => Promise<unknown> }
         void askForName({ title: 'Name this track setup', confirmLabel: 'Save', initial: 'Setup 1' })
       })
+    }
     // From the field (it has the focus): the prompt goes, Settings stays.
     await ask()
     await expect(page.getByTestId('name-prompt')).toBeVisible()
@@ -535,9 +545,11 @@ test.describe('Escape', () => {
   test('closes a menu open over a dialog first, and the dialog on the next press', async ({ page }) => {
     await page.getByTestId('open-projects').click()
     await expect(page.getByTestId('projects-dialog')).toBeVisible()
-    await page.evaluate(async () => {
+    await parkModules(page, ['/src/state/contextMenu.ts'])
+    await page.evaluate(() => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const f = '/src/state/contextMenu.ts'
-      const { useContextMenu } = (await import(/* @vite-ignore */ f)) as {
+      const { useContextMenu } = mods[f] as {
         useContextMenu: { getState: () => { show: (x: number, y: number, items: unknown[]) => void } }
       }
       useContextMenu.getState().show(200, 200, [{ label: 'One' }, { label: 'Two' }])
@@ -573,9 +585,11 @@ test.describe('Escape', () => {
 for (const s of [SIZES[0], SIZES[1], SIZES[3]]) {
   test(`a toast stack steps aside for a menu in its corner, and comes home after, at ${s.name}`, async ({ page }) => {
     await open(page, s.w, s.h, s.left, s.right)
-    await page.evaluate(async () => {
+    await parkModules(page, ['/src/state/toasts.ts'])
+    await page.evaluate(() => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const f = '/src/state/toasts.ts'
-      const { useToasts } = (await import(/* @vite-ignore */ f)) as {
+      const { useToasts } = mods[f] as {
         useToasts: { getState: () => { show: (m: string, k?: string, a?: unknown, o?: unknown) => void } }
       }
       const t = useToasts.getState()
@@ -588,10 +602,12 @@ for (const s of [SIZES[0], SIZES[1], SIZES[3]]) {
     await expect(stack).toHaveAttribute('data-corner', 'br')
 
     // A menu in the very corner the toasts are in, with a flyout.
+    await parkModules(page, ['/src/state/contextMenu.ts'])
     await page.evaluate(
-      async ({ x, y }) => {
+      ({ x, y }) => {
+        const mods = (window as unknown as ParkedWindow).__e2eMods
         const f = '/src/state/contextMenu.ts'
-        const { useContextMenu } = (await import(/* @vite-ignore */ f)) as {
+        const { useContextMenu } = mods[f] as {
           useContextMenu: { getState: () => { show: (x: number, y: number, items: unknown[]) => void } }
         }
         const rows = Array.from({ length: 8 }, (_, i) => ({ label: `Row ${i + 1}` }))

@@ -7,6 +7,7 @@
 // only claim worth testing.
 
 import { expect, test } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -35,9 +36,11 @@ test('balancing makes a loud clip and a quiet clip agree', async ({ page }) => {
 
   // Two audio clips from the same source at wildly different gains: "one take
   // where I shouted and one where I did not".
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const spec = '/src/state/store.ts'
-    const store = (await import(/* @vite-ignore */ spec)) as {
+    const store = mods[spec] as {
       updateActiveSequence: (label: string, fn: (sq: SeqShape) => SeqShape) => void
     }
     store.updateActiveSequence('two takes', (sq) => {

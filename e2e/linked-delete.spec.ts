@@ -9,6 +9,7 @@
 // destructive one was the unlabelled case.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 async function bootPair(page: Page): Promise<void> {
   await page.goto('/')
@@ -75,17 +76,19 @@ test('selecting both halves and pressing Del still removes the pair in one go', 
 // starting point so I can instantly rerecord."
 test('deleting one audio clip parks the playhead where it started, ready to record again', async ({ page }) => {
   await bootPair(page)
-  const startS = await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  const startS = await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     type Clip = { id: string; startS: number }
     type Track = { kind: string; clips: Clip[] }
     type Seq = { tracks: Track[] }
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown; setUI: (p: unknown) => void } }
       updateActiveSequence: (label: string, fn: (seq: Seq) => Seq) => void
     }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence } = mods[typesMod] as {
       activeSequence: (p: unknown) => Seq
     }
     // Put the take where a real one lands: partway in, not at zero.

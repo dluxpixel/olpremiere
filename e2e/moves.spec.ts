@@ -21,6 +21,7 @@
 //   find out what is already on a clip ...... 0
 
 import { expect, test, type Page } from '@playwright/test'
+import { setUI, parkModules, type ParkedWindow } from './storeWrites'
 
 /** ui.punchDepth default: 120 percent. */
 const DEPTH = 1.2
@@ -54,20 +55,22 @@ async function seedClips(page: Page, count: number, durS = 4): Promise<void> {
   await page.goto('/')
   await page.getByTestId('add-title').click()
   await expect(page.getByTestId('clip')).toHaveCount(1)
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/timeline.ts', '/src/engine/types.ts'])
   await page.evaluate(
-    async ({ count, durS }) => {
+    ({ count, durS }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       type Clip = { id: string; inS: number; outS: number; startS: number; title?: unknown }
       type Seq = { tracks: { clips: Clip[] }[] }
       const storeMod = '/src/state/store.ts'
       const tlMod = '/src/engine/timeline.ts'
       const typesMod = '/src/engine/types.ts'
-      const { updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { updateActiveSequence } = mods[storeMod] as {
         updateActiveSequence: (label: string, fn: (seq: Seq) => Seq) => void
       }
-      const { recomputeDuration } = (await import(/* @vite-ignore */ tlMod)) as {
+      const { recomputeDuration } = mods[tlMod] as {
         recomputeDuration: (seq: Seq) => Seq
       }
-      const { newId } = (await import(/* @vite-ignore */ typesMod)) as { newId: () => string }
+      const { newId } = mods[typesMod] as { newId: () => string }
       updateActiveSequence('length for test', (sq) =>
         recomputeDuration({
           ...sq,
@@ -287,13 +290,7 @@ test('dragging the block of a moment move slides it without changing its length'
   await hands.clickClip()
   // Park the punch away from the head of the clip. A move sitting at 0 cannot
   // prove a slide: it has a wall on one side and nothing to say about the other.
-  await page.evaluate(async () => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (p: unknown) => void } }
-    }
-    useStore.getState().setUI({ playheadS: 5 })
-  })
+  await setUI(page, { playheadS: 5 })
   await hands.click('move-tile-shake')
 
   const times = async () => (await facts(page)).scale.map((k: { t: number }) => k.t)
@@ -338,9 +335,11 @@ test('the shelf tells the truth after a hand edit, and the hand controls are one
 
   // Nudge one diamond by hand and no tile is lit any more. The shelf never
   // claims a move the clip is not actually making.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { ui: { selection: string[] } } }
       updateActiveSequence: (label: string, fn: (seq: unknown) => unknown) => void
     }
@@ -497,14 +496,7 @@ test('a move he performs by hand becomes his own tile, and that tile works', asy
   await hands.clickClip()
 
   // Park, arm, drag. Park later, drag the other way. That is the recorder.
-  const park = (s: number) =>
-    page.evaluate(async (playheadS) => {
-      const storeMod = '/src/state/store.ts'
-      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-        useStore: { getState: () => { setUI: (p: unknown) => void } }
-      }
-      useStore.getState().setUI({ playheadS })
-    }, s)
+  const park = (s: number) => setUI(page, { playheadS: s })
   const dragPicture = async (dx: number) => {
     const gizmo = page.getByTestId('gizmo-body')
     await gizmo.hover()

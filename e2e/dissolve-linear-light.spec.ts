@@ -8,6 +8,7 @@
 // the real renderer, at the midpoint of a real cross dissolve.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const BLACK = 'e2e/.fixtures/black.png'
 const WHITE = 'e2e/.fixtures/white.png'
@@ -53,15 +54,17 @@ async function expectCentreNear(page: Page, want: number, tolerance: number): Pr
 
 /** Put a 2 s cross dissolve on the second clip and park the playhead a fraction of the way through it. */
 async function dissolveAt(page: Page, fraction: number): Promise<void> {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
   await page.evaluate(
-    async ({ fraction }) => {
+    ({ fraction }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const storeMod = '/src/state/store.ts'
       const typesMod = '/src/engine/types.ts'
-      const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { useStore, updateActiveSequence } = mods[storeMod] as {
         useStore: { getState: () => { project: unknown; setUI: (p: { playheadS: number }) => void } }
         updateActiveSequence: (label: string, fn: (s: Seq) => Seq) => void
       }
-      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as { activeSequence: (p: unknown) => Seq }
+      const { activeSequence } = mods[typesMod] as { activeSequence: (p: unknown) => Seq }
       type Clip = { id: string; startS: number; transitionIn?: { type: string; durationS: number } }
       type Seq = { tracks: { kind: string; clips: Clip[] }[] }
       const D = 2
@@ -111,9 +114,11 @@ test('a white clip at half opacity over black is half the LIGHT of white, so a f
   await expect(page.getByTestId('asset-card')).toHaveCount(1, { timeout: 15_000 })
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { setUI: (p: { playheadS: number }) => void } }
       updateActiveSequence: (label: string, fn: (s: Seq) => Seq) => void
     }

@@ -21,6 +21,7 @@
 import type { Page } from '@playwright/test'
 // Timing spec: runs in the `timing` project, on a quiet box (see quietBox.ts).
 import { expect, test } from './quietBox'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const MOVES = 60
@@ -33,14 +34,16 @@ interface Row {
 
 /** Lay `wanted` copies of the imported video clip end to end, and report the real count. */
 async function fill(page: Page, wanted: number): Promise<number> {
-  return page.evaluate(async (wanted: number) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  return page.evaluate((wanted: number) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
     }
-    const { activeSequence, newId } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { activeSequence, newId } = mods[typesMod] as {
       activeSequence: (p: unknown) => Seq
       newId: () => string
     }

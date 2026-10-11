@@ -279,14 +279,7 @@ test('parking the playhead and dragging twice records a path, which is his recor
       return clip.keyframes?.posX ?? []
     })
 
-  const park = (s: number) =>
-    page.evaluate(async (playheadS) => {
-      const storeMod = '/src/state/store.ts'
-      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-        useStore: { getState: () => { setUI: (p: unknown) => void } }
-      }
-      useStore.getState().setUI({ playheadS })
-    }, s)
+  const park = (s: number) => setUI(page, { playheadS: s })
 
   const dragPicture = async (dx: number) => {
     const gizmo = page.getByTestId('gizmo-body')
@@ -344,13 +337,7 @@ test('arming from the gizmo badge turns a monitor drag into an animation', async
   // Park the playhead inside the clip FIRST: arming keyframes the framing where
   // the playhead is, and a lone keyframe at the head of the clip is just a moved
   // base, so a drag there is a plain move either way.
-  await page.evaluate(async () => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (p: unknown) => void } }
-    }
-    useStore.getState().setUI({ playheadS: 2 })
-  })
+  await setUI(page, { playheadS: 2 })
 
   // The badge on the picture is the arming control; there is no global toggle in
   // the transport bar any more, and armed is the clip's own fact.

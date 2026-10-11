@@ -10,6 +10,7 @@
 // Everything else is the real menus, the real tab and the real store.
 
 import { expect, test, type Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 type Caption = { text: string; startS: number; fontSizePx: number }
 
@@ -17,14 +18,16 @@ type Caption = { text: string; startS: number; fontSizePx: number }
 async function seedSoundClips(page: Page, starts: number[]): Promise<string[]> {
   await page.getByTestId('media-file-input').setInputFiles('e2e/.fixtures/clip.webm')
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
-  return page.evaluate(async (at) => {
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  return page.evaluate((at) => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { project: { assets: Record<string, { id: string }> } } }
       updateActiveSequence: (label: string, fn: (sq: { tracks: { id: string; kind: string; clips: unknown[] }[] }) => unknown) => void
     }
-    const { newClipFromAsset } = (await import(/* @vite-ignore */ typesMod)) as {
+    const { newClipFromAsset } = mods[typesMod] as {
       newClipFromAsset: (a: unknown, startS: number) => { id: string; outS: number }
     }
     const asset = Object.values(useStore.getState().project.assets)[0]!
@@ -39,9 +42,11 @@ async function seedSoundClips(page: Page, starts: number[]): Promise<string[]> {
 
 /** Stand in for the speech model: three words per clip, a little slowly, named after where the clip sits. */
 async function standInEars(page: Page): Promise<void> {
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/transcribeActions.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const mod = '/src/state/transcribeActions.ts'
-    const { captionEars, useTranscribe } = (await import(/* @vite-ignore */ mod)) as {
+    const { captionEars, useTranscribe } = mods[mod] as {
       captionEars: { wordsForClip: (clip: { startS: number }) => Promise<unknown[]> }
       useTranscribe: { setState: (s: Record<string, unknown>) => void }
     }
@@ -79,9 +84,11 @@ async function captions(page: Page): Promise<Caption[]> {
 }
 
 async function undo(page: Page): Promise<void> {
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/store.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { undo: () => void } } }
+    const { useStore } = mods[storeMod] as { useStore: { getState: () => { undo: () => void } } }
     useStore.getState().undo()
   })
 }
@@ -127,9 +134,11 @@ test('right click on three selected clips captions all three, in one undo step, 
 
 test('a style saved with its own length and size, then put on the captions he has', async ({ page }) => {
   await page.goto('/')
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/captionActions.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const capMod = '/src/state/captionActions.ts'
-    const { addCaptionsFromWords } = (await import(/* @vite-ignore */ capMod)) as {
+    const { addCaptionsFromWords } = mods[capMod] as {
       addCaptionsFromWords: (w: unknown[]) => void
     }
     addCaptionsFromWords(
@@ -171,9 +180,11 @@ test('a style saved with its own length and size, then put on the captions he ha
 test('Caption every clip uses the default style, its length and its size', async ({ page }) => {
   await page.goto('/')
   // A style he made earlier: two words a caption, big.
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/captionStyles.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const mod = '/src/state/captionStyles.ts'
-    const { saveNewCaptionStyle } = (await import(/* @vite-ignore */ mod)) as { saveNewCaptionStyle: (d: unknown) => unknown }
+    const { saveNewCaptionStyle } = mods[mod] as { saveNewCaptionStyle: (d: unknown) => unknown }
     saveNewCaptionStyle({
       name: 'Pairs',
       look: { fontSizePx: 150 },
@@ -203,9 +214,11 @@ test('Caption every clip uses the default style, its length and its size', async
 
 test('the caption list jumps the playhead on a click, finds by search, and edits in place', async ({ page }) => {
   await page.goto('/')
-  await page.evaluate(async () => {
+  await parkModules(page, ['/src/state/captionActions.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const capMod = '/src/state/captionActions.ts'
-    const { addCaptionsFromWords } = (await import(/* @vite-ignore */ capMod)) as { addCaptionsFromWords: (w: unknown[]) => void }
+    const { addCaptionsFromWords } = mods[capMod] as { addCaptionsFromWords: (w: unknown[]) => void }
     addCaptionsFromWords(
       ['first', 'second', 'third'].map((t, i) => ({ text: t, startS: i * 1, endS: i * 1 + 0.4 })),
     )

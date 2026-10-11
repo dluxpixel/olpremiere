@@ -29,7 +29,7 @@ async function addClip(page: Page): Promise<string> {
   // Select the clip and return its id.
   await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
   const clipId = await page.evaluate(() => {
-  const mods = (window as unknown as ParkedWindow).__e2eMods
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
     const { useStore } = mods[storeMod] as {
@@ -51,7 +51,7 @@ async function setChannel(page: Page, clipId: string, channel: string, value: nu
   await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
     ({ clipId, channel, value }) => {
-  const mods = (window as unknown as ParkedWindow).__e2eMods
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const editsMod = '/src/state/clipEdits.ts'
       const { setChannel } = mods[editsMod] as {
         setChannel: (id: string, ch: string, v: number) => void

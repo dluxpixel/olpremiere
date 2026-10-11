@@ -11,6 +11,7 @@
 // 2d copy of the WebGL canvas is the frame on screen.
 
 import type { Page } from '@playwright/test'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 /** A hop that has not repainted by now counts as never repainted. */
 export const HOP_LIMIT_MS = 4000
@@ -49,10 +50,12 @@ export function gridShowsAPicture(grid: number[] | null): boolean {
  * in the page. Resolves to milliseconds, or -1 when it did not within `limitMs`.
  */
 export async function hop(page: Page, at: number, want: HopWant = 'changed', limitMs = HOP_LIMIT_MS): Promise<number> {
+  await parkModules(page, ['/src/state/store.ts'])
   return page.evaluate(
-    async ({ at, want, limit }) => {
+    ({ at, want, limit }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
       const storeMod = '/src/state/store.ts'
-      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      const { useStore } = mods[storeMod] as {
         useStore: { getState: () => { setUI: (u: { playheadS: number }) => void } }
       }
       const scratch = document.createElement('canvas')
