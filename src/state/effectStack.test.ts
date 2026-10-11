@@ -195,8 +195,9 @@ describe('the toasts that SHOULD fire', () => {
 
   it('explains the dead button instead of doing nothing quietly', () => {
     const { id } = seedStack()
-    // Every param still at its default, which is how every effect arrives.
-    const target = clipById(id).effects[0].id
+    // Every param still at its default, which is how a blur arrives. (Not a colour
+    // tool: Lift/Gamma/Gain arrives with a little gain so a drop shows something.)
+    const target = clipById(id).effects.find((e) => e.type === 'gaussianBlur')!.id
     show.mockClear()
 
     rampEffect(id, target, 'in', 0.5)

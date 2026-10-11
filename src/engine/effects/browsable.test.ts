@@ -16,13 +16,12 @@ import { BROWSABLE_EFFECTS, CANONICAL_ORDER, EFFECTS, LOOK_EFFECTS, TOOL_EFFECTS
 const types = (list: { type: string }[]): string[] => list.map((e) => e.type)
 
 describe('the Effects browser is short', () => {
-  it('offers less than half of what it used to', () => {
-    // The cinematic looks (2026-10-06, his ask) are finished grades, not tools.
-    // They sit on their own Looks shelf (LOOK_EFFECTS), so they are counted
-    // apart and the tools list is held to the rule it always had.
+  it('still hides the duplicates and the colourist-only tools', () => {
+    // His call, 2026-10-10 (gym filters): the list may grow back by exactly the
+    // tools a gym edit uses. It is still held to a ceiling, so it cannot drift
+    // back to the fifteen it was cut down from on 2026-07-28.
     const tools = BROWSABLE_EFFECTS.filter((e) => e.category !== 'look')
-    const allTools = EFFECTS.filter((e) => e.category !== 'look')
-    expect(tools.length).toBeLessThan(allTools.length / 2 + 1)
+    expect(tools.length).toBeLessThanOrEqual(16)
   })
 
   it('keeps the looks off the tools list and on their own shelf', () => {
@@ -38,13 +37,27 @@ describe('the Effects browser is short', () => {
     }
   })
 
-  it('drops the pro colour desk and the duplicates', () => {
-    // Exposure and white balance overlap Brightness; vibrance overlaps Saturation;
-    // lift/gamma/gain and luma key are colourist tools; directional blur is a
-    // building block the whip uses, not something to drag onto a clip.
-    // brightnessContrast joined them on 2026-08-10: it is the frozen additive
-    // version, kept alive only so clips cut before the split still render.
-    for (const type of ['exposure', 'colorWheels', 'whiteBalance', 'vibrance', 'lumaKey', 'directionalBlur', 'brightnessContrast']) {
+  it('offers every gym tool he asked for on 2026-10-10', () => {
+    // Film Grain, Sharpen, Motion Blur, and the skin and highlight colour tools
+    // were built and hidden. He said "Yes, show them". Strobe, RGB split and
+    // Cinematic bars are new.
+    for (const type of ['grain', 'sharpen', 'directionalBlur', 'colorWheels', 'whiteBalance', 'strobe', 'rgbSplit', 'cinematicBars']) {
+      expect(types(BROWSABLE_EFFECTS)).toContain(type)
+    }
+  })
+
+  it('shows the user facing blur as Motion Blur, and keeps the move derived smear hidden', () => {
+    expect(getEffect('directionalBlur')?.label).toBe('Motion Blur')
+    expect(getEffect('motionSmear')?.hidden).toBe(true)
+    expect(types(BROWSABLE_EFFECTS)).not.toContain('motionSmear')
+  })
+
+  it('drops the duplicates the looks and the move smear use internally', () => {
+    // Exposure overlaps Brightness; vibrance overlaps Saturation; luma key is a
+    // colourist tool. brightnessContrast joined them on 2026-08-10: it is the
+    // frozen additive version, kept alive only so clips cut before the split
+    // still render. Look Clarity and Look Glow are made by the looks themselves.
+    for (const type of ['exposure', 'vibrance', 'lumaKey', 'brightnessContrast', 'motionSmear', 'lookClarity', 'lookGlow']) {
       expect(types(BROWSABLE_EFFECTS)).not.toContain(type)
     }
   })
