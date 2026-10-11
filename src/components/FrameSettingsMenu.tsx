@@ -19,9 +19,10 @@
 // aspect he changes most, loop, preview quality and fullscreen. What came in
 // here is what he sets once for a short and leaves alone.
 
-import { Aperture, Frame, Scan, Wind } from 'lucide-react'
+import { Aperture, Frame, Scan, Smartphone, Wind } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { APP_GUIDE_APPS, type AppGuideApp } from '../engine/appGuides'
 import { CONTENT_ASPECTS, aspectLabel, parseAspect } from '../engine/contentFrame'
 import { DEFAULT_SHUTTER_ANGLE } from '../engine/render/motionBlur'
 import { BACKDROP_ZOOM, BLUR_BACKDROP_ZOOM } from '../engine/render/resolve'
@@ -64,12 +65,13 @@ export function contentAspectKeyFor(seq: Sequence, customOpen: boolean): string 
  * he cannot tell a setting is on without opening the drawer. Motion blur is ON
  * by default, so "not default" means it has been switched OFF.
  */
-export function frameSettingsActive(seq: Sequence, safeMargins: boolean): boolean {
+export function frameSettingsActive(seq: Sequence, safeMargins: boolean, appGuides = false): boolean {
   return (
     seq.contentAspect !== undefined ||
     seq.blurBackground === true ||
     (seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE) === 0 ||
-    safeMargins
+    safeMargins ||
+    appGuides
   )
 }
 
@@ -81,9 +83,25 @@ interface Props {
   seq: Sequence
   safeMargins: boolean
   onSafeMargins: (v: boolean) => void
+  /** The TikTok / Reels guides: on or off, and for which app. */
+  appGuides?: boolean
+  appGuidesApp?: AppGuideApp
+  onAppGuides?: (v: boolean) => void
+  onAppGuidesApp?: (app: AppGuideApp) => void
+  /** Why the guides are not on the picture right now (a wide shape), or null when they show. */
+  appGuidesHidden?: string | null
 }
 
-export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
+export function FrameSettingsMenu({
+  seq,
+  safeMargins,
+  onSafeMargins,
+  appGuides = false,
+  appGuidesApp = 'tiktok',
+  onAppGuides,
+  onAppGuidesApp,
+  appGuidesHidden = null,
+}: Props) {
   const [open, setOpen] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
   const [customRatio, setCustomRatio] = useState('')
@@ -134,7 +152,7 @@ export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
   }, [open])
 
   const shutter = seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE
-  const anyOn = frameSettingsActive(seq, safeMargins)
+  const anyOn = frameSettingsActive(seq, safeMargins, appGuides)
 
   return (
     <div className="relative shrink-0">
@@ -144,7 +162,7 @@ export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label="Frame settings"
-        title="Frame: the shape inside your export, the blurred background, motion blur and safe margins"
+        title="Frame: the shape inside your export, the blurred background, motion blur, safe margins and TikTok and Reels guides"
         data-testid="frame-settings-button"
         onClick={() => setOpen((v) => !v)}
         className={`flex h-7 shrink-0 items-center gap-1.5 rounded-field border px-2 text-ui-sm transition-colors duration-[120ms] ${
@@ -314,6 +332,57 @@ export function FrameSettingsMenu({ seq, safeMargins, onSafeMargins }: Props) {
             <p className={`${HINT} px-2.5 pb-1.5`}>
               Guides only. They are never burned into the export.
             </p>
+
+            {/* --- TikTok and Reels guides ---------------------------------- */}
+            {/* His ask, 2026-10-08. Where each app puts its own buttons and words over a tall
+                picture, so a caption or a face stays clear of them. The title carries the reason
+                when the shape cannot show them, the same words as the line under the switch. */}
+            {onAppGuides && (
+              <>
+                <label className={`${ROW} cursor-default`} title={appGuidesHidden ?? undefined}>
+                  <span className="flex items-center gap-2">
+                    <Smartphone size={14} strokeWidth={1.75} className="text-text-muted" aria-hidden />
+                    <span className={LABEL}>TikTok and Reels guides</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    data-testid="app-guides-toggle"
+                    checked={appGuides}
+                    onChange={(e) => onAppGuides(e.target.checked)}
+                    className="size-4 shrink-0 accent-accent"
+                  />
+                </label>
+                {appGuides && onAppGuidesApp && (
+                  <div className={ROW}>
+                    <span className="text-[11px] text-text-muted">Show for</span>
+                    <div role="radiogroup" aria-label="Which app the guides are for" className="flex gap-1">
+                      {APP_GUIDE_APPS.map((a) => (
+                        <button
+                          key={a.key}
+                          type="button"
+                          role="radio"
+                          aria-checked={appGuidesApp === a.key}
+                          data-testid={`app-guides-${a.key}`}
+                          onClick={() => onAppGuidesApp(a.key)}
+                          className={`h-7 cursor-default rounded-field border px-2.5 text-ui-sm transition-colors duration-[120ms] ${
+                            appGuidesApp === a.key
+                              ? 'border-accent bg-accent-quiet text-accent'
+                              : 'border-border bg-bg-input text-text-secondary hover:border-border-strong hover:text-text-primary'
+                          }`}
+                        >
+                          {a.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <p className={`${HINT} px-2.5 pb-1.5`} data-testid="app-guides-hint">
+                  {appGuides && appGuidesHidden
+                    ? appGuidesHidden
+                    : 'Shows where the app covers a tall picture. Guides only, never in the export.'}
+                </p>
+              </>
+            )}
             </div>
           </>,
           fullscreen ?? document.body,

@@ -2,6 +2,7 @@ import {
   Camera,
   ChevronLeft,
   ChevronRight,
+  Eye,
   Maximize,
   Minimize,
   MonitorPlay,
@@ -17,23 +18,27 @@ import { prewarmAudio } from '../engine/audio'
 import { setPreviewScale } from '../engine/frameCache'
 import { noPictureReason, prewarmPreview, previewEpoch, renderPreview } from '../engine/preview'
 import { recordPreviewTick } from '../engine/previewTruth'
+import { appGuideHiddenReason } from '../engine/appGuides'
 import { ensureProxies } from '../engine/proxyMedia'
 import { formatTimecode, quantizeToFrame } from '../engine/timecode'
 import { activeSequence, type Sequence } from '../engine/types'
+import { holdBefore, releaseBefore, useHoldingBefore } from '../state/compareHold'
 import { pausePlayback, subscribeShuttleRate, tickPlaybackFrame, toggleLoop, togglePlay } from '../state/playbackControl'
 import { screenshotToMedia } from '../state/screenshot'
 import { isCriticalWorkRunning } from '../state/unloadGuard'
 import { isExportWatched } from '../state/exportJob'
-import { setPreviewQuality, setSafeMargins, useSettings } from '../state/settings'
+import { setAppGuides, setAppGuidesApp, setPreviewQuality, setSafeMargins, useSettings } from '../state/settings'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { CompactSelect, type CompactOption } from '../ui/CompactSelect'
 import { Tooltip } from '../ui/Tooltip'
 import { usePhoneLayout } from '../ui/phoneLayout'
 import { MASTER_METER_W, MasterMeter } from './MasterMeter'
+import { AppGuidesOverlay } from './AppGuidesOverlay'
 import { FrameSettingsMenu } from './FrameSettingsMenu'
 import { CUSTOM_FORMAT_KEY, FORMAT_OPTIONS, FORMATS, aspectKeyFor } from './frameFormats'
 import { fitCanvasBox } from './monitorSizing'
+import { useCanvasBox } from './useCanvasBox'
 import { barClasses, groupClasses, pinnedClasses, settingsClasses, showsTotalLength, timeClasses, transportTier } from './transportLayout'
 import { drawIsDue, previewFrameMs } from './previewCap'
 import { MonitorTransformOverlay } from './MonitorTransformOverlay'
@@ -271,19 +276,7 @@ export function useProgramCanvas(quality: Quality) {
  * touches the canvas render or export; it is an overlay, not a layer.
  */
 function SafeMargins({ canvas }: { canvas: HTMLCanvasElement | null }) {
-  const [box, setBox] = useState<{ w: number; h: number } | null>(null)
-  useEffect(() => {
-    if (!canvas) return
-    // ResizeObserver, not a rAF poll: the canvas CSS size only changes on panel
-    // resize / format switch, so polling it every frame was pure overhead.
-    const ro = new ResizeObserver(() => {
-      const w = parseFloat(canvas.style.width) || 0
-      const h = parseFloat(canvas.style.height) || 0
-      setBox((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }))
-    })
-    ro.observe(canvas)
-    return () => ro.disconnect()
-  }, [canvas])
+  const box = useCanvasBox(canvas)
 
   if (!box || box.w === 0) return null
   const inset = (pct: number) => ({
@@ -325,6 +318,66 @@ function ShuttleBadge() {
     >
       {arrow} {Math.abs(rate)}×
     </span>
+  )
+}
+
+/**
+ * "Before" while the effects-off picture is held, on the picture's top left corner. It sits ON the
+ * picture because the picture is what looks different: a held key with nothing on screen to say so
+ * would read as the effects having broken. An overlay over the canvas box, like the safe margins.
+ */
+function BeforeBadge({ canvas }: { canvas: HTMLCanvasElement | null }) {
+  const box = useCanvasBox(canvas)
+  if (!box || box.w === 0) return null
+  return (
+    <div data-testid="before-overlay" className="pointer-events-none absolute" style={{ width: box.w, height: box.h }}>
+      <span
+        data-testid="before-badge"
+        className="absolute left-2 top-2 rounded-field bg-ember-quiet px-2 py-0.5 text-ui-sm font-medium text-ember"
+      >
+        Before
+      </span>
+    </div>
+  )
+}
+
+/**
+ * The Before button: hold it to see the picture without its effects, let go and they are back. The R
+ * key does the same. It is a button you HOLD, so it takes the pointer on press and lets go on release,
+ * on a cancel, and if the pointer is lost, which is every way a hold can end.
+ */
+function BeforeButton({ holding }: { holding: boolean }) {
+  return (
+    <div className="absolute right-2 top-2 z-10">
+      <Tooltip label="Hold to see the picture without effects, to compare" shortcut="R" side="bottom">
+        <button
+          type="button"
+          aria-pressed={holding}
+          aria-label="Before: hold to see the picture without effects"
+          data-testid="before-hold"
+          onPointerDown={(e) => {
+            if (e.button !== 0) return
+            e.currentTarget.setPointerCapture(e.pointerId)
+            holdBefore()
+          }}
+          onPointerUp={releaseBefore}
+          onPointerCancel={releaseBefore}
+          onLostPointerCapture={releaseBefore}
+          // A key press on the button itself must not start a hold with no key-up to end it; R is the key.
+          onKeyDown={(e) => {
+            if (e.key === ' ' || e.key === 'Enter') e.preventDefault()
+          }}
+          className={`flex h-7 shrink-0 cursor-default select-none items-center gap-1.5 rounded-field border px-2 text-ui-sm transition-colors duration-[120ms] ${
+            holding
+              ? 'border-ember/50 bg-ember-quiet text-ember'
+              : 'border-border bg-bg-elevated/90 text-text-secondary hover:border-border-strong hover:text-text-primary'
+          }`}
+        >
+          <Eye size={14} strokeWidth={1.75} aria-hidden />
+          Before
+        </button>
+      </Tooltip>
+    </div>
   )
 }
 
@@ -409,6 +462,13 @@ export function Monitor() {
   }, [quality])
   // Remembered in Settings like the quality beside it, so it survives a restart.
   const safeMargins = useSettings((s) => s.safeMargins)
+  // The TikTok / Reels guides stick the same way. Whether they can show depends on the shape (appGuides.ts).
+  const appGuides = useSettings((s) => s.appGuides)
+  const appGuidesApp = useSettings((s) => s.appGuidesApp)
+  // Hold to compare: the key (App.tsx) and the Before button share this one state.
+  const holdingBefore = useHoldingBefore()
+  // A hold must never outlive the picture it belongs to.
+  useEffect(() => releaseBefore, [])
   // Whether THIS monitor is the thing on the full screen. The picture's editing chrome stands down
   // in it, and the button that leaves it is the one that went in (below).
   const [fullscreen, setFullscreen] = useState(false)
@@ -469,6 +529,10 @@ export function Monitor() {
         <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
           <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-inner bg-black" />
           {safeMargins && <SafeMargins canvas={canvasRef.current} />}
+          {appGuides && (
+            <AppGuidesOverlay canvas={canvasRef.current} width={seq.width} height={seq.height} app={appGuidesApp} />
+          )}
+          {holdingBefore && <BeforeBadge canvas={canvasRef.current} />}
           {/* The one honest thing to show over a picture that cannot be drawn.
               It sits ON the monitor because the monitor is what looks broken;
               a toast in the corner would vanish and leave the black behind. */}
@@ -496,6 +560,7 @@ export function Monitor() {
             />
           )}
           <MonitorTransformOverlay canvas={canvasRef.current} chromeHidden={fullscreen} />
+          {hasContent && !fullscreen && <BeforeButton holding={holdingBefore} />}
           {!hasContent && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
               <MonitorPlay size={28} strokeWidth={1.5} className="text-text-muted" aria-hidden />
@@ -675,7 +740,16 @@ export function Monitor() {
                 ⛔ NOTHING MOVED. His call, 2026-09-13: the base is good, improve it
                 in place. → FrameSettingsMenu.tsx carries the whole account. */}
             <span className="contents phone:hidden">
-              <FrameSettingsMenu seq={seq} safeMargins={safeMargins} onSafeMargins={setSafeMargins} />
+              <FrameSettingsMenu
+                seq={seq}
+                safeMargins={safeMargins}
+                onSafeMargins={setSafeMargins}
+                appGuides={appGuides}
+                appGuidesApp={appGuidesApp}
+                onAppGuides={setAppGuides}
+                onAppGuidesApp={setAppGuidesApp}
+                appGuidesHidden={appGuideHiddenReason(seq.width, seq.height)}
+              />
             </span>
             {/* ⛔ SAFE MARGINS IS BACK ON THE BAR (his words, 2026-10-04: "safe margins, which, for some
                 reason, I can't find now. I was actually using that a lot."). It was a button here from

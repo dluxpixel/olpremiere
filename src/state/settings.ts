@@ -4,6 +4,7 @@
 // corners of dialogs and dropdown chevrons.
 
 import { create } from 'zustand'
+import type { AppGuideApp } from '../engine/appGuides'
 import { notePrefsChanged } from './prefsSignal'
 
 export type ThemeChoice = 'dark' | 'light' | 'system' | 'claude'
@@ -50,6 +51,14 @@ interface SettingsState {
    * using that a lot."
    */
   safeMargins: boolean
+  /**
+   * The TikTok / Reels app guides over a tall preview: where each app's own buttons and caption
+   * cover the picture. Guides only, never exported (engine/appGuides.ts). His call, 2026-10-08:
+   * *"TikTok and Reels guides"*, and the setting sticks like safe margins does.
+   */
+  appGuides: boolean
+  /** Which app the guides are drawn for. */
+  appGuidesApp: AppGuideApp
 }
 
 /** The ease field's own envelope. Shared by the store clamp and the scrub field. */
@@ -69,6 +78,8 @@ const EASE_KEY = 'olpremiere:settings:ease-seconds'
 const LOUDNESS_KEY = 'olpremiere:settings:platform-loudness'
 const USAGE_LOG_KEY = 'olpremiere:settings:usage-log'
 const SAFE_MARGINS_KEY = 'olpremiere:settings:safe-margins'
+const APP_GUIDES_KEY = 'olpremiere:settings:app-guides'
+const APP_GUIDES_APP_KEY = 'olpremiere:settings:app-guides-app'
 
 function read(key: string): string | null {
   try {
@@ -116,6 +127,9 @@ const loadPlatformLoudness = (): boolean => read(LOUDNESS_KEY) !== 'off'
 const loadUsageLog = (): boolean => read(USAGE_LOG_KEY) !== 'off'
 /** Off unless he turned it on: only 'on' is stored. */
 const loadSafeMargins = (): boolean => read(SAFE_MARGINS_KEY) === 'on'
+const loadAppGuides = (): boolean => read(APP_GUIDES_KEY) === 'on'
+/** TikTok unless he picked Reels: only 'reels' is stored. */
+const loadAppGuidesApp = (): AppGuideApp => (read(APP_GUIDES_APP_KEY) === 'reels' ? 'reels' : 'tiktok')
 
 export const useSettings = create<SettingsState>(() => ({
   theme: loadTheme(),
@@ -124,11 +138,23 @@ export const useSettings = create<SettingsState>(() => ({
   platformLoudness: loadPlatformLoudness(),
   usageLog: loadUsageLog(),
   safeMargins: loadSafeMargins(),
+  appGuides: loadAppGuides(),
+  appGuidesApp: loadAppGuidesApp(),
 }))
 
 export function setSafeMargins(on: boolean): void {
   useSettings.setState({ safeMargins: on })
   write(SAFE_MARGINS_KEY, on ? 'on' : null)
+}
+
+export function setAppGuides(on: boolean): void {
+  useSettings.setState({ appGuides: on })
+  write(APP_GUIDES_KEY, on ? 'on' : null)
+}
+
+export function setAppGuidesApp(app: AppGuideApp): void {
+  useSettings.setState({ appGuidesApp: app })
+  write(APP_GUIDES_APP_KEY, app === 'reels' ? 'reels' : null)
 }
 
 export function setPlatformLoudness(on: boolean): void {
@@ -188,6 +214,8 @@ export function reloadSettings(): void {
     platformLoudness: loadPlatformLoudness(),
     usageLog: loadUsageLog(),
     safeMargins: loadSafeMargins(),
+    appGuides: loadAppGuides(),
+    appGuidesApp: loadAppGuidesApp(),
   })
   applyTheme(useSettings.getState().theme)
 }

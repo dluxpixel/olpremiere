@@ -1880,6 +1880,8 @@ export function renderPreview(
   assets: Record<Id, MediaAsset>,
   tS: number,
   playing: boolean,
+  /** Draw the real picture even while the Before hold is on: a still of the edit is never the Before one. */
+  real = false,
 ): boolean {
   const renderer = rendererFor(canvas)
   if (!renderer) return true
@@ -1906,7 +1908,7 @@ export function renderPreview(
   setPreviewSequenceHeight(seq.height)
   // The live raster drives how big preview-only rasters (titles) need to be.
   previewRasterH = canvas.height
-  const frame = resolveForPreview(seq, tS)
+  const frame = real ? resolveFrame(seq, tS) : resolveForPreview(seq, tS)
   // Apply the live drag override to its layer (frame is freshly built, safe to mutate).
   if (liveTransform) {
     for (const op of frame.ops) {

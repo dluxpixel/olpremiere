@@ -88,7 +88,7 @@ export async function grabFrame(
       // something was still decoding, and a still of a half-decoded frame is a
       // still of the wrong picture, so keep drawing until it lands.
       for (;;) {
-        complete = renderPreview(canvas, seq, assets, tS, false)
+        complete = renderPreview(canvas, seq, assets, tS, false, true)
         if (complete || Date.now() >= deadline) break
         await wait(GRAB_POLL_MS)
       }
