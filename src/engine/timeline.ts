@@ -2499,6 +2499,12 @@ export function freeTrackFor(
  * the sequence height, not the picture). Needs the media records for the picture's
  * size; without them, or without a recorded frame, or into the same shape, the clip
  * is returned as it is.
+ *
+ * "The same shape" is the same aspect, not the same pixel size: a 4:3 clip at scale 1
+ * in 1920x1080 pasted into 3840x2160 is the same picture in the same shape of frame,
+ * and refitting it would grow it by a third. A cropped or turned clip is also left
+ * alone: the renderer fits the cropped region (mat.ts), but the refit reads the
+ * uncropped source, so it would size the clip for a picture that is not on screen.
  */
 function refitForPaste(
   clip: Clip,
@@ -2508,7 +2514,15 @@ function refitForPaste(
 ): Clip {
   const from = item.frame
   if (!assets || !from || item.trackKind !== 'video' || clip.title !== undefined) return clip
-  if (from.w === into.width && from.h === into.height) return clip
+  const { crop, rotationDeg } = clip.transform
+  if (crop.t !== 0 || crop.r !== 0 || crop.b !== 0 || crop.l !== 0 || rotationDeg !== 0) return clip
+  const kf = clip.keyframes
+  if (kf && (kf.cropT?.length || kf.cropR?.length || kf.cropB?.length || kf.cropL?.length || kf.rotation?.length)) {
+    return clip
+  }
+  if (!(from.w > 0 && from.h > 0)) return clip
+  // 1e-4 is the tolerance aspectKeyFor uses to call two frames the same shape.
+  if (Math.abs(from.w / from.h - into.width / into.height) < 1e-4) return clip
   return refitAppearanceToFrame(
     refitClipToFill(clip, assets, into.width, into.height, from.w, from.h),
     into.width,
