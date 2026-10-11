@@ -115,9 +115,11 @@ export function refitClipToFill(
   const asset = assets[clip.assetId]
   const sw = asset?.width ?? 0
   const sh = asset?.height ?? 0
-  if (sw <= 0 || sh <= 0) return clip
+  // `!(x > 0)` also catches NaN, which `x <= 0` lets through: a size that is not a
+  // number would otherwise write a NaN scale into the clip and blank it.
+  if (!(sw > 0) || !(sh > 0) || !Number.isFinite(sw) || !Number.isFinite(sh)) return clip
   const contain = Math.min(frameW / sw, frameH / sh)
-  if (contain <= 0) return clip
+  if (!(contain > 0)) return clip
   const tf = clip.transform
   if (tf.x !== 0 || tf.y !== 0) return clip
   const cover = Math.max(frameW / sw, frameH / sh) / contain
@@ -2407,6 +2409,12 @@ export interface ClipPayload {
    * goes on the next free line instead (pasteClips).
    */
   brought?: true
+  /**
+   * The frame the clip was copied out of. A paste into an edit of another shape
+   * fills the new frame from it, the way a format switch does (pasteClips).
+   * Absent on a payload that never recorded one, which is then pasted as it is.
+   */
+  frame?: { w: number; h: number }
 }
 
 const clipPayloadBody = (clip: Clip): Omit<Clip, 'id' | 'startS'> => {
@@ -2442,6 +2450,7 @@ export function serializeClips(seq: Sequence, clipIds: Id[], brought?: ReadonlyS
       offsetS: clip.startS - earliest,
       clip: clipPayloadBody(clip),
       ...(brought?.has(clip.id) ? { brought: true as const } : {}),
+      frame: { w: seq.width, h: seq.height },
     }
   })
 }
@@ -2477,6 +2486,50 @@ export function freeTrackFor(
   const grown = addTrack(seq, kind)
   const made = grown.tracks.find((t) => !seq.tracks.includes(t))!
   return { seq: grown, trackIndex: grown.tracks.indexOf(made) }
+}
+
+/**
+ * A pasted picture lands filling the frame it is pasted into, the same math as a
+ * drop (fitNewClipToFrame) and a format switch (setSequenceFormat).
+ *
+ * Copy a 16:9 clip out of a wide edit, paste it into a Shorts edit, and it kept the
+ * scale it had there: bars above and below, the one road into a tall frame that did
+ * not fill. It is refit from the frame it was copied out of, so a clip he scaled,
+ * moved, stretched or keyframed is left alone, and so is a title (its sizes follow
+ * the sequence height, not the picture). Needs the media records for the picture's
+ * size; without them, or without a recorded frame, or into the same shape, the clip
+ * is returned as it is.
+ *
+ * "The same shape" is the same aspect, not the same pixel size: a 4:3 clip at scale 1
+ * in 1920x1080 pasted into 3840x2160 is the same picture in the same shape of frame,
+ * and refitting it would grow it by a third. A cropped or turned clip is also left
+ * alone: the renderer fits the cropped region (mat.ts), but the refit reads the
+ * uncropped source, so it would size the clip for a picture that is not on screen.
+ */
+function refitForPaste(
+  clip: Clip,
+  item: ClipPayload,
+  assets: Record<Id, MediaAsset> | undefined,
+  into: Sequence,
+): Clip {
+  const from = item.frame
+  if (!assets || !from || item.trackKind !== 'video' || clip.title !== undefined) return clip
+  const { crop, rotationDeg } = clip.transform
+  if (crop.t !== 0 || crop.r !== 0 || crop.b !== 0 || crop.l !== 0 || rotationDeg !== 0) return clip
+  const kf = clip.keyframes
+  if (kf && (kf.cropT?.length || kf.cropR?.length || kf.cropB?.length || kf.cropL?.length || kf.rotation?.length)) {
+    return clip
+  }
+  if (!(from.w > 0 && from.h > 0)) return clip
+  // 1e-4 is the tolerance aspectKeyFor uses to call two frames the same shape.
+  if (Math.abs(from.w / from.h - into.width / into.height) < 1e-4) return clip
+  return refitAppearanceToFrame(
+    refitClipToFill(clip, assets, into.width, into.height, from.w, from.h),
+    into.width,
+    into.height,
+    from.w,
+    from.h,
+  )
 }
 
 /** What a paste did, beyond the clips it made. See pasteClips. */
@@ -2516,12 +2569,16 @@ export interface PasteResult {
  * words, 2026-09-28: *"it pastes it where I clicked it. It doesn't just paste it
  * randomly."* And 2026-10-04, after a picture went to V2 with V4 clicked: *"make
  * sure it also pastes it on the same line because I clicked the V4."*
+ *
+ * With `assets` (the project's media records), a picture copied out of an edit of
+ * another shape lands filling this one (refitForPaste).
  */
 export function pasteClips(
   seq: Sequence,
   payload: ClipPayload[],
   atS: number,
   target?: { trackIndex: number },
+  assets?: Record<Id, MediaAsset>,
 ): PasteResult {
   const kindIdx = (sq: Sequence): Record<'video' | 'audio', number[]> => {
     const out: Record<'video' | 'audio', number[]> = { video: [], audio: [] }
@@ -2636,13 +2693,14 @@ export function pasteClips(
         linkRemap.set(linkId, mapped)
         linkId = mapped
       }
-      const clip: Clip = {
+      const made: Clip = {
         ...body,
         id: newId(),
         startS: desiredS,
         effects: body.effects.map((e) => ({ ...e, id: newId() })),
         linkId,
       }
+      const clip = refitForPaste(made, item, assets, seq)
       const placedTrack = cur.tracks[home.trackIndex]!
       if (placedTrack.id !== askedId) {
         redirected.push(askedTracks[m]!.locked ? { askedId, landedId: placedTrack.id, locked: true } : { askedId, landedId: placedTrack.id })

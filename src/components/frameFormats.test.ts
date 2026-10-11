@@ -3,7 +3,7 @@
 // Shorts still use 9:16.
 
 import { describe, expect, it } from 'vitest'
-import { CUSTOM_FORMAT_KEY, FORMAT_OPTIONS, FORMATS, aspectKeyFor } from './frameFormats'
+import { CUSTOM_FORMAT_KEY, FORMAT_OPTIONS, FORMATS, aspectKeyFor, startFrame } from './frameFormats'
 
 const byKey = (key: string) => FORMATS.find((f) => f.key === key)!
 
@@ -97,5 +97,24 @@ describe('aspectKeyFor', () => {
     expect(aspectKeyFor(0, 0)).toBe(CUSTOM_FORMAT_KEY)
     expect(aspectKeyFor(1080, 0)).toBe(CUSTOM_FORMAT_KEY)
     expect(aspectKeyFor(Number.NaN, 1920)).toBe(CUSTOM_FORMAT_KEY)
+  })
+})
+
+describe('the shape a new project starts in', () => {
+  it('a plain new project is 16:9 Wide, as it always was', () => {
+    expect(startFrame('wide')).toEqual({ w: 1920, h: 1080 })
+    expect(aspectKeyFor(startFrame('wide').w, startFrame('wide').h)).toBe('16:9')
+  })
+
+  it('a Shorts project is the phone screen shape, the one TikTok and Reels play', () => {
+    expect(startFrame('shorts')).toEqual({ w: 1080, h: 2112 })
+    expect(aspectKeyFor(startFrame('shorts').w, startFrame('shorts').h)).toBe('phone')
+  })
+
+  it('is always one of the shapes the picker offers, so the select reads true', () => {
+    for (const start of ['wide', 'shorts'] as const) {
+      const { w, h } = startFrame(start)
+      expect(aspectKeyFor(w, h)).not.toBe(CUSTOM_FORMAT_KEY)
+    }
   })
 })

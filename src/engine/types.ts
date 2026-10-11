@@ -1007,13 +1007,13 @@ export function migrateProject(p: Project): Project {
   return changed ? { ...p, sequences } : p
 }
 
-export function newSequence(name = 'Sequence 1'): Sequence {
+export function newSequence(name = 'Sequence 1', frame: { w: number; h: number } = { w: 1920, h: 1080 }): Sequence {
   return {
     id: newId(),
     name,
     fps: 30,
-    width: 1920,
-    height: 1080,
+    width: frame.w,
+    height: frame.h,
     sampleRate: 48000,
     durationS: 0,
     // Array order: V1 (bottom) → V2, then A1 → A2.
@@ -1022,8 +1022,8 @@ export function newSequence(name = 'Sequence 1'): Sequence {
   }
 }
 
-export function newProject(name = 'Untitled Project'): Project {
-  const seq = newSequence()
+export function newProject(name = 'Untitled Project', frame: { w: number; h: number } = { w: 1920, h: 1080 }): Project {
+  const seq = newSequence(undefined, frame)
   const now = Date.now()
   return {
     id: newId(),
@@ -1033,7 +1033,7 @@ export function newProject(name = 'Untitled Project'): Project {
     assets: {},
     sequences: { [seq.id]: seq },
     activeSequenceId: seq.id,
-    settings: { fps: 30, width: 1920, height: 1080, sampleRate: 48000 },
+    settings: { fps: 30, width: frame.w, height: frame.h, sampleRate: 48000 },
   }
 }
 
