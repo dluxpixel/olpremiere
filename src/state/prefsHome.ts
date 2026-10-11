@@ -15,6 +15,7 @@
 // still owns its shape and its checks: a file read back is untrusted text that
 // goes through the same readers as the quick copy.
 
+import { reloadExportPresets } from './exportPresets'
 import { reloadSettings } from './settings'
 import { onPrefsChanged } from './prefsSignal'
 import { reloadStoredPrefs } from './store'
@@ -30,6 +31,7 @@ export const PREFS_KEYS = [
   'olpremiere:settings:platform-loudness',
   'olpremiere:settings:usage-log',
   'olpremiere:settings:safe-margins',
+  'olpremiere:export-presets',
   'olpremiere:zoomAnchor',
   'olpremiere:moveCurve',
   'olpremiere:snapping',
@@ -137,6 +139,7 @@ function adopt(file: PrefsSnapshot): void {
   }
   localStorage.setItem(PREFS_SAVED_AT_KEY, String(file.savedAt))
   reloadSettings()
+  reloadExportPresets()
   reloadStoredPrefs()
 }
 
