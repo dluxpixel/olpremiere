@@ -17,10 +17,10 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PLATFORM_TARGET_LUFS } from '../engine/loudness'
 import { activeSequence, newProject, type Clip, type Project } from '../engine/types'
-import type { ExportSettings } from '../engine/export/exportPlan'
+import type { ExportSettings } from '../engine/export'
 import { askExport, cancelExport, useExportJob } from '../state/exportJob'
 import { createPreset, EXPORT_PRESETS_KEY, reloadExportPresets, useExportPresets } from '../state/exportPresets'
-import { setPlatformLoudness } from '../state/settings'
+import { setPlatformLoudness, useSettings } from '../state/settings'
 import { useStore } from '../state/store'
 import { ExportDialog } from './ExportDialog'
 
@@ -132,7 +132,7 @@ const openChooser = () => {
   act(() => askExport())
   render(<ExportDialog />)
 }
-const storedPresets = () => JSON.parse(localStorage.getItem(EXPORT_PRESETS_KEY) ?? '[]') as { name: string; folder: string | null; platformLoudness: boolean }[]
+const storedPresets = () => JSON.parse(localStorage.getItem(EXPORT_PRESETS_KEY) ?? '[]') as { name: string; folder: string | null }[]
 
 describe('the Export button asks which preset', () => {
   it('opens the list with only "New preset" and "Just this once", and starts nothing', () => {
@@ -173,14 +173,16 @@ describe('making a preset', () => {
     const save = screen.getByTestId('export-preset-save') as HTMLButtonElement
     expect(save.disabled).toBe(true) // a blank name makes nothing
     await user.type(screen.getByTestId('export-preset-name'), 'Gym')
-    await user.click(screen.getByTestId('export-preset-loudness')) // starts as the setting is now (on), so this turns it off
+    // A preset is a name and a folder: no setting of its own to choose.
+    expect(screen.queryByTestId('export-preset-loudness')).toBeNull()
     await user.click(save)
 
     const row = screen.getByTestId('export-preset-row')
     expect(row.textContent).toContain('Gym')
     expect(row.textContent).toContain('Folder not chosen yet')
     expect(calls()).toHaveLength(0)
-    expect(storedPresets()).toMatchObject([{ name: 'Gym', folder: null, platformLoudness: false }])
+    expect(storedPresets()).toMatchObject([{ name: 'Gym', folder: null }])
+    expect(storedPresets()[0]).not.toHaveProperty('platformLoudness')
   })
 
   it('"Save and export" makes it and starts with it, asking for its folder', async () => {
@@ -200,13 +202,13 @@ describe('exporting with a preset', () => {
   it('⛔ the first use asks for the folder once and remembers it; the next export goes straight there, named "Holiday 2"', async () => {
     const user = userEvent.setup()
     h.answers.push('D:/Gym videos')
-    createPreset('Gym', false)
+    createPreset('Gym')
     openChooser()
     await user.click(screen.getByTestId('export-preset-start'))
     await waitFor(() => expect(calls()).toHaveLength(1))
 
-    // The preset's own setting is the one this video was made with: loudness off.
-    expect(calls()[0].settings.loudnessTargetLufs).toBeNull()
+    // The window's own setting (on) is the one this video was made with.
+    expect(calls()[0].settings.loudnessTargetLufs).toBe(PLATFORM_TARGET_LUFS)
     expect(calls()[0].outPath).toBe('D:/Gym videos/Holiday.mp4')
     expect(h.asked).toHaveLength(1)
     expect(useExportPresets.getState().presets[0].folder).toBe('D:/Gym videos')
@@ -227,14 +229,15 @@ describe('exporting with a preset', () => {
     expect(h.used.has('D:/Gym videos/Holiday.mp4')).toBe(true)
   })
 
-  it('a preset with Platform loudness on exports with it', async () => {
+  it('⛔ a preset exports with the window\'s own setting, and never changes it', async () => {
     const user = userEvent.setup()
     setPlatformLoudness(false)
-    createPreset('Loud', true, 'D:/Loud')
+    createPreset('Loud', 'D:/Loud')
     openChooser()
     await user.click(screen.getByTestId('export-preset-start'))
     await waitFor(() => expect(calls()).toHaveLength(1))
-    expect(calls()[0].settings.loudnessTargetLufs).toBe(PLATFORM_TARGET_LUFS)
+    expect(calls()[0].settings.loudnessTargetLufs).toBeNull()
+    expect(useSettings.getState().platformLoudness).toBe(false)
     expect(h.asked).toHaveLength(0)
   })
 
@@ -242,7 +245,7 @@ describe('exporting with a preset', () => {
     const user = userEvent.setup()
     h.gone.add('D:/Old')
     h.answers.push('D:/New')
-    createPreset('Gym', true, 'D:/Old')
+    createPreset('Gym', 'D:/Old')
     openChooser()
     await user.click(screen.getByTestId('export-preset-start'))
     await waitFor(() => expect(calls()).toHaveLength(1))
@@ -251,28 +254,30 @@ describe('exporting with a preset', () => {
     expect(useExportPresets.getState().presets[0].folder).toBe('D:/New')
   })
 
-  it('a second folder that does not work says so plainly, forgets the folder, and Try again asks', async () => {
+  it('a second folder that does not work says so plainly, keeps the saved folder, and Try again asks', async () => {
     const user = userEvent.setup()
     h.gone.add('D:/Old').add('D:/Also gone')
     h.answers.push('D:/Also gone')
-    createPreset('Gym', true, 'D:/Old')
+    createPreset('Gym', 'D:/Old')
     openChooser()
     await user.click(screen.getByTestId('export-preset-start'))
     expect((await screen.findByTestId('export-error')).textContent).toContain('Could not write the file there')
-    expect(useExportPresets.getState().presets[0].folder).toBeNull()
+    // Only a folder that works replaces it: a failure never wipes it.
+    expect(useExportPresets.getState().presets[0].folder).toBe('D:/Old')
     expect(calls()).toHaveLength(0)
 
-    h.gone.clear()
+    h.gone.delete('D:/Also gone')
     h.answers.push('D:/Fine')
     await user.click(screen.getByTestId('export-retry'))
     await waitFor(() => expect(calls()).toHaveLength(1))
     expect(calls()[0].outPath).toBe('D:/Fine/Holiday.mp4')
+    expect(useExportPresets.getState().presets[0].folder).toBe('D:/Fine')
   })
 
   it('dismissing the folder picker is a quiet cancel: nothing starts, no error, no folder kept', async () => {
     const user = userEvent.setup()
     h.answers.push(null)
-    createPreset('Gym', true)
+    createPreset('Gym')
     openChooser()
     await user.click(screen.getByTestId('export-preset-start'))
     await waitFor(() => expect(screen.queryByTestId('export-dialog')).toBeNull())
@@ -281,9 +286,22 @@ describe('exporting with a preset', () => {
     expect(useExportPresets.getState().presets[0].folder).toBeNull()
   })
 
+  it('⛔ dismissing the picker for a gone folder keeps the old path', async () => {
+    const user = userEvent.setup()
+    h.gone.add('D:/Old')
+    h.answers.push(null)
+    createPreset('Gym', 'D:/Old')
+    openChooser()
+    await user.click(screen.getByTestId('export-preset-start'))
+    await waitFor(() => expect(screen.queryByTestId('export-dialog')).toBeNull())
+    expect(h.asked).toEqual([{ title: 'Folder for Gym', hint: 'D:/Old' }])
+    expect(calls()).toHaveLength(0)
+    expect(useExportPresets.getState().presets[0].folder).toBe('D:/Old')
+  })
+
   it('"Just this once" is the plain export: the save dialog names the file, the setting is the window\'s own', async () => {
     const user = userEvent.setup()
-    createPreset('Gym', false, 'D:/Gym videos')
+    createPreset('Gym', 'D:/Gym videos')
     openChooser()
     await user.click(screen.getByTestId('export-once'))
     await waitFor(() => expect(calls()).toHaveLength(1))
@@ -295,10 +313,10 @@ describe('exporting with a preset', () => {
 })
 
 describe('changing a preset', () => {
-  it('rename, the setting, the folder and delete each apply at once', async () => {
+  it('rename, the folder and delete each apply at once', async () => {
     const user = userEvent.setup()
-    createPreset('Gym', true, 'D:/A')
-    createPreset('Edits', true, 'D:/E')
+    createPreset('Gym', 'D:/A')
+    createPreset('Edits', 'D:/E')
     openChooser()
     const rows = screen.getAllByTestId('export-preset-row')
     expect(rows).toHaveLength(2)
@@ -307,14 +325,13 @@ describe('changing a preset', () => {
     const name = screen.getByTestId('export-preset-name')
     await user.clear(name)
     await user.type(name, 'Lift')
-    await user.click(screen.getByTestId('export-preset-loudness'))
     h.answers.push('D:/B')
     await user.click(screen.getByTestId('export-preset-change-folder'))
     await waitFor(() => expect(screen.getByTestId('export-preset-folder').textContent).toBe('D:/B'))
     expect(h.asked[0]).toEqual({ title: 'Folder for Lift', hint: 'D:/A' })
     await user.click(screen.getByTestId('export-preset-done'))
 
-    expect(storedPresets()[0]).toMatchObject({ name: 'Lift', folder: 'D:/B', platformLoudness: false })
+    expect(storedPresets()[0]).toMatchObject({ name: 'Lift', folder: 'D:/B' })
     expect(screen.getAllByTestId('export-preset-row')[0].textContent).toContain('Lift')
 
     await user.click(within(screen.getAllByTestId('export-preset-row')[0]).getByTestId('export-preset-edit'))
@@ -325,7 +342,7 @@ describe('changing a preset', () => {
 
   it('a blank name is refused and the old one stays', async () => {
     const user = userEvent.setup()
-    createPreset('Gym', true, 'D:/A')
+    createPreset('Gym', 'D:/A')
     openChooser()
     await user.click(screen.getByTestId('export-preset-edit'))
     await user.clear(screen.getByTestId('export-preset-name'))

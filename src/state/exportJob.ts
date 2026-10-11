@@ -193,8 +193,8 @@ export function askExport(project: Project = useStore.getState().project): void 
 
 /**
  * He chose in the window askExport opened: a preset, or null for "Just this once"
- * (the save dialog, as ever). A preset's Platform loudness is what this export
- * runs with, and the file goes to the preset's folder.
+ * (the save dialog, as ever). A preset exports with the window's settings as they
+ * are, the same as a one off, and the file goes to the preset's folder.
  */
 export function startExport(presetId: string | null, project: Project = useStore.getState().project): void {
   const preset = findPreset(presetId)
@@ -208,8 +208,6 @@ function begin(project: Project, preset: ExportPreset | undefined): void {
     useExportJob.setState({ dialogOpen: true, alreadyRunning: true, choosing: false })
     return
   }
-  // His preset's setting, in the window's own switch too, so the switch and the plan agree.
-  if (preset) setPlatformLoudness(preset.platformLoudness)
   // A deep copy, not the live object. Edits replace the store's project rather
   // than change it, but "rather than" is a habit of the code, not a promise,
   // and the export takes minutes: one in-place write anywhere in that time
@@ -466,10 +464,10 @@ function fail(id: number, err: unknown): void {
   const raw = err instanceof Error ? err.message : String(err)
   const plain = plainExportError(raw)
   // The place itself was the problem: Try again asks for another.
+  // A preset keeps its folder: this line also covers an ffmpeg "No such file" about a
+  // temp file, so the folder is only replaced when it is really gone (presetDestination).
   if (plain.line === CANNOT_WRITE_THERE && frozen) {
     frozen.outPath = undefined
-    // A preset's folder is that place, so it is forgotten and the next try picks one.
-    if (frozen.presetId) setPresetFolder(frozen.presetId, null)
   } else if (frozen?.presetId) {
     // A preset names its file fresh each time (never over an earlier one), so Try again does too.
     frozen.outPath = undefined
@@ -540,8 +538,9 @@ const lastFolder = new Map<string, string>()
 /**
  * Where a preset's video goes: a file name main made in the preset's folder. No
  * folder yet, or the folder is gone: the system folder picker, and the answer is
- * kept on the preset. Null when he dismisses the picker; undefined when the preset
- * was deleted meanwhile (the save dialog asks instead, as for any one off export).
+ * kept on the preset once main has made a name in it. Null when he dismisses the
+ * picker, and the preset keeps the folder it had; undefined when the preset was
+ * deleted meanwhile (the save dialog asks instead, as for any one off export).
  */
 async function presetDestination(
   presetId: string,
@@ -551,22 +550,24 @@ async function presetDestination(
 ): Promise<string | null | undefined> {
   const api = window.api
   if (!api?.exportPickFolder || !api.exportPresetOutput) return undefined
-  // Two goes: a saved folder that has gone is forgotten and asked for once more.
+  // Two goes: a saved folder that has gone is asked for once more. The saved one is
+  // only replaced by a folder that works, never cleared on a failure.
   for (let go = 0; go < 2; go++) {
     const preset = findPreset(presetId)
     if (!preset) return undefined
-    let folder = preset.folder
+    let folder = go > 0 ? null : preset.folder
     if (!folder) {
-      folder = await api.exportPickFolder(`Folder for ${preset.name}`, lastFolder.get(presetId) ?? null)
+      folder = await api.exportPickFolder(`Folder for ${preset.name}`, lastFolder.get(presetId) ?? preset.folder)
       if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
       if (!folder) return null
-      setPresetFolder(presetId, folder)
     }
     const res = await api.exportPresetOutput(folder, baseName, plan.nativeEncoder)
     if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError')
-    if (res.ok) return res.outPath
+    if (res.ok) {
+      if (folder !== preset.folder) setPresetFolder(presetId, folder)
+      return res.outPath
+    }
     lastFolder.set(presetId, folder)
-    setPresetFolder(presetId, null)
   }
   // plainExportError turns this into "Could not write the file there. Choose another folder".
   throw new Error('No such file or directory: the preset folder')

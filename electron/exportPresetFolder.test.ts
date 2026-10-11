@@ -2,7 +2,7 @@
 // that folder that nothing there has. Real files in a throwaway folder; only the
 // dialog is faked.
 
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -26,7 +26,7 @@ const root = mkdtempSync(path.join(tmpdir(), 'olp-preset-folder-'))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const { exportPathFromPage } = await import('./exportChoice')
-const { nearestExistingFolder, pickPresetFolder, presetFileName, presetOutput, refreshPick, sanitizeBase } = await import(
+const { nearestExistingFolder, pickPresetFolder, claimPick, presetFileName, presetOutput, sanitizeBase } = await import(
   './exportPresetFolder'
 )
 
@@ -120,21 +120,66 @@ describe('the name of a preset export', () => {
   })
 })
 
-describe('the name is checked again when ffmpeg starts', () => {
-  it('⛔ a file that appeared since the name was made is never overwritten: the next free name is used', () => {
+describe('⛔ a Windows device name never becomes the file', () => {
+  it('NUL, con, COM1 and NUL.x get a plain word in front', () => {
+    expect(sanitizeBase('NUL')).toBe('export NUL')
+    expect(sanitizeBase('con')).toBe('export con')
+    expect(sanitizeBase('COM1')).toBe('export COM1')
+    expect(sanitizeBase('NUL.x')).toBe('export NUL.x')
+    expect(sanitizeBase('lpt¹')).toBe('export lpt¹')
+    expect(sanitizeBase('Console')).toBe('Console')
+    expect(sanitizeBase('COM10')).toBe('COM10')
+    const res = presetOutput(gym, 'Aux', 'x264')
+    expect(res).toEqual({ ok: true, outPath: path.join(gym, 'export Aux.mp4') })
+  })
+
+  it('a long name is cut so the whole path stays short enough for Windows', () => {
+    const res = presetOutput(gym, 'x'.repeat(400), 'x264')
+    if (!res.ok) throw new Error('expected a path')
+    expect(path.basename(res.outPath, '.mp4').length).toBe(Math.max(24, 240 - gym.length))
+  })
+})
+
+describe('⛔ never a network folder', () => {
+  it('\\\\host\\share and \\\\?\\ paths are refused, so the page asks with the picker again', () => {
+    expect(presetOutput('\\\\host\\share\\Gym', 'Leg day', 'x264')).toEqual({ ok: false, reason: 'no-folder' })
+    expect(presetOutput('//host/share/Gym', 'Leg day', 'x264')).toEqual({ ok: false, reason: 'no-folder' })
+    expect(presetOutput(`\\\\?\\${gym}`, 'Leg day', 'x264')).toEqual({ ok: false, reason: 'no-folder' })
+    expect(nearestExistingFolder('\\\\host\\share\\Gym')).toBeUndefined()
+    expect(nearestExistingFolder(`\\\\?\\${gym}`)).toBeUndefined()
+  })
+})
+
+describe('⛔ the name is taken for real when ffmpeg starts', () => {
+  it('claims the name as an empty file, so nothing can take it before ffmpeg writes', () => {
     const res = presetOutput(gym, 'Leg day', 'x264')
     if (!res.ok) throw new Error('expected a path')
-    expect(refreshPick(res.outPath)).toBe(res.outPath)
+    expect(claimPick(res.outPath)).toEqual({ outPath: res.outPath, placeholder: true })
+    expect(readFileSync(res.outPath, 'utf8')).toBe('')
+  })
+
+  it('a file that appeared since the name was made is never touched: the next free name is claimed', () => {
+    const res = presetOutput(gym, 'Leg day', 'x264')
+    if (!res.ok) throw new Error('expected a path')
     writeFileSync(res.outPath, 'somebody else made this while the sound was rendering')
-    const moved = refreshPick(res.outPath)
-    expect(moved).toBe(path.join(gym, 'Leg day 2.mp4'))
-    expect(exportPathFromPage(moved)).toBe(path.resolve(moved))
+    const moved = claimPick(res.outPath)
+    expect(moved).toEqual({ outPath: path.join(gym, 'Leg day 2.mp4'), placeholder: true })
+    expect(readFileSync(res.outPath, 'utf8')).toBe('somebody else made this while the sound was rendering')
+    expect(exportPathFromPage(moved.outPath)).toBe(path.resolve(moved.outPath))
+  })
+
+  it('a folder that refuses the file throws, and makes nothing', () => {
+    const res = presetOutput(gym, 'Leg day', 'x264')
+    if (!res.ok) throw new Error('expected a path')
+    rmSync(gym, { recursive: true, force: true })
+    expect(() => claimPick(res.outPath)).toThrow(/ENOENT/)
   })
 
   it('leaves a path main did not name alone', () => {
     const other = path.join(gym, 'Chosen in a save dialog.mp4')
     writeFileSync(other, 'x')
-    expect(refreshPick(other)).toBe(other)
+    expect(claimPick(other)).toEqual({ outPath: other, placeholder: false })
+    expect(readFileSync(other, 'utf8')).toBe('x')
     mkdirSync(path.join(gym, 'sub'))
   })
 })

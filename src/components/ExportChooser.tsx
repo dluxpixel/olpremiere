@@ -8,11 +8,9 @@ import {
   PRESET_NAME_MAX,
   renamePreset,
   setPresetFolder,
-  updatePresetSettings,
   useExportPresets,
   type ExportPreset,
 } from '../state/exportPresets'
-import { useSettings } from '../state/settings'
 import { Button, IconButton } from '../ui/Button'
 
 const NO_FOLDER_YET = 'Folder not chosen yet'
@@ -24,9 +22,9 @@ const rowClass = 'flex min-w-0 flex-1 cursor-default flex-col items-start gap-0.
 
 /**
  * The first thing the Export button shows on the desktop: which preset. A preset
- * is a name, its own folder and the export window's one setting, Platform loudness
- * (state/exportPresets.ts). Clicking one starts the export with it; "Just this
- * once" is the plain export with the save dialog, as before.
+ * is a name and its own folder (state/exportPresets.ts). Clicking one starts the
+ * export, with the export window's settings as they are, into that folder; "Just
+ * this once" is the plain export with the save dialog, as before.
  *
  * It sits in ExportDialog's own frame, so the window looks and closes like the
  * rest of Export. The list starts empty, with "New preset" as the way in.
@@ -111,34 +109,16 @@ export function ExportChooser() {
   )
 }
 
-/** The setting row both forms share: the export window's one choice. */
-function LoudnessRow({ checked, onChange, testId }: { checked: boolean; onChange: (on: boolean) => void; testId: string }) {
-  return (
-    <label className="flex items-center gap-2 text-[11px] text-text-muted">
-      <span>Platform loudness</span>
-      <input
-        type="checkbox"
-        aria-label="Platform loudness"
-        data-testid={testId}
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="ml-auto h-3.5 w-3.5 cursor-default accent-accent"
-      />
-    </label>
-  )
-}
-
-/** Make a preset: a name and the setting as it is now. Its folder is asked for the first time it is used. */
+/** Make a preset: a name. Its folder is asked for the first time it is used. */
 function NewPresetForm({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('')
-  const [loudness, setLoudness] = useState(() => useSettings.getState().platformLoudness)
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => input.current?.focus(), [])
   const blank = name.trim() === ''
 
   const save = (thenExport: boolean): void => {
     if (blank) return
-    const made = createPreset(name, loudness)
+    const made = createPreset(name)
     if (!made) return
     onClose()
     if (thenExport) startExport(made.id)
@@ -159,7 +139,6 @@ function NewPresetForm({ onClose }: { onClose: () => void }) {
         }}
         className={fieldClass}
       />
-      <LoudnessRow checked={loudness} onChange={setLoudness} testId="export-preset-loudness" />
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onClose}>
           Cancel
@@ -175,7 +154,7 @@ function NewPresetForm({ onClose }: { onClose: () => void }) {
   )
 }
 
-/** Rename, change the setting, change the folder or delete: each applies the moment he does it. */
+/** Rename, change the folder or delete: each applies the moment he does it. */
 function PresetEditor({ preset, onDone }: { preset: ExportPreset; onDone: () => void }) {
   const [name, setName] = useState(preset.name)
 
@@ -205,11 +184,6 @@ function PresetEditor({ preset, onDone }: { preset: ExportPreset; onDone: () => 
           }
         }}
         className={fieldClass}
-      />
-      <LoudnessRow
-        checked={preset.platformLoudness}
-        onChange={(on) => updatePresetSettings(preset.id, { platformLoudness: on })}
-        testId="export-preset-loudness"
       />
       <div className="flex items-center gap-2">
         <span

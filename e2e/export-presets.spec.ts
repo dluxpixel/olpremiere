@@ -14,7 +14,7 @@ import path from 'node:path'
 // makes it (Name.mp4, then Name 2.mp4, never over a file), and the encoder is a
 // stand-in that writes a small file where the app told it to. What is proven is
 // the app's side of the flow: the question, making a preset, the folder asked
-// once, the second export going straight there, and the setting riding along.
+// once, the second export going straight there, and the window's own setting used.
 //
 // Nothing here writes to the app's store: the page is driven by clicks and only read.
 //
@@ -78,10 +78,10 @@ test('a preset asks for its folder once, then every export goes there under a ne
     await expect(page.getByTestId('export-chooser')).toBeVisible()
     await expect(page.getByTestId('export-preset-row')).toHaveCount(0)
 
-    // Make "Gym" with Platform loudness off, and export with it.
+    // Make "Gym", a name and a folder with no setting of its own, and export with it.
     await page.getByTestId('export-new-preset').click()
     await page.getByTestId('export-preset-name').fill('Gym')
-    await page.getByTestId('export-preset-loudness').uncheck()
+    await expect(page.getByTestId('export-preset-loudness')).toHaveCount(0)
     await page.getByTestId('export-preset-save-export').click()
 
     // The first use pops the folder picker (exactly once) and the file lands in it.
@@ -94,14 +94,14 @@ test('a preset asks for its folder once, then every export goes there under a ne
     expect(first[0]).toMatch(/\.mp4$/)
     const base = first[0].replace(/\.mp4$/, '')
 
-    // The preset's own setting made this video: loudness off. (Read only.)
+    // The export window's own setting made this video: Platform loudness, on by default. (Read only.)
     const target = await page.evaluate(async (m) => {
       const { useExportJob } = (await import(/* @vite-ignore */ m.job)) as {
         useExportJob: { getState: () => { job: { plan: { settings: { loudnessTargetLufs: number | null } } } | null } }
       }
       return useExportJob.getState().job?.plan.settings.loudnessTargetLufs
     }, MODS)
-    expect(target).toBeNull()
+    expect(typeof target).toBe('number')
 
     // Show in folder hands the shell the file that was made.
     await page.getByTestId('export-reveal').click()

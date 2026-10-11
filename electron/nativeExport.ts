@@ -13,7 +13,7 @@ import path from 'node:path'
 import type { NativeCaps, NativeEncoder, NativeExportConfig, NativeFinishResult, NativeStartResult } from './ipc-types'
 import { buildArgs, containerExt } from './exportArgs'
 import { rememberFolder, suggestedPath } from './saveFiles'
-import { refreshPick } from './exportPresetFolder'
+import { claimPick } from './exportPresetFolder'
 
 /** The bundled ffmpeg.exe: extraResources in prod, vendor/ in dev. */
 function ffmpegPath(): string {
@@ -253,16 +253,25 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
     }
     outPath = picked
   }
-  // A file name main made for a preset can have been taken since (the sound is made in
-  // between): move to the next free one, never write over it. Any other path stays.
-  outPath = refreshPick(outPath)
-
   const audioPath = config.hasAudio ? pendingAudioPath : null
   pendingAudioPath = null
-  // Nothing else will ever pick this mix up once start() says no.
+  // A file name main made for a preset can have been taken since (the sound is made in
+  // between). ⛔ It is claimed as an empty file that only appears if nothing has the
+  // name (claimPick), so ffmpeg's -y and a cancel's delete only ever touch that file.
+  // Any other path stays as it is.
+  let placeholder: string | null = null
+  // Nothing else will ever pick this mix up, or the empty placeholder, once start() says no.
   const couldNotStart = (err: unknown): NativeStartResult => {
     if (audioPath) void unlink(audioPath).catch(() => {})
+    if (placeholder) void unlink(placeholder).catch(() => {})
     return { started: false, error: `could not start ffmpeg: ${err instanceof Error ? err.message : String(err)}` }
+  }
+  try {
+    const claimed = claimPick(outPath)
+    outPath = claimed.outPath
+    if (claimed.placeholder) placeholder = claimed.outPath
+  } catch (err) {
+    return couldNotStart(err)
   }
   // windowsHide as above: an export is the longest ffmpeg run in the app, so a
   // console here sits over his editor for the whole encode.

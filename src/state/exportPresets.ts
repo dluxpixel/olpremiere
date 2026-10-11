@@ -1,4 +1,4 @@
-// Export presets: a name, the export setting it remembers and its own folder.
+// Export presets: a name and its own folder.
 //
 // His words, 2026-10-11: *"I think you should make save repositories. For
 // example, when I click Export, it asks me what preset, and when I click, for
@@ -11,10 +11,11 @@
 // that saves any other preference also writes it to `Preferences.json` beside his
 // project files, and a wiped profile gets it back. No second store.
 //
-// WHAT A PRESET REMEMBERS. The export window offers exactly one choice today,
-// Platform loudness (engine/export/exportPlan.ts: "one button, no settings"), so
-// that is the setting a preset carries. More would be invented. The folder is
-// null until the first export with the preset asks for it.
+// WHAT A PRESET REMEMBERS. A name and a folder, nothing else: his ask was where
+// the video goes. Its export uses the export window's settings as they are, the
+// same as a one off. The folder is null until the first export with the preset
+// asks for it. Lists saved by an earlier build may carry a loudness field; it is
+// ignored, so they still load.
 //
 // NO BUILT IN PRESETS. The list starts empty.
 
@@ -27,8 +28,6 @@ export interface ExportPreset {
   name: string
   /** Where its videos go. Null until the first export with it picks one. */
   folder: string | null
-  /** The one export setting the window offers. */
-  platformLoudness: boolean
 }
 
 /** The one place the list is stored, and the key prefsHome.ts carries to the file. */
@@ -92,8 +91,6 @@ export function parsePresets(text: string | null): ExportPreset[] {
       id: r.id,
       name: uniquePresetName(name, out.map((p) => p.name)),
       folder: typeof r.folder === 'string' && r.folder.trim() !== '' ? r.folder : null,
-      // On unless he turned it off, like the setting it copies (settings.ts).
-      platformLoudness: r.platformLoudness !== false,
     })
   }
   return out
@@ -124,15 +121,14 @@ function commit(presets: ExportPreset[]): void {
 
 const current = (): ExportPreset[] => useExportPresets.getState().presets
 
-/** Make a preset from the settings as they are now. Null for a blank name. */
-export function createPreset(name: string, platformLoudness: boolean, folder: string | null = null): ExportPreset | null {
+/** Make a preset. Null for a blank name. */
+export function createPreset(name: string, folder: string | null = null): ExportPreset | null {
   const clean = cleanPresetName(name)
   if (!clean) return null
   const preset: ExportPreset = {
     id: newId(),
     name: uniquePresetName(clean, current().map((p) => p.name)),
     folder: folder && folder.trim() !== '' ? folder : null,
-    platformLoudness,
   }
   commit([...current(), preset])
   return preset
@@ -149,13 +145,6 @@ export function renamePreset(id: string, name: string): boolean {
   if (list[at].name === next) return false
   commit(list.map((p) => (p.id === id ? { ...p, name: next } : p)))
   return true
-}
-
-/** Change the settings it remembers. */
-export function updatePresetSettings(id: string, settings: { platformLoudness: boolean }): void {
-  const list = current()
-  if (!list.some((p) => p.id === id)) return
-  commit(list.map((p) => (p.id === id ? { ...p, platformLoudness: settings.platformLoudness } : p)))
 }
 
 /** Change its folder. Null forgets it, so the next export asks again. */

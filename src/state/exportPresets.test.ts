@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // Export presets live in the app's own preferences: they are made, renamed,
-// changed and deleted here, they survive a restart, and the preferences file
+// given a folder and deleted here, they survive a restart, and the preferences file
 // carries them too (prefsHome.ts), so a wiped profile gets them back.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -24,31 +24,31 @@ describe('export presets', () => {
     expect(localStorage.getItem('olpremiere:export-presets')).toBeNull()
   })
 
-  it('create: a name, the setting as it is now and no folder yet', async () => {
+  it('create: a name and no folder yet', async () => {
     const { createPreset, useExportPresets } = await load()
-    const p = createPreset('  Gym   ', false)
-    expect(p).toMatchObject({ name: 'Gym', folder: null, platformLoudness: false })
+    const p = createPreset('  Gym   ')
+    expect(p).toEqual({ id: p?.id, name: 'Gym', folder: null })
     expect(useExportPresets.getState().presets).toHaveLength(1)
   })
 
   it('create: a blank name makes nothing', async () => {
     const { createPreset, useExportPresets } = await load()
-    expect(createPreset('   ', true)).toBeNull()
-    expect(createPreset('\n\t', true)).toBeNull()
+    expect(createPreset('   ')).toBeNull()
+    expect(createPreset('\n\t')).toBeNull()
     expect(useExportPresets.getState().presets).toEqual([])
   })
 
   it('create: a name that is taken gets a number, like the files do', async () => {
     const { createPreset } = await load()
-    createPreset('Gym', true)
-    expect(createPreset('gym', true)?.name).toBe('gym 2')
-    expect(createPreset('Gym', true)?.name).toBe('Gym 3')
+    createPreset('Gym')
+    expect(createPreset('gym')?.name).toBe('gym 2')
+    expect(createPreset('Gym')?.name).toBe('Gym 3')
   })
 
   it('rename: changes the label, refuses a blank one, never collides with another', async () => {
     const { createPreset, renamePreset, useExportPresets } = await load()
-    const a = createPreset('Gym', true)!
-    const b = createPreset('Vlog', true)!
+    const a = createPreset('Gym')!
+    const b = createPreset('Vlog')!
     expect(renamePreset(a.id, 'Leg day')).toBe(true)
     expect(renamePreset(a.id, '   ')).toBe(false)
     expect(renamePreset(b.id, 'leg day')).toBe(true)
@@ -57,21 +57,9 @@ describe('export presets', () => {
     expect(renamePreset('nope', 'X')).toBe(false)
   })
 
-  it('update: changes the setting it remembers and leaves the rest', async () => {
-    const { createPreset, setPresetFolder, updatePresetSettings, useExportPresets } = await load()
-    const a = createPreset('Gym', true)!
-    setPresetFolder(a.id, 'D:/Videos/Gym')
-    updatePresetSettings(a.id, { platformLoudness: false })
-    expect(useExportPresets.getState().presets[0]).toMatchObject({
-      name: 'Gym',
-      folder: 'D:/Videos/Gym',
-      platformLoudness: false,
-    })
-  })
-
   it('folder: set, change and forget', async () => {
     const { createPreset, setPresetFolder, findPreset } = await load()
-    const a = createPreset('Gym', true)!
+    const a = createPreset('Gym')!
     setPresetFolder(a.id, 'D:/Videos/Gym')
     expect(findPreset(a.id)?.folder).toBe('D:/Videos/Gym')
     setPresetFolder(a.id, 'E:/Other')
@@ -84,8 +72,8 @@ describe('export presets', () => {
 
   it('delete: removes only that one, and the last one leaves nothing stored', async () => {
     const { createPreset, deletePreset, useExportPresets } = await load()
-    const a = createPreset('Gym', true)!
-    const b = createPreset('Vlog', true)!
+    const a = createPreset('Gym')!
+    const b = createPreset('Vlog')!
     deletePreset(a.id)
     expect(useExportPresets.getState().presets.map((p) => p.name)).toEqual(['Vlog'])
     deletePreset('nope')
@@ -96,18 +84,18 @@ describe('export presets', () => {
 
   it('⛔ survives a restart, with everything in it', async () => {
     const first = await load()
-    const a = first.createPreset('Gym', false)!
+    const a = first.createPreset('Gym')!
     first.setPresetFolder(a.id, 'D:/Videos/Gym')
-    first.createPreset('Vlog', true)
+    first.createPreset('Vlog')
     vi.resetModules()
     const second = await load()
     expect(second.useExportPresets.getState().presets).toEqual([
-      { id: a.id, name: 'Gym', folder: 'D:/Videos/Gym', platformLoudness: false },
-      expect.objectContaining({ name: 'Vlog', folder: null, platformLoudness: true }),
+      { id: a.id, name: 'Gym', folder: 'D:/Videos/Gym' },
+      { id: expect.any(String), name: 'Vlog', folder: null },
     ])
   })
 
-  it('a damaged store reads as no presets, and a bad row costs only itself', async () => {
+  it('a damaged store reads as no presets, a bad row costs only itself, and an old loudness field is ignored', async () => {
     const { parsePresets } = await load()
     expect(parsePresets('not json')).toEqual([])
     expect(parsePresets('{"a":1}')).toEqual([])
@@ -122,8 +110,8 @@ describe('export presets', () => {
       { id: 'c', name: 'Gym', folder: 5 },
     ])
     expect(parsePresets(rows)).toEqual([
-      { id: 'a', name: 'Gym', folder: 'D:/G', platformLoudness: false },
-      { id: 'c', name: 'Gym 2', folder: null, platformLoudness: true },
+      { id: 'a', name: 'Gym', folder: 'D:/G' },
+      { id: 'c', name: 'Gym 2', folder: null },
     ])
   })
 
@@ -133,7 +121,7 @@ describe('export presets', () => {
     const { PREFS_KEYS } = await import('./prefsHome')
     const told = vi.fn()
     onPrefsChanged(told)
-    createPreset('Gym', true)
+    createPreset('Gym')
     expect(told).toHaveBeenCalledTimes(1)
     expect(PREFS_KEYS).toContain('olpremiere:export-presets')
     onPrefsChanged(null)
@@ -153,9 +141,8 @@ describe('export presets', () => {
     ;(window as unknown as { api: unknown }).api = { prefsRead: async () => file, prefsWrite: async () => undefined }
     await initPrefsHome()
     const { useExportPresets } = await load()
-    expect(useExportPresets.getState().presets).toEqual([
-      { id: 'a', name: 'Gym', folder: 'D:/Videos/Gym', platformLoudness: false },
-    ])
+    // Saved by an earlier build that kept a loudness setting on a preset: it loads, without it.
+    expect(useExportPresets.getState().presets).toEqual([{ id: 'a', name: 'Gym', folder: 'D:/Videos/Gym' }])
     resetPrefsHomeForTests()
     Reflect.deleteProperty(window, 'api')
   })

@@ -10,6 +10,7 @@
 // pouring in and the output cannot be written.
 
 import { spawnSync } from 'node:child_process'
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import * as os from 'node:os'
 import { tmpdir } from 'node:os'
@@ -194,6 +195,46 @@ describe('the export runs below normal priority, so the editor stays smooth', ()
     for (let i = 0; i < 3; i++) await native.writeFrame(new Uint8Array(W * H * 4).fill(90).buffer)
     expect(await native.finish()).toMatchObject({ ok: true })
   }, 60_000)
+})
+
+describe('⛔ a preset export never writes over a file that appeared after its name was made', () => {
+  // ffmpeg writes with -y and a cancel or failure deletes its file, so a check before the
+  // start was not enough: a file made in between was overwritten, or deleted (review, 2026-10-11).
+  const W = 64
+  const H = 64
+  const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+  const config = (outPath: string) =>
+    ({ width: W, height: H, fps: 30, totalFrames: 3, encoder: 'x264', quality: 18, hasAudio: false, outPath, suggestedName: 'x' }) as const
+
+  it('lands on "Name 2" and leaves the file that took "Name" untouched', async () => {
+    const { presetOutput } = await import('./exportPresetFolder')
+    const res = presetOutput(userData, 'Leg day', 'x264')
+    if (!res.ok) throw new Error('expected a path')
+    expect(res.outPath).toBe(join(userData, 'Leg day.mp4'))
+    writeFileSync(res.outPath, 'his other video')
+    const started = await native.start(config(res.outPath), win)
+    expect(started.started).toBe(true)
+    for (let i = 0; i < 3; i++) await native.writeFrame(new Uint8Array(W * H * 4).fill(90).buffer)
+    const done = await native.finish()
+    expect(done).toMatchObject({ ok: true, outPath: join(userData, 'Leg day 2.mp4') })
+    expect(readFileSync(res.outPath, 'utf8')).toBe('his other video')
+    expect(statSync(join(userData, 'Leg day 2.mp4')).size).toBeGreaterThan(0)
+  }, 60_000)
+
+  it('a start that fails takes its empty placeholder with it', async () => {
+    const { presetOutput } = await import('./exportPresetFolder')
+    const folder = join(userData, 'Gym')
+    mkdirSync(folder)
+    const res = presetOutput(folder, 'Leg day', 'x264')
+    if (!res.ok) throw new Error('expected a path')
+    // An app folder with no ffmpeg in it.
+    appPath = userData
+    const started = await native.start(config(res.outPath), win)
+    expect(started.started).toBe(false)
+    expect(started.error).toMatch(/^could not start ffmpeg/)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(readdirSync(folder)).toEqual([])
+  })
 })
 
 describe('⛔ a cancel while ffmpeg is finishing the file', () => {
