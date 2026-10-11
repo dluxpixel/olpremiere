@@ -294,12 +294,14 @@ function pasteClipboard(atS: number, target?: { trackIndex: number }): void {
   // paste takes both back out together.
   useStore.getState().dispatch('Paste clip(s)', (p) => {
     const seq = activeSequence(p)
-    const r = pasteClips(seq, payload, atS, target)
+    // The records come first: a pasted picture fills this edit's frame from its
+    // size (pasteClips), and the media it brought is not in p.assets yet.
+    const assets = Object.keys(brought).length > 0 ? { ...brought, ...p.assets } : p.assets
+    const r = pasteClips(seq, payload, atS, target, assets)
     pastedIds = r.newIds
     blocked = r.blockedByLock
     result = r
     if (r.seq === seq) return p
-    const assets = Object.keys(brought).length > 0 ? { ...brought, ...p.assets } : p.assets
     return { ...p, assets, sequences: { ...p.sequences, [seq.id]: r.seq } }
   })
   if (pastedIds.length > 0) selectPasted(pastedIds)

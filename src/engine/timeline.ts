@@ -2409,6 +2409,12 @@ export interface ClipPayload {
    * goes on the next free line instead (pasteClips).
    */
   brought?: true
+  /**
+   * The frame the clip was copied out of. A paste into an edit of another shape
+   * fills the new frame from it, the way a format switch does (pasteClips).
+   * Absent on a payload that never recorded one, which is then pasted as it is.
+   */
+  frame?: { w: number; h: number }
 }
 
 const clipPayloadBody = (clip: Clip): Omit<Clip, 'id' | 'startS'> => {
@@ -2444,6 +2450,7 @@ export function serializeClips(seq: Sequence, clipIds: Id[], brought?: ReadonlyS
       offsetS: clip.startS - earliest,
       clip: clipPayloadBody(clip),
       ...(brought?.has(clip.id) ? { brought: true as const } : {}),
+      frame: { w: seq.width, h: seq.height },
     }
   })
 }
@@ -2479,6 +2486,36 @@ export function freeTrackFor(
   const grown = addTrack(seq, kind)
   const made = grown.tracks.find((t) => !seq.tracks.includes(t))!
   return { seq: grown, trackIndex: grown.tracks.indexOf(made) }
+}
+
+/**
+ * A pasted picture lands filling the frame it is pasted into, the same math as a
+ * drop (fitNewClipToFrame) and a format switch (setSequenceFormat).
+ *
+ * Copy a 16:9 clip out of a wide edit, paste it into a Shorts edit, and it kept the
+ * scale it had there: bars above and below, the one road into a tall frame that did
+ * not fill. It is refit from the frame it was copied out of, so a clip he scaled,
+ * moved, stretched or keyframed is left alone, and so is a title (its sizes follow
+ * the sequence height, not the picture). Needs the media records for the picture's
+ * size; without them, or without a recorded frame, or into the same shape, the clip
+ * is returned as it is.
+ */
+function refitForPaste(
+  clip: Clip,
+  item: ClipPayload,
+  assets: Record<Id, MediaAsset> | undefined,
+  into: Sequence,
+): Clip {
+  const from = item.frame
+  if (!assets || !from || item.trackKind !== 'video' || clip.title !== undefined) return clip
+  if (from.w === into.width && from.h === into.height) return clip
+  return refitAppearanceToFrame(
+    refitClipToFill(clip, assets, into.width, into.height, from.w, from.h),
+    into.width,
+    into.height,
+    from.w,
+    from.h,
+  )
 }
 
 /** What a paste did, beyond the clips it made. See pasteClips. */
@@ -2518,12 +2555,16 @@ export interface PasteResult {
  * words, 2026-09-28: *"it pastes it where I clicked it. It doesn't just paste it
  * randomly."* And 2026-10-04, after a picture went to V2 with V4 clicked: *"make
  * sure it also pastes it on the same line because I clicked the V4."*
+ *
+ * With `assets` (the project's media records), a picture copied out of an edit of
+ * another shape lands filling this one (refitForPaste).
  */
 export function pasteClips(
   seq: Sequence,
   payload: ClipPayload[],
   atS: number,
   target?: { trackIndex: number },
+  assets?: Record<Id, MediaAsset>,
 ): PasteResult {
   const kindIdx = (sq: Sequence): Record<'video' | 'audio', number[]> => {
     const out: Record<'video' | 'audio', number[]> = { video: [], audio: [] }
@@ -2638,13 +2679,14 @@ export function pasteClips(
         linkRemap.set(linkId, mapped)
         linkId = mapped
       }
-      const clip: Clip = {
+      const made: Clip = {
         ...body,
         id: newId(),
         startS: desiredS,
         effects: body.effects.map((e) => ({ ...e, id: newId() })),
         linkId,
       }
+      const clip = refitForPaste(made, item, assets, seq)
       const placedTrack = cur.tracks[home.trackIndex]!
       if (placedTrack.id !== askedId) {
         redirected.push(askedTracks[m]!.locked ? { askedId, landedId: placedTrack.id, locked: true } : { askedId, landedId: placedTrack.id })

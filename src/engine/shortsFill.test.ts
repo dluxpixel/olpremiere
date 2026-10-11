@@ -260,7 +260,7 @@ describe('the rules for a clip he has placed himself', () => {
   it('a clip whose position is animated is never touched', () => {
     const c: Clip = {
       ...newClipFromAsset(src, 0),
-      keyframes: { posX: [{ t: 0, value: 0 }, { t: 2, value: 100 }] },
+      keyframes: { posX: [{ t: 0, value: 0, ease: 'linear' }, { t: 2, value: 100, ease: 'linear' }] },
     }
     expect(refitClipToFill(c, { w: src }, 1080, 1920, 1920, 1080)).toBe(c)
   })
