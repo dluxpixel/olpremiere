@@ -3,6 +3,7 @@ import { join, relative } from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { devApiNotFound } from './vite.devApi'
 
 // The app version, read from package.json at config time and injected into the
 // bundle. One source of truth for the version the UI shows + the update check.
@@ -50,7 +51,7 @@ function offlineCopy(): Plugin {
 
 export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(appVersion) },
-  plugins: [react(), tailwindcss(), offlineCopy()],
+  plugins: [react(), tailwindcss(), offlineCopy(), devApiNotFound()],
   // THE DEV SERVER SEES ONLY THIS TREE (2026-10-06). With no entries, Vite's
   // dependency scan globs every *.html under the repo, which on the day this was
   // found was 17 files: the builder worktrees' own index/splash/update pages (each
