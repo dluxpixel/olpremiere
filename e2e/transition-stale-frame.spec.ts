@@ -28,7 +28,9 @@
 // he trimmed off. No green at all means the outgoing clip was never really on
 // screen and the "dissolve" was blue into blue.
 
-import { expect, test, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
+// Timing spec: runs in the `timing` project, on a quiet box (see quietBox.ts).
+import { expect, test } from './quietBox'
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
@@ -95,7 +97,13 @@ test.beforeAll(() => {
         block(30, 40, '0000FF'),
         block(40, 50, '808000'),
         block(50, 60, '800080'),
-        "drawtext=text='%{pts\\:hms}':fontsize=120:fontcolor=white:x=(w-tw)/2:y=(h-th)/2" +
+        // ⛔ AN EXPLICIT FONT FILE on Windows. Without one drawtext asks fontconfig,
+        // and the winget ffmpeg on his machine has no fontconfig config, so a fresh
+        // clone could never build this fixture ("Cannot load default config file")
+        // and only an old cached copy kept the spec alive (found 2026-10-06).
+        "drawtext=text='%{pts\\:hms}'" +
+          (process.platform === 'win32' ? ":fontfile='C\\:/Windows/Fonts/arial.ttf'" : '') +
+          ':fontsize=120:fontcolor=white:x=(w-tw)/2:y=(h-th)/2' +
           ':box=1:boxcolor=black@0.6:boxborderw=18',
       ].join(','),
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
@@ -297,10 +305,14 @@ test('a cross dissolve on a razored source shows the outgoing clip, not another 
   const arrived = samples.filter((s) => s.tS > A_OUT_S + DISSOLVE_S && s.b > 120 && s.g < 60)
   expect(arrived.length, 'clip B is on screen after the dissolve').toBeGreaterThan(2)
 
+  // ⛔ THE FOUR CHECKS BELOW ARE SOFT, SO A RED RUN SAYS WHICH DEFECT IT SAW. In the
+  // first ship of 2026-10-04 the share check threw first ("0 green of 36") and the
+  // black frame check after it never ran, so nobody could tell a black dissolve
+  // from a busy machine. Every one still fails the test; all of them get reported.
   // NO FOOTAGE FROM OUTSIDE THE TRIM. His actual complaint.
   const flashes = inWindow.filter((s) => s.r > RED_FLOOR)
   const worstRed = flashes.reduce((m, s) => (s.r > m ? s.r : m), 0)
-  expect(
+  expect.soft(
     flashes.length,
     `frames showing the trimmed-off head during the dissolve (worst red ${worstRed}, ` +
       `a green-to-blue dissolve can only be 0): ${JSON.stringify(flashes.slice(0, 6))}`,
@@ -325,7 +337,7 @@ test('a cross dissolve on a razored source shows the outgoing clip, not another 
   // dissolve. **This is stricter, not looser, wherever there is evidence to be
   // strict with:** at 41 samples the old rule wanted 3 green and this wants 14.
   const carryingA = inWindow.filter((s) => s.g > 60)
-  expect(
+  expect.soft(
     carryingA.length / inWindow.length,
     `the share of the dissolve carrying the outgoing clip's own footage: the dissolve must ` +
       `show clip A, not another part of the same source ` +
@@ -338,7 +350,7 @@ test('a cross dissolve on a razored source shows the outgoing clip, not another 
   // fix did exactly that for the back half of the window, and the pixels are
   // the only reason anyone knew.
   const black = inWindow.filter((s) => s.r + s.g + s.b < 30)
-  expect(
+  expect.soft(
     black.length,
     `black frames inside the dissolve: a side that cannot prove its picture must ` +
       `hold its last good frame, not go dark: ${JSON.stringify(black.slice(0, 6))}`,
@@ -347,7 +359,7 @@ test('a cross dissolve on a razored source shows the outgoing clip, not another 
   // AND IT REALLY CROSSES. At least one frame carries both clips at once, which
   // is the difference between a dissolve and a cut with extra steps.
   const blended = inWindow.filter((s) => s.g > 30 && s.b > 30)
-  expect(
+  expect.soft(
     blended.length,
     `frames carrying BOTH clips at once: a cross dissolve has to actually mix them, ` +
       `and holding one clip flat then snapping to the other is what this looked like when broken`,

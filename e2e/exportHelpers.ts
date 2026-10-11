@@ -41,6 +41,20 @@ export const FFMPEG = path.join('vendor', 'ffmpeg', 'win-x64', 'ffmpeg.exe')
 
 export const ffmpegAvailable = (): boolean => fs.existsSync(FFMPEG)
 
+/**
+ * Should a spec that needs the bundled ffmpeg run? A fresh worktree without
+ * vendor/ffmpeg (gitignored) skips. INSIDE THE GATE (OLP_GATE, set by
+ * scripts/patch.mjs) a missing ffmpeg throws instead: the release cannot package
+ * without it, and a quiet skip turned the gate green over exactly that.
+ */
+export function runsWithFfmpeg(): boolean {
+  if (ffmpegAvailable()) return true
+  if (process.env.OLP_GATE) {
+    throw new Error(`the ship gate needs the bundled ffmpeg at ${FFMPEG}, and the release cannot package without it either`)
+  }
+  return false
+}
+
 export interface FfmpegResult {
   code: number | null
   /** Everything ffmpeg wrote to stdout (raw pixels when asked for them). */

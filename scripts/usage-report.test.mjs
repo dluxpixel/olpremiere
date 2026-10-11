@@ -367,6 +367,8 @@ describe('the printed report', () => {
       expect(text).toContain(heading)
     }
     expect(text).toContain('f  (Freeze)')
+    // Tab, newline and printable ASCII only: the control characters ARE the point.
+    // eslint-disable-next-line no-control-regex
     expect(text).toMatch(/^[\x09\x0a\x20-\x7e]*$/)
   })
 

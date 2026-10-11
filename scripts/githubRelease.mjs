@@ -114,7 +114,9 @@ export async function uploadAsset({ api, repoPath, releaseId, asset, postAsset, 
  * size would pass a size check while latest.yml carries the new hash.
  *
  * `assets` is `[{ name, file, type, bytes }]`, in upload order. `tagLocal(tag)`
- * writes the tag into his clone and may throw. Returns the published release.
+ * writes the tag into his clone and may throw. `notes`, when given, is the release
+ * body (a --fast release says there that the browser suite did not run).
+ * Returns the published release.
  */
 export async function publishRelease({
   api,
@@ -126,6 +128,7 @@ export async function publishRelease({
   log = console.log,
   warn = console.warn,
   uploadTries = 3,
+  notes,
 }) {
   // --- clean any prior release + tag for this version ---
   // Drafts are listed for a token with push access, and a failed ship leaves one,
@@ -164,7 +167,7 @@ export async function publishRelease({
   // --- a DRAFT release, and no `make_latest`: a draft cannot be the latest ---
   const rel = await api(`${repoPath}/releases`, {
     method: 'POST',
-    body: JSON.stringify({ tag_name: tag, name: `OL Premiere ${tag}`, draft: true, prerelease: false }),
+    body: JSON.stringify({ tag_name: tag, name: `OL Premiere ${tag}`, draft: true, prerelease: false, ...(notes ? { body: notes } : {}) }),
   })
   const releaseId = rel.id
   // If GitHub ever hands back a PUBLISHED release here, the window this whole file

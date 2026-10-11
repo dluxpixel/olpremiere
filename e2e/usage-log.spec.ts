@@ -5,7 +5,9 @@
 // The web build keeps its log in a small IndexedDB of its own (usageStoreWeb.ts);
 // the desktop app writes the same lines to a file. These read the web one back.
 
-import { expect, test, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
+// Timing spec: runs in the `timing` project, on a quiet box (see quietBox.ts).
+import { expect, test } from './quietBox'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 
@@ -50,6 +52,23 @@ async function boot(page: Page): Promise<void> {
 
 const names = (list: UsageEvent[]): string[] => list.map((e) => `${e.k} ${e.a}`)
 
+/**
+ * Let the dialog scans that the last keypress or click scheduled run, so a read after
+ * this sees everything they would write.
+ *
+ * ⛔ A "NOTHING MORE WAS WRITTEN" READ CANNOT POLL: the right answer is the log as it
+ * already was, so a read taken before the scan ran passes whether the scan leaks or
+ * not. A fixed Playwright wait (the old 300 ms) is a guess about how late the page
+ * runs a timer, and a busy box runs it later. The page's own timers fire in the
+ * order they fall due: the scan is armed for 0 and 300 ms (scheduleDialogScan in
+ * usageWiring.ts) and this one is armed AFTER it for longer, so when this fires the
+ * scans have, on any machine. Keep this longer than the late scan: if that delay is
+ * ever lengthened past 400 ms the leak checks below go blind.
+ */
+async function afterScans(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>((r) => setTimeout(r, 400)))
+}
+
 test('real actions land as events, and none of them carries his material', async ({ page }) => {
   await boot(page)
   await page.getByTestId('asset-card').dblclick()
@@ -67,8 +86,14 @@ test('real actions land as events, and none of them carries his material', async
   await page.keyboard.press('ArrowDown')
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('settings-dialog')).toHaveCount(0)
-  // The dialog scan runs a moment after the last thing he did.
-  await page.waitForTimeout(500)
+  // The dialog scan runs a moment after the last thing he did, and a busy box runs it
+  // later: wait for the close it writes, the last line of this test's story.
+  await expect
+    .poll(async () => (await events(page)).some((e) => e.k === 'dialog' && e.d?.op === 'close'), {
+      timeout: 10_000,
+      message: 'the dialog close never reached the log',
+    })
+    .toBe(true)
 
   const list = await events(page)
   const find = (k: string, a: string) => list.find((e) => e.k === k && e.a === a)
@@ -120,7 +145,9 @@ test('what he types never reaches the log', async ({ page }) => {
   await field.fill('MY SECRET WORDS 4421')
   await field.press('End')
   await field.pressSequentially(' and more private text', { delay: 5 })
-  await page.waitForTimeout(300)
+  // The box is controlled: its value is the stored text, so this is the last keystroke
+  // having been dispatched, and every edit line it will ever write is already queued.
+  await expect(field).toHaveValue('MY SECRET WORDS 4421 and more private text')
 
   const list = await events(page)
   const text = JSON.stringify(list)
@@ -147,7 +174,7 @@ test('the switch in Settings turns it off, and it stays off after a reload', asy
   await expect(sw).toHaveText('Off')
   expect(await page.evaluate(() => localStorage.getItem('olpremiere:settings:usage-log'))).toBe('off')
   await page.keyboard.press('Escape')
-  await page.waitForTimeout(300)
+  await afterScans(page)
 
   const whileOff = await events(page)
   // The last thing written is the line that says it was switched off.
@@ -159,6 +186,7 @@ test('the switch in Settings turns it off, and it stays off after a reload', asy
   await page.keyboard.press('s')
   await page.getByTestId('settings-open').click()
   await page.keyboard.press('Escape')
+  await afterScans(page)
   expect((await events(page)).length).toBe(whileOff.length)
 
   // A new launch with it off keeps nothing, not even the line that says it started.

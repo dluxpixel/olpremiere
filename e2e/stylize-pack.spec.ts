@@ -98,6 +98,14 @@ async function px(page: Page, fx: number, fy: number): Promise<[number, number, 
 
 const luma = ([r, g, b]: [number, number, number]) => 0.2126 * r + 0.7152 * g + 0.0722 * b
 
+// ⛔ NO FIXED WAIT BEFORE A READ (2026-10-06). Each check below used to wait 300 ms
+// and read once, the exact shape that failed dissolve-linear-light "one run in two"
+// until it was made to poll: under load a change takes longer than 300 ms to reach
+// the picture, and the stale frame is read. Each now POLLS on the property the
+// change produces (the corner went dark, the centre went black), and only then
+// reads the property that must stay. Order matters: a poll on something the stale
+// frame already satisfies returns at once and proves nothing.
+
 /**
  * Wait for the monitor to actually PAINT the fixture's red frame. Media
  * warmup starts when a clip enters the sequence (bounded-warmup change), so
@@ -113,10 +121,8 @@ test('vignette darkens the corners but not the center', async ({ page }) => {
   await waitForFirstFrame(page)
   const beforeCorner = await px(page, 0.06, 0.06)
   await applyEffectWithParams(page, clipId, 'vignette', { amount: 0.9, size: 0.3, feather: 0.3 })
-  await page.waitForTimeout(300)
-  const afterCorner = await px(page, 0.06, 0.06)
+  await expect.poll(async () => luma(await px(page, 0.06, 0.06)), { timeout: 10_000 }).toBeLessThan(luma(beforeCorner) * 0.6)
   const afterCenter = await px(page, 0.5, 0.5)
-  expect(luma(afterCorner)).toBeLessThan(luma(beforeCorner) * 0.6)
   expect(afterCenter[0]).toBeGreaterThan(120) // the red center survives
 })
 
@@ -124,14 +130,15 @@ test('film grain perturbs pixels', async ({ page }) => {
   const clipId = await addClip(page)
   await waitForFirstFrame(page)
   await applyEffectWithParams(page, clipId, 'grain', { amount: 1, size: 4 })
-  await page.waitForTimeout(300)
   // Neighbouring samples on a flat red frame now differ. Noise is present.
-  const samples: number[] = []
-  for (const [fx, fy] of [[0.3, 0.3], [0.34, 0.31], [0.31, 0.35], [0.37, 0.36], [0.42, 0.33]] as const) {
-    samples.push(luma(await px(page, fx, fy)))
+  const spread = async (): Promise<number> => {
+    const samples: number[] = []
+    for (const [fx, fy] of [[0.3, 0.3], [0.34, 0.31], [0.31, 0.35], [0.37, 0.36], [0.42, 0.33]] as const) {
+      samples.push(luma(await px(page, fx, fy)))
+    }
+    return Math.max(...samples) - Math.min(...samples)
   }
-  const spread = Math.max(...samples) - Math.min(...samples)
-  expect(spread).toBeGreaterThan(4)
+  await expect.poll(spread, { timeout: 10_000 }).toBeGreaterThan(4)
 })
 
 test('blend modes hit the renderer: multiply blacks out over the empty stage, overlay takes the dest-sampling path, normal restores', async ({ page }) => {
@@ -142,30 +149,34 @@ test('blend modes hit the renderer: multiply blacks out over the empty stage, ov
 
   // The only track sits over the opaque-black stage: multiply → black.
   await page.getByTestId('blend-mode').selectOption('multiply')
-  await page.waitForTimeout(300)
-  expect(luma(await px(page, 0.5, 0.5))).toBeLessThan(25)
+  await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeLessThan(25)
+
+  // Back to normal first, so the picture is red when overlay is chosen.
+  await page.getByTestId('blend-mode').selectOption('normal')
+  await expect.poll(async () => (await px(page, 0.5, 0.5))[0], { timeout: 10_000 }).toBeGreaterThan(120)
 
   // Overlay runs the capture + full-screen BLENDMODE_FS path; over black it is black.
+  // ⛔ IT USED TO FOLLOW MULTIPLY DIRECTLY, black before and black after, so no
+  // pixel could say when overlay arrived and the read passed on the stale multiply
+  // frame whatever overlay drew (a mutant that drew overlay as a plain normal blend
+  // stayed green once the monitor was made to paint two seconds late). Chosen from
+  // a RED picture, the arrival is what turns it black, and the poll waits for that.
   await page.getByTestId('blend-mode').selectOption('overlay')
-  await page.waitForTimeout(300)
-  expect(luma(await px(page, 0.5, 0.5))).toBeLessThan(25)
+  await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeLessThan(25)
 
   await page.getByTestId('blend-mode').selectOption('normal')
-  await page.waitForTimeout(300)
-  expect((await px(page, 0.5, 0.5))[0]).toBeGreaterThan(120)
+  await expect.poll(async () => (await px(page, 0.5, 0.5))[0], { timeout: 10_000 }).toBeGreaterThan(120)
 })
 
 test('an ellipse mask keeps the center, kills the corner, and invert flips it', async ({ page }) => {
   await addClip(page)
   await waitForFirstFrame(page)
   await page.getByTestId('mask-kind').selectOption('ellipse')
-  await page.waitForTimeout(300)
+  await expect.poll(async () => luma(await px(page, 0.05, 0.05)), { timeout: 10_000 }).toBeLessThan(25) // outside is gone
   expect((await px(page, 0.5, 0.5))[0]).toBeGreaterThan(120) // inside survives
-  expect(luma(await px(page, 0.05, 0.05))).toBeLessThan(25) // outside is gone
 
   await page.getByTestId('mask-invert').check()
-  await page.waitForTimeout(300)
-  expect(luma(await px(page, 0.5, 0.5))).toBeLessThan(25) // inside is gone
+  await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeLessThan(25) // inside is gone
   expect((await px(page, 0.05, 0.05))[0]).toBeGreaterThan(120) // outside survives
 })
 
@@ -181,8 +192,7 @@ test('chroma key removes the keyed colour', async ({ page }) => {
     smoothness: 0.1,
     spill: 0,
   })
-  await page.waitForTimeout(300)
-  expect(luma(await px(page, 0.5, 0.5))).toBeLessThan(25)
+  await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeLessThan(25)
 })
 
 test('green screen keys the green but keeps white detail (corners + thin lines)', async ({ page }) => {
@@ -194,15 +204,14 @@ test('green screen keys the green but keeps white detail (corners + thin lines)'
   // The white centre must paint before we key.
   await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeGreaterThan(200)
   await applyEffectWithParams(page, clipId, 'chromaKey', {})
-  await page.waitForTimeout(300)
 
-  const white = await px(page, 0.5, 0.5) // white centre block
-  const green = await px(page, 0.15, 0.5) // pure-green screen area
-  // White detail survives, fully opaque and bright (a chroma-distance key ate this).
-  expect(luma(white)).toBeGreaterThan(200)
   // The green screen is keyed out → the dark stage shows through, with no green left.
-  expect(luma(green)).toBeLessThan(40)
+  await expect.poll(async () => luma(await px(page, 0.15, 0.5)), { timeout: 10_000 }).toBeLessThan(40)
+  const green = await px(page, 0.15, 0.5) // pure-green screen area
   expect(green[1]).toBeLessThan(60)
+  // White detail survives, fully opaque and bright (a chroma-distance key ate this).
+  const white = await px(page, 0.5, 0.5) // white centre block
+  expect(luma(white)).toBeGreaterThan(200)
 })
 
 test('a green key leaves non-green footage untouched', async ({ page }) => {
@@ -210,8 +219,17 @@ test('a green key leaves non-green footage untouched', async ({ page }) => {
   // red has zero green-excess, so it must survive fully (opaque, un-despilled).
   const clipId = await addClip(page) // the RED fixture
   await waitForFirstFrame(page)
+  const beforeCorner = luma(await px(page, 0.06, 0.06))
   await applyEffectWithParams(page, clipId, 'chromaKey', {}) // green key at drop defaults
-  await page.waitForTimeout(300)
+  // ⛔ NOTHING IN THE PICTURE CHANGES WHEN THE KEY IS RIGHT, so no read of the
+  // centre can say the key has reached the screen: it used to wait a fixed 300 ms
+  // and read red, which is also what the frame painted BEFORE the key looks like
+  // (a green key that wrongly keyed red passed this once the monitor painted a
+  // beat late). A vignette goes on AFTER the key on the same clip, and its dark
+  // corner is the change to poll for: a frame that shows the vignette was drawn
+  // from a store that holds the key, so the centre read below is of the keyed picture.
+  await applyEffectWithParams(page, clipId, 'vignette', { amount: 0.9, size: 0.3, feather: 0.3 })
+  await expect.poll(async () => luma(await px(page, 0.06, 0.06)), { timeout: 10_000 }).toBeLessThan(beforeCorner * 0.6)
   const red = await px(page, 0.5, 0.5)
   expect(red[0]).toBeGreaterThan(120) // red channel intact
   expect(luma(red)).toBeGreaterThan(40) // not keyed to the dark stage
@@ -222,8 +240,7 @@ test('luma key keys the frame out above threshold and leaves it below', async ({
   await waitForFirstFrame(page)
   // Red luma ≈ 0.22 → threshold 0.6 keys the whole red frame to black.
   await applyEffectWithParams(page, clipId, 'lumaKey', { threshold: 0.6, softness: 0.05 })
-  await page.waitForTimeout(300)
-  expect(luma(await px(page, 0.5, 0.5))).toBeLessThan(25)
+  await expect.poll(async () => luma(await px(page, 0.5, 0.5)), { timeout: 10_000 }).toBeLessThan(25)
 })
 
 test('an adjustment layer grades the footage below it (and only inside its mask)', async ({ page }) => {
@@ -249,9 +266,12 @@ test('an adjustment layer grades the footage below it (and only inside its mask)
     return seq.tracks.flatMap((t) => t.clips).find((c) => c.adjustment)!.id
   })
   await applyEffectWithParams(page, adjId, 'saturation', { saturation: -1 })
-  await page.waitForTimeout(300)
-  const after = await px(page, 0.5, 0.5)
-  expect(Math.abs(after[0] - after[2])).toBeLessThan(14) // grayscale = channels converge
+  await expect
+    .poll(async () => {
+      const after = await px(page, 0.5, 0.5)
+      return Math.abs(after[0] - after[2])
+    }, { timeout: 10_000 })
+    .toBeLessThan(14) // grayscale = channels converge
 
   // Mask the adjustment to a small centered ellipse: the corner regains colour.
   await page.evaluate(async (id) => {
@@ -261,11 +281,14 @@ test('an adjustment layer grades the footage below it (and only inside its mask)
     }
     setClipMask(id, { kind: 'ellipse', cx: 0.5, cy: 0.5, rx: 0.2, ry: 0.2, feather: 0.02, invert: false })
   }, adjId)
-  await page.waitForTimeout(300)
+  await expect
+    .poll(async () => {
+      const cornerMasked = await px(page, 0.1, 0.1)
+      return cornerMasked[0] - cornerMasked[2]
+    }, { timeout: 10_000 })
+    .toBeGreaterThan(80) // outside: original red
   const centerMasked = await px(page, 0.5, 0.5)
-  const cornerMasked = await px(page, 0.1, 0.1)
   expect(Math.abs(centerMasked[0] - centerMasked[2])).toBeLessThan(14) // inside: graded
-  expect(cornerMasked[0] - cornerMasked[2]).toBeGreaterThan(80) // outside: original red
   void clipId
 })
 

@@ -266,9 +266,17 @@ test('export cancel closes the dialog without a file', async ({ page }) => {
  * `FRAME_CREDIT = 3` bound the encoder by construction; this asserts the rest of
  * the app does not quietly grow beside them.
  *
- * ⚠️ IT IS A TRIPWIRE, NOT A BENCHMARK. `performance.memory` is Chromium-only,
- * coarse, and reports the JS heap rather than the process, so it will never see a
- * GPU texture or a decoded frame held in a native buffer. The budget is
+ * ⚠️ IT IS A TRIPWIRE, NOT A BENCHMARK. It reads the page's memory rather than
+ * the process, so it will never see a GPU texture, or anything the export worker
+ * holds (a separate heap, and gone when the worker ends).
+ *
+ * ⛔ AND FOR ITS FIRST SIX WEEKS IT COULD NOT FAIL (found 2026-10-06). It read
+ * `performance.memory`, which without --enable-precise-memory-info Chromium
+ * buckets and refreshes about every 20 minutes, so "before" and "after" a five
+ * second export were the same cached number: 25/25, 30/30, 32/32, 32/32, 28/28,
+ * grew 0 on every logged run. It reads the heap over the DevTools protocol now,
+ * after a garbage collection, and first proves it can see a deliberate 50 MB, both
+ * as JavaScript values and as a buffer (the JS heap alone missed buffers). The budget is
  * deliberately loose: it is here to catch an order-of-magnitude regression, the
  * kind that reaches him, not to police a few MB. If it trips, something started
  * holding on to whole frames or whole buffers. Find that; do not raise the number
@@ -278,14 +286,45 @@ test('an export does not grow the heap without bound', async ({ page }) => {
   test.setTimeout(180_000)
   await page.goto('/')
 
-  const heapMb = async (): Promise<number | null> =>
-    page.evaluate(() => {
-      const m = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory
-      return m ? Math.round(m.usedJSHeapSize / 1048576) : null
-    })
+  // What the page still holds after a full collection: retained memory, which is
+  // what "grows without bound" means, and never garbage that is merely uncollected.
+  //
+  // ⛔ THE JS HEAP ALONE IS BLIND TO BUFFERS (found 2026-10-07). `usedSize` counts
+  // JavaScript objects, but the bytes of an ArrayBuffer, a typed array or a frame's
+  // pixels live in backing storage outside it, so the first version of this read
+  // a page that kept a 32 MB buffer for every progress report of the export (about
+  // 1.5 GB) as "before 20 MB, after 20 MB, grew 0 MB". Whole frames and whole
+  // buffers are the leak this exists for, so the reading is the JS heap plus the
+  // buffers' backing storage plus Blink's own heap, where DOM objects live.
+  const cdp = await page.context().newCDPSession(page)
+  const heapMb = async (): Promise<number> => {
+    await cdp.send('HeapProfiler.collectGarbage')
+    const { usedSize, embedderHeapUsedSize, backingStorageSize } = await cdp.send('Runtime.getHeapUsage')
+    return Math.round((usedSize + embedderHeapUsedSize + backingStorageSize) / 1048576)
+  }
 
-  const supported = (await heapMb()) !== null
-  test.skip(!supported, 'performance.memory is Chromium-only; nothing to measure here')
+  // THE INSTRUMENT PROVES IT CAN SEE FIRST: 50 MB held on the page has to show, and
+  // has to go again once it is let go, both as plain JavaScript values and as a
+  // buffer. A reading that cannot move is how this test stayed green for six weeks.
+  type Ballast = { __ballast?: unknown }
+  const sees = async (what: string, hold: () => void): Promise<void> => {
+    const base = await heapMb()
+    await page.evaluate(hold)
+    const held = await heapMb()
+    await page.evaluate(() => {
+      delete (window as unknown as Ballast).__ballast
+    })
+    const released = await heapMb()
+    console.log(`[export heap] instrument check, ${what}: ${base} MB, holding 50 MB ${held} MB, let go ${released} MB`)
+    expect(held - base, `the reading must see 50 MB of ${what} being held`).toBeGreaterThanOrEqual(40)
+    expect(held - released, `and see the ${what} let go`).toBeGreaterThanOrEqual(40)
+  }
+  await sees('JavaScript values', () => {
+    ;(window as unknown as Ballast).__ballast = Array.from({ length: 6_553_600 }, (_, i) => i + 0.5)
+  })
+  await sees('buffer', () => {
+    ;(window as unknown as Ballast).__ballast = new Uint8Array(52_428_800).fill(1)
+  })
 
   await page.getByTestId('media-file-input').setInputFiles(FIXTURE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
@@ -294,14 +333,14 @@ test('an export does not grow the heap without bound', async ({ page }) => {
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(4)
   await shrinkSequence(page)
 
-  const before = (await heapMb())!
+  const before = await heapMb()
 
   const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
   await page.getByTestId('export-open').click()
   const download = await downloadPromise
   await download.saveAs(`${VERIFY}/heap.mp4`)
 
-  const after = (await heapMb())!
+  const after = await heapMb()
   const grew = after - before
 
   // Reported on every run, pass or fail. A number in the log is what lets a
@@ -309,12 +348,16 @@ test('an export does not grow the heap without bound', async ({ page }) => {
   // reason the cache growth went unnoticed for a week.
   console.log(`[export heap] before ${before} MB, after ${after} MB, grew ${grew} MB, budget 150 MB`)
 
-  // MEASURED 2026-08-27 ON THIS FIXTURE: before 25 MB, after 25 MB, grew 0.
-  // The export really is flat, which is what MAX_ENCODE_QUEUE and FRAME_CREDIT
-  // promise. 150 MB is therefore not a budget it is anywhere near, it is a
-  // tripwire three times looser than the export's own bounded peak (about 44 MB
-  // of frames in flight plus four queued encodes) so a busy machine cannot make
-  // it flake. If this ever trips, something began holding whole frames or whole
-  // buffers; find that rather than raising the number.
+  // MEASURED 2026-08-27 ON THIS FIXTURE: before 25 MB, after 25 MB, grew 0. That
+  // reading was the cached number (see above), so it proved nothing.
+  //
+  // MEASURED 2026-10-07 AND 2026-10-08 WITH THIS READING, ON THIS FIXTURE (about 235
+  // frames at 640x360): before 38 MB, after 38 MB, grew 0, on both runs. What it
+  // catches at 150 MB, each tried on purpose: the page keeping one frame for every
+  // frame exported, grew 220 MB, red; a 32 MB buffer per progress report, grew
+  // 1526 MB, red. What it lets through: one frame kept for every fifth frame
+  // exported, grew 45 MB, green. The number is unchanged. If this ever trips,
+  // something began holding whole frames or whole buffers; find that rather than
+  // raising the number.
   expect(grew).toBeLessThan(150)
 })

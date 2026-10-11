@@ -147,7 +147,7 @@ const quiet = () => {
 }
 
 /** Run one ship against `gh`. Returns what a caller would see. */
-function ship(gh, { post = fakeUpload(gh), tagLocal = () => {}, uploadTries = 3 } = {}) {
+function ship(gh, { post = fakeUpload(gh), tagLocal = () => {}, uploadTries = 3, notes } = {}) {
   const out = quiet()
   const tagged = []
   const promise = publishRelease({
@@ -161,6 +161,7 @@ function ship(gh, { post = fakeUpload(gh), tagLocal = () => {}, uploadTries = 3 
       tagLocal(t)
     },
     uploadTries,
+    notes,
     ...out,
   })
   return { promise, out, tagged, post }
@@ -176,6 +177,8 @@ describe('a ship that works', () => {
     expect(gh.createBodies[0]).toMatchObject({ tag_name: TAG, draft: true })
     // A draft cannot be the latest, so the request must not ask for it.
     expect(gh.createBodies[0]).not.toHaveProperty('make_latest')
+    // An ordinary release says nothing in its body.
+    expect(gh.createBodies[0]).not.toHaveProperty('body')
 
     // Every upload went into a draft, never into something the updater could see.
     const uploads = gh.events.filter((e) => e.startsWith('upload '))
@@ -434,5 +437,14 @@ describe('githubApi', () => {
       fetchImpl: async () => ({ ok: false, status: 502, text: async () => '<html>Bad gateway</html>' }),
     })
     await expect(api('/x')).rejects.toThrow('GitHub 502 /x: <html>Bad gateway</html>')
+  })
+})
+
+// A --fast release skipped the browser suite, and its GitHub page says so.
+describe('release notes', () => {
+  it('a --fast release carries its mark on the release page', async () => {
+    const gh = fakeGitHub()
+    await ship(gh, { notes: 'E2E SKIPPED (--fast): docs only' }).promise
+    expect(gh.createBodies[0]).toMatchObject({ draft: true, body: 'E2E SKIPPED (--fast): docs only' })
   })
 })

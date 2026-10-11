@@ -59,7 +59,8 @@ test('pause reliably stops playback (timecode freezes)', async ({ page }) => {
   await page.keyboard.press('Home')
   await page.getByTestId('play-toggle').click() // play
   await expect(page.getByTestId('play-toggle')).toHaveAttribute('aria-label', 'Pause')
-  await page.waitForTimeout(700)
+  // Until the timecode has really moved, not a fixed 700 ms (2026-10-06).
+  await expect(page.getByTestId('timecode')).not.toContainText('0:00.00 ', { timeout: 10_000 })
   await page.getByTestId('play-toggle').click() // pause
   await expect(page.getByTestId('play-toggle')).toHaveAttribute('aria-label', 'Play')
   const at = await page.getByTestId('timecode').textContent()

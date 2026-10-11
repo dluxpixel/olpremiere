@@ -15,8 +15,11 @@
 //      after the push is what keeps the tagged source equal to the shipped build;
 //      doing it the other way round left two releases tagged one commit early.
 //
-// Skip the slow half with --fast for a docs-only or comment-only change. It still
-// typechecks, lints and unit tests; it just does not drive a browser.
+// Skip the slow half with --fast for a docs-only change. It still typechecks,
+// lints and unit tests; it just does not drive a browser. It REFUSES a release
+// that carries anything but Markdown or docs/ (see FAST_MARK in lib.mjs for the
+// four feature releases it shipped untested), and the ones it allows say
+// "E2E SKIPPED (--fast)" in the commit and on the GitHub release.
 //
 // `npm run verify` (--verify) runs the gate alone and stamps the tree it passed
 // on. A ship of that exact tree then skips straight to publishing, and a ship
@@ -24,10 +27,29 @@
 // stopped. See planShip in lib.mjs for why, measured.
 
 import { execFileSync, execSync } from 'node:child_process'
-import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { isTransientFailure, loadToken, mayBeLiveReport, nextVersion, openShipLog, planShip, runLogged, SHIP_LOG } from './lib.mjs'
+import {
+  changedBetween,
+  commitExactTree,
+  enterGate,
+  FAST_MARK,
+  fastRefusal,
+  isTransientFailure,
+  keepEvidence,
+  loadToken,
+  manifestsBeyondVersion,
+  manifestsMoved,
+  mayBeLiveReport,
+  nextVersion,
+  openShipLog,
+  planShip,
+  runLogged,
+  SHIP_LOG,
+  treeHash,
+  treeWith,
+  versionInTree,
+} from './lib.mjs'
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
@@ -66,21 +88,10 @@ const stopIfMayBeLive = (version, e) => {
 const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim()
 
 // --- the stamp: which exact tree last passed the WHOLE gate ------------------
-// The tree hash of everything a commit would take (tracked and new files, the
-// ignore list honoured), computed in a throwaway index so the real one is never
-// touched. Same hash means same bytes, so the gate's answer still holds.
+// `treeHash` (lib.mjs) is the tree of everything a commit would take, computed in
+// a throwaway index so the real one is never touched. Same hash means same bytes,
+// so the gate's answer still holds.
 const STAMP = join(git('rev-parse', '--git-dir'), 'olp-verified.json')
-const treeHash = () => {
-  const index = join(tmpdir(), `olp-verify-index-${process.pid}`)
-  try {
-    copyFileSync(join(git('rev-parse', '--git-dir'), 'index'), index)
-    const env = { ...process.env, GIT_INDEX_FILE: index }
-    execFileSync('git', ['add', '-A'], { env, stdio: 'ignore' })
-    return execFileSync('git', ['write-tree'], { env, encoding: 'utf8' }).trim()
-  } finally {
-    rmSync(index, { force: true })
-  }
-}
 const stampedTree = () => {
   try {
     return existsSync(STAMP) ? JSON.parse(readFileSync(STAMP, 'utf8')).tree : ''
@@ -90,28 +101,102 @@ const stampedTree = () => {
 }
 const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new Date().toISOString() }))
 
+// ⛔ THE TREE IS HASHED ONCE, HERE (2026-10-08). `--fast` hashed it for its docs only
+// check and the gate hashed it again a moment later, so a code file saved between the
+// two was never seen by the docs only check and became the gate's own baseline: it
+// shipped marked "docs only". The stamp check, the docs only check and the gate all read
+// THIS one, and the gate's check at its end (below) covers all three. Nothing else in
+// this file may hash the tree for a verdict at the start of a run.
+const startTree = treeHash()
+
 // The gate, in one place, for a ship and for --verify alike. Only a FULL gate
 // stamps: --fast skipped the browser, so it proved less than a stamp promises.
-const gate = async () => {
-  const tree = treeHash()
-  try {
-    await run('npx tsc --noEmit', 'typecheck (renderer)')
-    await run('npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)')
-    await run('npx eslint .', 'lint')
-    await run('npx vitest run', 'unit tests')
-    await run('npx vite build', 'web build')
-    if (!fast) await run('npx playwright test', 'end to end')
-  } catch {
-    console.error('\n❌ The gate failed, so NOTHING was committed or released.')
-    console.error(`   The whole run is in ${SHIP_LOG}`)
-    console.error('   Fix it and run the same command again.')
+//
+// Returns the tree it checked, which is the ONLY tree a ship may commit.
+//
+// ⛔ AND THE TREE IS HASHED AGAIN WHEN IT ENDS. A file saved during the run was
+// checked by none of the steps that had already finished, and by only part of the
+// e2e (the dev server serves whatever is on disk), so a gate whose tree moved
+// under it has no verdict on either tree. Nothing is committed or stamped, and the
+// files are named.
+const gate = async (tree) => {
+  const t0 = Date.now()
+  const fail = (why) => {
+    const say = `\n❌ The gate failed (${why}), so NOTHING was committed or released.\n   The whole run is in ${SHIP_LOG}\n   Fix it and run the same command again.\n`
+    console.error(say)
+    shipLog?.write(say)
     process.exit(1)
   }
+  // Tells a spec it is inside the gate, where a missing prerequisite (vendor/ffmpeg)
+  // is a failure and not a quiet skip: the release cannot package without it. And clears
+  // OLP_MEASURE, which a PowerShell window keeps for every later command and which would
+  // put scrub-cost back in the gate (see enterGate in lib.mjs).
+  enterGate()
+
+  // 1. THE CHECKS THAT NEED NO BROWSER, one after another, as before. Running them
+  // side by side would save about a minute, and it would put seven heavy jobs on
+  // his machine at once, past his limit of four at once (his PC must never lag).
+  //
+  // ⛔ THE DESKTOP BUNDLE IS BUILT HERE NOW, not first after the push. The gate used
+  // to build only the web bundle, so a main process bundling error, or a new
+  // dependency main reaches for (what check-self-contained exists to catch), failed
+  // in release.mjs after the version was already public. The release still rebuilds
+  // after the bump, because the version is baked in.
+  const checks = [
+    ['npx tsc --noEmit', 'typecheck (renderer)'],
+    ['npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)'],
+    ['npx eslint .', 'lint'],
+    ['npx vitest run', 'unit tests'],
+    ['npx vite build', 'web build'],
+    ['npx electron-vite build', 'desktop build'],
+    ['node scripts/check-self-contained.mjs', 'the desktop bundle needs no node_modules'],
+  ]
+  for (const [cmd, label] of checks) {
+    try {
+      await run(cmd, label)
+    } catch {
+      fail(label)
+    }
+  }
+
+  // 2. THE BROWSER SUITE. A red one moves its traces out of test-results/ first,
+  // because the next Playwright run anywhere in this repo empties that folder.
+  if (!fast) {
+    try {
+      await run('npx playwright test', 'end to end')
+    } catch {
+      // Flushed before it is copied, so the kept log ends where the run did.
+      await new Promise((resolve) => (shipLog ? shipLog.write('\n[gate] the browser suite failed, keeping its evidence\n', resolve) : resolve()))
+      const kept = keepEvidence({ from: 'test-results', extra: [SHIP_LOG] })
+      if (kept) {
+        const say = `\n   The failing tests' traces, videos and this log are kept in ${kept}\n   (open a trace with: npx playwright show-trace <that folder>/test-results/<test>/trace.zip)\n`
+        console.error(say)
+        shipLog?.write(say)
+      }
+      fail('end to end')
+    }
+  }
+
+  const after = treeHash()
+  if (after !== tree) {
+    const moved = changedBetween(tree, after)
+    const say =
+      '\n❌ Files changed while the gate ran, so its verdict covers neither version. NOTHING was committed, released or stamped.\n' +
+      moved.map((f) => `   ${f}\n`).join('') +
+      '   Let whatever is writing them finish, then run the same command again.\n'
+    console.error(say)
+    shipLog?.write(say)
+    process.exit(1)
+  }
+  const done = `\n✓ the gate passed in ${Math.round((Date.now() - t0) / 60_000)} min\n`
+  process.stdout.write(done)
+  shipLog?.write(done)
   if (!fast) writeStamp(tree)
+  return tree
 }
 
 if (verifyOnly) {
-  await gate()
+  await gate(startTree)
   console.log(`\n✅ Verified${fast ? ' without the browser suite, so nothing was stamped' : ': this exact code passed every check, and a ship of it goes straight to publishing'}.`)
   process.exit(0)
 }
@@ -197,7 +282,7 @@ const unreleased = lastTag ? git('rev-list', '--count', `${lastTag}..HEAD`) : '1
 const shippedVersion = JSON.parse(readFileSync('package.json', 'utf8')).version
 // Only this script writes that line, and only after a gate passed.
 const headIsRelease = git('log', '-1', '--format=%B').includes(`Released as v${shippedVersion} by scripts/patch.mjs`)
-const verified = !!(dirty && dirty.trim()) && stampedTree() === treeHash()
+const verified = !!(dirty && dirty.trim()) && stampedTree() === startTree
 
 const plan = planShip({ dirty, unpushed, unreleased, headIsRelease, verified })
 if (!plan) {
@@ -206,10 +291,36 @@ if (!plan) {
 }
 console.log(`Releasing, because there is ${plan.why}.`)
 
+// The commit the release goes on top of, taken BEFORE the gate. If the branch
+// moves while the gate runs, the commit below refuses rather than land the gated
+// tree over somebody else's work.
+const headAtStart = git('rev-parse', 'HEAD')
+
+// --- 0b. --fast keeps its own contract ---------------------------------------
+// Only when it would actually skip something: a verified tree already passed the
+// browser suite, and a stranded release commit is not gated at all.
+const skippingE2e = fast && plan.gate
+if (skippingE2e) {
+  const code = fastRefusal(lastTag, startTree)
+  if (code.length) {
+    console.error(`\n❌ --fast is for a docs only release, and this one changes code since ${lastTag || 'the start'}:`)
+    for (const f of code.slice(0, 40)) console.error(`   ${f}`)
+    if (code.length > 40) console.error(`   ... and ${code.length - 40} more`)
+    console.error('   Run it without --fast, so the browser suite checks it. Nothing was committed or released.')
+    process.exit(2)
+  }
+  console.log(`\n⚠ ${FAST_MARK}: docs only, so the browser suite is not run. The commit and the GitHub release will say so.`)
+}
+
 // --- 1. the gate ------------------------------------------------------------
-if (plan.gate) await gate()
-else if (plan.bump) console.log('\n✓ This exact code already passed every check (npm run verify), so the gate is not run twice.')
-else console.log(`\n✓ v${shippedVersion} already passed its gate and was committed. Picking up where it stopped.`)
+let gatedTree = ''
+if (plan.gate) gatedTree = await gate(startTree)
+else if (plan.bump) {
+  // `verified` above means the tree on disk matched this stamp a moment ago.
+  // The commit is built from the STAMPED tree, so a save since then stays out.
+  gatedTree = stampedTree()
+  console.log('\n✓ This exact code already passed every check (npm run verify), so the gate is not run twice.')
+} else console.log(`\n✓ v${shippedVersion} already passed its gate and was committed. Picking up where it stopped.`)
 
 if (!plan.bump) {
   if (plan.push) await pushMain()
@@ -249,14 +360,50 @@ if (!plan.bump) {
 // ships as the ordinary release it is rather than as a "big" one that opens a
 // window on his screen.
 const bump = process.argv.includes('--fix') ? 'fix' : 'minor'
-const current = JSON.parse(readFileSync('package.json', 'utf8')).version
+
+// ⛔ THE BUMP STARTS FROM THE GATED MANIFESTS, NOT FROM DISK (2026-10-08). The gate's
+// check at its end is behind us, and `npm version` rewrites package.json and
+// package-lock.json on disk, which the release commit then takes. A dependency added in
+// this window went out with nothing ever having checked it. So the two files must be, on
+// disk, what the gate checked; the version comes out of the gated tree; and after the
+// bump each file may differ from the gated one in its version and nothing else.
+const refuse = (say) => {
+  console.error(say)
+  shipLog?.write(say)
+  process.exit(1)
+}
+const moved = manifestsMoved(gatedTree)
+if (moved.length) {
+  refuse(
+    '\n❌ package.json or package-lock.json changed after the gate checked them, so the version was NOT bumped and nothing was committed or released.\n' +
+      moved.map((f) => `   ${f}\n`).join('') +
+      '   Let whatever is writing them finish, then run the same command again.\n',
+  )
+}
+const current = versionInTree(gatedTree)
 const version = nextVersion(current, bump)
 await run(`npm version ${version} --no-git-tag-version`, `version bump (${bump}): ${current} to ${version}`)
+const beyond = manifestsBeyondVersion(gatedTree, version)
+if (beyond.length) {
+  refuse(
+    `\n❌ ${beyond.join(' and ')} changed by more than the version while it was bumped, so NOTHING was committed or released.\n` +
+      `   The bump to ${version} is on disk and uncommitted. Let whatever is writing them finish, check the diff, then run the same command again.\n`,
+  )
+}
 
-execFileSync('git', ['add', '-A'], { stdio: 'inherit' })
-execFileSync('git', ['commit', '-m', `${message}\n\nReleased as v${version} by scripts/patch.mjs.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>`], {
-  stdio: 'inherit',
-})
+// ⛔ THE COMMIT IS THE GATED TREE PLUS THE BUMP, BY CONSTRUCTION. It used to be
+// `git add -A`, which took whatever was on disk at this moment, gated or not.
+// Anything saved after the gate stays an ordinary uncommitted change.
+const releaseTree = treeWith(gatedTree, ['package.json', 'package-lock.json'])
+const body = [
+  `Released as v${version} by scripts/patch.mjs.`,
+  ...(skippingE2e ? [`${FAST_MARK}: docs only, so the browser suite did not run on this release.`] : []),
+  'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>',
+]
+const commit = commitExactTree(releaseTree, `${message}\n\n${body.join('\n\n')}\n`, { parent: headAtStart })
+console.log(`\n✓ committed ${commit.slice(0, 7)}: exactly the tree the gate checked, plus the version bump`)
+const leftOut = git('status', '--porcelain')
+if (leftOut) console.log(`  Saved after the gate, so NOT in this release (still uncommitted):\n${leftOut}`)
 await pushMain()
 
 // --- 3. build + publish -----------------------------------------------------

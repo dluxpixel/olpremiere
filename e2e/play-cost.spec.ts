@@ -1,4 +1,6 @@
-import { expect, test, type Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
+// Timing spec: runs in the `timing` project, on a quiet box (see quietBox.ts).
+import { expect, test } from './quietBox'
 
 // MEASUREMENT, not a fix. Finding 13 says pressing play builds one
 // AudioBufferSourceNode plus one GainNode for EVERY audible clip in the whole
