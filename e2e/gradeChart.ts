@@ -13,6 +13,7 @@
 
 import { expect, type Page } from '@playwright/test'
 import { shrinkSequence } from './exportHelpers'
+import { parkModules, type ParkedWindow } from './storeWrites'
 
 export type Rgb = [number, number, number]
 
@@ -163,18 +164,18 @@ export async function putChartOnTimeline(page: Page): Promise<string> {
   await page.getByTestId('asset-card').dblclick()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1)
   await shrinkSequence(page, FRAME_W, FRAME_H)
-  return page.evaluate(async () => {
-    const storeMod = '/src/state/store.ts'
-    const timelineMod = '/src/engine/timeline.ts'
-    const typesMod = '/src/engine/types.ts'
+  // The imports are their own step and the writes run in a synchronous evaluate (e2e/storeWrites.ts).
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/timeline.ts', '/src/engine/types.ts'])
+  return page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
     type Clip = { id: string; inS: number; outS: number }
     type Seq = { tracks: { kind: string; clips: Clip[] }[] }
-    const { useStore, updateActiveSequence } = (await import(/* @vite-ignore */ storeMod)) as {
+    const { useStore, updateActiveSequence } = mods['/src/state/store.ts'] as {
       useStore: { getState: () => { project: unknown; setUI: (u: Record<string, unknown>) => void } }
       updateActiveSequence: (label: string, fn: (s: Seq) => Seq) => void
     }
-    const { recomputeDuration } = (await import(/* @vite-ignore */ timelineMod)) as { recomputeDuration: (s: Seq) => Seq }
-    const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as { activeSequence: (p: unknown) => Seq }
+    const { recomputeDuration } = mods['/src/engine/timeline.ts'] as { recomputeDuration: (s: Seq) => Seq }
+    const { activeSequence } = mods['/src/engine/types.ts'] as { activeSequence: (p: unknown) => Seq }
     updateActiveSequence('trim chart', (s) =>
       recomputeDuration({
         ...s,

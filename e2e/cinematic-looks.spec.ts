@@ -27,7 +27,7 @@ import {
   type Rgb as ChartRgb,
   type Spot,
 } from './gradeChart'
-import { setUI } from './storeWrites'
+import { parkModules, setUI, type ParkedWindow } from './storeWrites'
 
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const VERIFY = '_verify/looks'
@@ -291,12 +291,13 @@ async function colourPassOf(page: Page, lookId: string, spots: Spot[]): Promise<
 
 /** Put a look on the clip the way every door does: swapping the one it wears. */
 async function wearLook(page: Page, clipId: string, lookId: string): Promise<void> {
+  // The imports are their own step and the write runs synchronously (e2e/storeWrites.ts).
+  await parkModules(page, ['/src/state/clipEdits.ts', '/src/engine/effects/looks.ts'])
   await page.evaluate(
-    async ({ clipId, lookId }) => {
-      const editsMod = '/src/state/clipEdits.ts'
-      const looksMod = '/src/engine/effects/looks.ts'
-      const { applyEffect } = (await import(/* @vite-ignore */ editsMod)) as { applyEffect: (clipId: string, type: string) => void }
-      const { LOOKS, lookType } = (await import(/* @vite-ignore */ looksMod)) as {
+    ({ clipId, lookId }) => {
+      const mods = (window as unknown as ParkedWindow).__e2eMods
+      const { applyEffect } = mods['/src/state/clipEdits.ts'] as { applyEffect: (clipId: string, type: string) => void }
+      const { LOOKS, lookType } = mods['/src/engine/effects/looks.ts'] as {
         LOOKS: { id: string }[]
         lookType: (s: { id: string }) => string
       }

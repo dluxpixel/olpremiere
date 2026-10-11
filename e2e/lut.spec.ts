@@ -11,6 +11,7 @@ import { expect, test, type Page } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { PATCHES, gap, gpuName, putChartOnTimeline, readSpots, readSpotsFromFile, type Rgb, type Spot } from './gradeChart'
+import { parkModules, selectClips, setUI, type ParkedWindow } from './storeWrites'
 
 const VERIFY = '_verify/lut'
 
@@ -64,13 +65,7 @@ function writeCube(name: string, text: string): string {
 async function chartWithLutEffect(page: Page): Promise<{ clipId: string; effectId: string }> {
   await page.goto('/')
   const clipId = await putChartOnTimeline(page)
-  await page.evaluate(async (clipId) => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (u: Record<string, unknown>) => void } }
-    }
-    useStore.getState().setUI({ selection: [clipId] })
-  }, clipId)
+  await selectClips(page, [clipId])
   await page.getByRole('tab', { name: 'Effects' }).click()
   await page.getByTestId('effect-search').fill('lut')
   await page.locator('[data-testid="effect-item"][data-payload="lut"]').dblclick()
@@ -91,10 +86,11 @@ async function chartWithLutEffect(page: Page): Promise<{ clipId: string; effectI
 }
 
 async function setAmount(page: Page, clipId: string, effectId: string, amount: number): Promise<void> {
+  // The import is its own step and the write runs synchronously (e2e/storeWrites.ts).
+  await parkModules(page, ['/src/state/clipEdits.ts'])
   await page.evaluate(
-    async ({ clipId, effectId, amount }) => {
-      const editsMod = '/src/state/clipEdits.ts'
-      const { setEffectParamValue } = (await import(/* @vite-ignore */ editsMod)) as {
+    ({ clipId, effectId, amount }) => {
+      const { setEffectParamValue } = (window as unknown as ParkedWindow).__e2eMods['/src/state/clipEdits.ts'] as {
         setEffectParamValue: (clipId: string, effectId: string, key: string, value: number) => void
       }
       setEffectParamValue(clipId, effectId, 'amount', amount)
@@ -193,13 +189,7 @@ test('the table is part of the project: it is still on the clip after the page i
   await page.waitForTimeout(2000)
   await page.reload()
   await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(1, { timeout: 20_000 })
-  await page.evaluate(async () => {
-    const storeMod = '/src/state/store.ts'
-    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
-      useStore: { getState: () => { setUI: (u: Record<string, unknown>) => void } }
-    }
-    useStore.getState().setUI({ playheadS: 0.5 })
-  })
+  await setUI(page, { playheadS: 0.5 })
   await monitorReaches(page, expected, 3, 'after the reload')
 })
 
