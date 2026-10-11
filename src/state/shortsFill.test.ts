@@ -204,7 +204,11 @@ describe('pasteClips on its own', () => {
   })
 
   it('leaves a clip alone when the clipboard never recorded its frame', () => {
-    const payload = serializeClips(wideSeq(), ['c']).map(({ frame: _frame, ...rest }) => rest)
+    const payload = serializeClips(wideSeq(), ['c']).map((item) => {
+      const bare = { ...item }
+      delete bare.frame
+      return bare
+    })
     const r = pasteClips(tallEmpty(), payload, 0, undefined, { [footage.id]: footage })
     expect(r.seq.tracks.flatMap((t) => t.clips)[0]!.transform.scale).toBe(1)
   })
