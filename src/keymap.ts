@@ -46,6 +46,13 @@ export interface Binding {
    * touch the edit itself: saving it and reloading the app.
    */
   overWindows?: boolean
+  /**
+   * A key that means something only while it is held (the Before picture). `run` starts it, and
+   * this ends it: when the key comes up, or the window loses the focus with the key still down
+   * (a keyup then goes to nobody, and the hold would never end). `run` has to be safe to call
+   * twice, since a held key repeats.
+   */
+  onRelease?: () => void
 }
 
 /**
@@ -218,6 +225,13 @@ export function installKeymap(bindings: Binding[]): () => void {
     if (!control) return false
     return isOpenList(control) || control !== clicked
   }
+  // The key being held for a binding that has an `onRelease`, by the place it sits on the keyboard.
+  let held: { code: string; binding: Binding } | null = null
+  const release = () => {
+    const was = held
+    held = null
+    was?.binding.onRelease?.()
+  }
   const onKeyDown = (e: KeyboardEvent) => {
     const inField = isEditableTarget(e.target)
     const combo = combosFromEvent(e).find((c) => byCombo.has(c))
@@ -238,18 +252,27 @@ export function installKeymap(bindings: Binding[]): () => void {
     // The usage log: which key, and what it is for. Before the run, so the log reads in order.
     noteShortcut(combo, binding.description, e.repeat)
     binding.run(e)
+    if (binding.onRelease) held = { code: e.code || e.key, binding }
+  }
+  const onKeyUp = (e: KeyboardEvent) => {
+    if (held && (e.code || e.key) === held.code) release()
   }
   window.addEventListener('pointerdown', onPointerDown, true)
   window.addEventListener('keydown', onAnyKey, true)
   window.addEventListener('focusin', onFocusIn, true)
   window.addEventListener('focusout', onFocusOut, true)
   window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('keyup', onKeyUp)
+  window.addEventListener('blur', release)
   return () => {
+    release()
     window.removeEventListener('pointerdown', onPointerDown, true)
     window.removeEventListener('keydown', onAnyKey, true)
     window.removeEventListener('focusin', onFocusIn, true)
     window.removeEventListener('focusout', onFocusOut, true)
     window.removeEventListener('keydown', onKeyDown)
+    window.removeEventListener('keyup', onKeyUp)
+    window.removeEventListener('blur', release)
   }
 }
 

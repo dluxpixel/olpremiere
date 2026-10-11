@@ -49,6 +49,7 @@ import {
 import { screenshotToMedia } from './state/screenshot'
 import { installPasteListener, pasteKey } from './state/picturePaste'
 import { PastePictureDialog } from './components/PastePictureDialog'
+import { holdBefore, releaseBefore } from './state/compareHold'
 import { pausePlayback, shuttle, toggleLoop, togglePlay } from './state/playbackControl'
 import { clearInOut, gotoIn, gotoOut, markIn, markOut } from './state/workAreaActions'
 import { cutPunchAtPlayhead, punchInAtPlayhead, punchOutAtPlayhead } from './state/motionActions'
@@ -325,6 +326,16 @@ export function buildAppBindings(): Binding[] {
         description: 'Turn the selected clips’ effects off, or back on',
         domain: 'tools',
         run: () => toggleEffectsForClips(store().ui.selection),
+      },
+      // Hold to compare: the picture without its effects for as long as the key is down. A view,
+      // not an edit, so it adds no undo step (state/compareHold.ts). R because a held key
+      // needs a letter nothing else uses, and the letters Czech keyboards swap (Y, Z) are out.
+      {
+        combo: 'r',
+        description: 'Hold to see the picture without effects',
+        domain: 'view',
+        run: holdBefore,
+        onRelease: releaseBefore,
       },
       {
         combo: 'shift+s',

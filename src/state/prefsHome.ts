@@ -32,6 +32,8 @@ export const PREFS_KEYS = [
   'olpremiere:settings:usage-log',
   'olpremiere:settings:safe-margins',
   'olpremiere:export-presets',
+  'olpremiere:settings:app-guides',
+  'olpremiere:settings:app-guides-app',
   'olpremiere:zoomAnchor',
   'olpremiere:moveCurve',
   'olpremiere:snapping',

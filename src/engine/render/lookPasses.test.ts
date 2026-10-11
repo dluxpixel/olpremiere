@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveStack } from '../effects/registry'
 import { layerShapesOf } from '../preview'
 import { defaultTransform, newAdjustmentClip, newSequence, type Clip, type EffectInstance, type Sequence } from '../types'
+import { beforeView, dropIdleAdjustments } from './beforeView'
 import { createRenderer } from './glRenderer'
 import type { LayerShape } from './glRenderer'
 import { resolveFrame } from './resolve'
@@ -356,6 +357,40 @@ describe('a look pass this GPU will not build', () => {
     renderer.render(frameOf(layer([look('lookFilm800T')])), () => source)
     expect(passesDrawn(rec)).toEqual(['bright', 'glow', 'bright', 'glow'])
     expect(warn).not.toHaveBeenCalled()
+    renderer.dispose()
+  })
+})
+
+// The Before picture (render/beforeView.ts): the same footage through no effect passes at all.
+describe('the Before picture', () => {
+  const colour = (rec: Recording) => rec.draws.filter((d) => d.fs.includes('olkCurve_film800T'))
+
+  it('draws the footage plain, with no look colour and no bright or glow pass, where the real frame has them', () => {
+    const seq = sequenceOf([look('lookFilm800T')])
+
+    const real = recordingGl()
+    const realRenderer = createRenderer(real.gl)
+    realRenderer.render(resolveFrame(seq, 1), () => source)
+    expect(colour(real).length).toBeGreaterThan(0)
+    expect(passesDrawn(real)).toEqual(['bright', 'glow', 'bright', 'glow'])
+    realRenderer.dispose()
+
+    const plain = recordingGl()
+    const plainRenderer = createRenderer(plain.gl)
+    plainRenderer.render(dropIdleAdjustments(resolveFrame(beforeView(seq, 'all'), 1)), () => source)
+    expect(colour(plain)).toHaveLength(0)
+    expect(passesDrawn(plain)).toEqual([])
+    expect(canvasWrites(plain)).toBe(1)
+    plainRenderer.dispose()
+  })
+
+  it('draws an adjustment layer carrying a look as nothing at all', () => {
+    const seq = sequenceOf([], [look('lookMoodyGym')])
+    const plain = recordingGl()
+    const renderer = createRenderer(plain.gl)
+    renderer.render(dropIdleAdjustments(resolveFrame(beforeView(seq, 'all'), 1)), () => source)
+    expect(plain.draws.filter((d) => d.fs.includes('olkCurve_moodyGym'))).toHaveLength(0)
+    expect(passesDrawn(plain)).toEqual([])
     renderer.dispose()
   })
 })
