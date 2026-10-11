@@ -10,6 +10,7 @@ import { create } from 'zustand'
 import { reachableBlobKeys } from '../engine/blobGc'
 import { activeSequence, newId, newProject, type Project } from '../engine/types'
 import { nextFreeName } from '../engine/uniqueName'
+import { startFrame, type ProjectStart } from '../components/frameFormats'
 import { sampleFromClips } from '../engine/captions/styleLearning'
 import { rememberProjectStyle } from '../engine/captions/styleStore'
 import { flushOutgoing, forgetTab, guardRoom, neighbourTabs, switchTo } from './editTabs'
@@ -35,8 +36,11 @@ export async function openProject(id: string): Promise<void> {
   await switchTo(id, { announce: true })
 }
 
-/** Start a fresh project in a new tab (the current one autosaves first). */
-export async function createProject(): Promise<void> {
+/**
+ * Start a fresh project in a new tab (the current one autosaves first). `start` is the
+ * shape it opens in: wide as ever, or the phone screen shape for a Shorts project.
+ */
+export async function createProject(start: ProjectStart = 'wide'): Promise<void> {
   if (!guardRoom()) return
   if (!(await flushOutgoing())) return
   // A name no other project has, so its exports and files are told apart
@@ -47,7 +51,7 @@ export async function createProject(): Promise<void> {
   } catch {
     // Unknown names only cost the plain name, never the new project.
   }
-  const p = newProject(nextFreeName('Untitled Project', taken))
+  const p = newProject(nextFreeName('Untitled Project', taken), startFrame(start))
   // A saved track template replaces the stock V1/V2/A1/A2 layout. `p` is
   // still private here, so patching it before it is adopted touches no shared state.
   const seq = activeSequence(p)

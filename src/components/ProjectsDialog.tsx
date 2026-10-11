@@ -1,7 +1,7 @@
 // The Projects picker: every edit lives side by side. Open another one,
 // start fresh, or delete an old one, without ever nuking current work.
 
-import { Archive, ArchiveRestore, Clapperboard, Clock, Copy, Download, FolderOpen, LifeBuoy, Plus, Share, Trash2, Upload, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Clapperboard, Clock, Copy, Download, FolderOpen, LifeBuoy, Plus, Share, Smartphone, Trash2, Upload, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import {
   activeProjects,
@@ -301,16 +301,29 @@ export function ProjectsDialog({ onClose, view = 'active' }: { onClose: () => vo
                 Open the folder
               </Button>
             ) : (
-              <Button
-                variant="secondary"
-                data-testid="project-new"
-                onClick={() => {
-                  void createProject().then(onClose)
-                }}
-              >
-                <Plus size={14} strokeWidth={1.5} />
-                New project
-              </Button>
+              <>
+                <Button
+                  variant="secondary"
+                  data-testid="project-new-shorts"
+                  title="Starts tall, the shape TikTok, Reels and Shorts play. Wide footage fills it by itself."
+                  onClick={() => {
+                    void createProject('shorts').then(onClose)
+                  }}
+                >
+                  <Smartphone size={14} strokeWidth={1.5} />
+                  Shorts project
+                </Button>
+                <Button
+                  variant="secondary"
+                  data-testid="project-new"
+                  onClick={() => {
+                    void createProject().then(onClose)
+                  }}
+                >
+                  <Plus size={14} strokeWidth={1.5} />
+                  New project
+                </Button>
+              </>
             )}
             <IconButton label="Close" onClick={onClose}>
               <X size={16} strokeWidth={1.5} />

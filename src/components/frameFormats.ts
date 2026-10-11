@@ -48,3 +48,17 @@ export function aspectKeyFor(w: number, h: number): string {
   const hit = FORMATS.find((f) => Math.abs(f.w / f.h - a) < 1e-4)
   return hit ? hit.key : CUSTOM_FORMAT_KEY
 }
+
+/** What a new project can start as: the usual wide edit, or one made for a phone's screen. */
+export type ProjectStart = 'wide' | 'shorts'
+
+/**
+ * The frame a new project opens in. A Shorts project is the phone screen shape (FORMATS 'phone'),
+ * which is what TikTok and Reels play and what YouTube Shorts accepts; wide footage dropped into it
+ * fills the tall frame by itself (fitNewClipToFrame), so there is nothing to set up.
+ */
+export function startFrame(start: ProjectStart): { w: number; h: number } {
+  const key = start === 'shorts' ? 'phone' : '16:9'
+  const f = FORMATS.find((x) => x.key === key)!
+  return { w: f.w, h: f.h }
+}

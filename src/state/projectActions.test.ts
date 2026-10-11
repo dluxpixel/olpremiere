@@ -94,6 +94,27 @@ describe('createProject', () => {
     expect(saved.has(before)).toBe(true)
     expect(saved.has(after.id)).toBe(true) // the new one exists immediately
   })
+
+  it('starts wide unless it is asked for a Shorts project', async () => {
+    await createProject()
+    const p = useStore.getState().project
+    const sq = p.sequences[p.activeSequenceId]
+    expect([sq.width, sq.height]).toEqual([1920, 1080])
+    expect([p.settings.width, p.settings.height]).toEqual([1920, 1080])
+  })
+
+  it('a Shorts project starts in the phone shape, in the sequence and in the project settings', async () => {
+    const before = useStore.getState().project.id
+    await createProject('shorts')
+    const p = useStore.getState().project
+    const sq = p.sequences[p.activeSequenceId]
+    expect(p.id).not.toBe(before)
+    expect([sq.width, sq.height]).toEqual([1080, 2112])
+    expect([p.settings.width, p.settings.height]).toEqual([1080, 2112])
+    expect(sq.tracks.map((t) => t.name)).toEqual(['V1', 'V2', 'A1', 'A2'])
+    expect(saved.get(p.id)?.sequences[p.activeSequenceId].height).toBe(2112) // saved in that shape
+    expect(saved.has(before)).toBe(true) // the edit he left is banked as ever
+  })
 })
 
 describe('removeProject', () => {
