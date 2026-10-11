@@ -295,6 +295,10 @@ export function ScrubField({
   const [editing, setEditing] = useState(false)
   const draggingRef = useRef<{ startX: number; startVal: number; moved: boolean } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  // Set by the first key typed after the field opens. The select-all below
+  // waits a frame, and on a busy PC that frame can land after he has started
+  // typing; selecting then would let his next key wipe what he typed.
+  const typedSinceOpenRef = useRef(false)
   // The open edit and its owner. One holder for the life of the field - the
   // props around it change under it, that is the whole point.
   const pendingRef = useRef<PendingEdit | null>(null)
@@ -362,8 +366,12 @@ export function ScrubField({
     // props. Already open (focus, then a double-click) keeps the first owner.
     // A mixed field has no base every clip shares, so whatever is typed lands.
     pending.begin({ onCommit, base: mixed ? Number.NaN : value, normalize })
-    // Select-all so a fresh typed value replaces the old one.
-    requestAnimationFrame(() => inputRef.current?.select())
+    // Select-all so a fresh typed value replaces the old one, unless he has
+    // already typed by the time the frame comes.
+    typedSinceOpenRef.current = false
+    requestAnimationFrame(() => {
+      if (!typedSinceOpenRef.current) inputRef.current?.select()
+    })
   }
 
   const commitTyped = () => {
@@ -393,6 +401,7 @@ export function ScrubField({
         value={text}
         readOnly={!editing}
         onChange={(e) => {
+          typedSinceOpenRef.current = true
           setText(e.target.value)
           pending.type(e.target.value)
         }}

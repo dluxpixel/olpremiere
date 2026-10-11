@@ -181,6 +181,34 @@ describe('Ctrl+S in a field that closes when it is left', () => {
     expect(writes).toEqual([0.25, 0.2])
   })
 
+  it('a frame that comes after he started typing does not select his number away', async () => {
+    // On a busy PC the select-all frame landed after his first keys, so the
+    // next Backspace wiped the whole number (seen in the ship gate 2026-10-11).
+    const frames: FrameRequestCallback[] = []
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      frames.push(cb)
+      return frames.length
+    })
+    try {
+      function Field() {
+        const [v, setV] = useState(0.5)
+        return <ScrubField value={v} spec={SPECS.opacity} testId="opacity" ariaLabel="Opacity" onCommit={setV} />
+      }
+      const user = userEvent.setup()
+      render(<Field />)
+      const field = screen.getByTestId('opacity') as HTMLInputElement
+      await user.tab()
+      await user.clear(field)
+      await user.keyboard('0.25')
+      // The late frame arrives now.
+      for (const cb of frames.splice(0)) cb(0)
+      await user.keyboard('{Backspace}')
+      expect(field.value).toBe('0.2')
+    } finally {
+      raf.mockRestore()
+    }
+  })
+
   it('the playhead time field jumps there and stays open', async () => {
     // Two seconds of captions, so there is somewhere to jump to.
     addCaptionsFromWords(said('one two three four five six seven eight'))
