@@ -7,6 +7,7 @@
 
 import { CLARITY_GRAIN_GLSL, LOOK_COMMON_GLSL, PASS_FLOOR } from '../effects/lookMath'
 import { getEffect, stackSignature } from '../effects/registry'
+import { blurPlan } from './blurPlan'
 import { computeQuad, cropUV, edgeU, quadScale } from './mat'
 import { deriveMotionBlur, quadCentre, quadRadius } from './motionBlur'
 import type { RenderFrame, RenderLayer, RenderOp, ResolvedEffect, TextureSource, TransitionKind } from './types'
@@ -2108,30 +2109,35 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   }
 
   // Separable gaussian on `srcFbo` into a scratch and back; result left in
-  // srcFbo. radiusPx is in OUTPUT px (== seq px since FBO is seq-sized).
+  // srcFbo. radiusPx is in OUTPUT px (== seq px since FBO is seq-sized). A radius
+  // past one pass's reach is drawn as several rounds (blurPlan.ts), so a look's
+  // glow keeps its size against the frame at 4K; up to 64 px it is ONE round,
+  // exactly as it always was.
   function blurFbo(srcFbo: Fbo, scratch: Fbo, radiusPx: number): void {
-    const r = Math.min(radiusPx, MAX_BLUR_PX)
+    const plan = blurPlan(radiusPx)
     gl.useProgram(blurProg)
     bindFull(blurLoc.aPos)
     gl.uniform1i(blurLoc.uTex, 0)
     gl.activeTexture(gl.TEXTURE0)
-
-    // Horizontal: srcFbo -> scratch.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
-    gl.viewport(0, 0, fboW, fboH)
     gl.disable(gl.BLEND)
-    gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
-    gl.uniform2f(blurLoc.uDir, 1 / fboW, 0)
-    gl.uniform1f(blurLoc.uRadius, r)
-    gl.drawArrays(gl.TRIANGLES, 0, 3)
 
-    // Vertical: scratch -> srcFbo.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
-    gl.viewport(0, 0, fboW, fboH)
-    gl.bindTexture(gl.TEXTURE_2D, scratch.tex)
-    gl.uniform2f(blurLoc.uDir, 0, 1 / fboH)
-    gl.uniform1f(blurLoc.uRadius, r)
-    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    for (let round = 0; round < plan.passes; round++) {
+      // Horizontal: srcFbo -> scratch.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, scratch.fb)
+      gl.viewport(0, 0, fboW, fboH)
+      gl.bindTexture(gl.TEXTURE_2D, srcFbo.tex)
+      gl.uniform2f(blurLoc.uDir, 1 / fboW, 0)
+      gl.uniform1f(blurLoc.uRadius, plan.radiusPx)
+      gl.drawArrays(gl.TRIANGLES, 0, 3)
+
+      // Vertical: scratch -> srcFbo.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo.fb)
+      gl.viewport(0, 0, fboW, fboH)
+      gl.bindTexture(gl.TEXTURE_2D, scratch.tex)
+      gl.uniform2f(blurLoc.uDir, 0, 1 / fboH)
+      gl.uniform1f(blurLoc.uRadius, plan.radiusPx)
+      gl.drawArrays(gl.TRIANGLES, 0, 3)
+    }
   }
 
   // Directional smear: the SAME separable-blur program run twice along one
@@ -2264,11 +2270,9 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   /**
    * A look's halation or bloom: bright pass into `extra`, blur it there, screen it
    * back over the layer through `scratch`. Radius arrives as a fraction of the
-   * frame's short side, so the glow keeps its size against the frame up to a short
-   * side of about 1830 px. Past that blurFbo's MAX_BLUR_PX cap (64) clips the
-   * widest ones: on a 2160 short side Golden Hour's bloom wants 76 px and gets 64,
-   * about 15% smaller. Preview and export still agree, because both blur the same
-   * sequence sized FBO; his 1080 x 1920 sequences never reach the cap.
+   * frame's short side, and blurFbo draws any radius (several rounds past 64 px,
+   * blurPlan.ts), so the glow is the same size against the frame at 1080 and at 4K.
+   * Preview and export agree, because both blur the same sequence sized FBO.
    */
   function lookGlowFbo(srcFbo: Fbo, scratch: Fbo, p: Record<string, number>): void {
     const bright = lookBrightPass.get()
