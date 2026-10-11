@@ -138,7 +138,15 @@ const shareOf = (durationS: number, onProgress?: (frac: number) => void) => (s: 
  * it. Same reason as the encoder choice in proxy.ts: a machine with no Vulkan or
  * no QuickSync should not pay a dead spawn per imported clip.
  */
-let masterChoice: { tonemap: ToneMapper; encoder: MasterEncoder } | null = null
+type MasterRung = { tonemap: ToneMapper; encoder: MasterEncoder }
+
+let masterChoice: MasterRung | null = null
+
+/** The one route with no graphics card in it: zscale on the processor, written by software. */
+const FALLBACK_RUNG: MasterRung = { tonemap: 'zscale', encoder: 'software' }
+
+/** Whether a rung leans on the graphics card (Vulkan to tone map, QuickSync to write). */
+const usesCard = (r: MasterRung): boolean => r.tonemap === 'libplacebo' || r.encoder === 'qsv'
 
 /** Forget the remembered rung, so a test can run the ladder from the top. */
 export function resetMasterChoice(): void {
@@ -153,37 +161,70 @@ export function resetMasterChoice(): void {
  * the next rung is the answer. A frame that will not decode half way through is
  * the same frame on every rung, so trying three more would only make him wait
  * four times as long to hear the same thing.
+ *
+ * ⛔ BUT A GRAPHICS CARD CAN GIVE OUT HALF WAY THROUGH A FILE TOO. libplacebo runs
+ * on the card through Vulkan, and QuickSync writes on it: a driver that resets,
+ * or a card that runs out of memory on a long clip, ends the run after its first
+ * frames (or hands back a short file) on a clip that is perfectly fine. So a rung
+ * that leans on the card and fails after it started gets ONE more try, on the
+ * one rung that needs no card at all (FALLBACK_RUNG, zscale written by software).
+ * If the file is the problem that costs one extra try, not three; if the card was
+ * the problem, he gets his master. When even that fails the clip is imported as
+ * it is (prepareSource in src/state/mediaActions.ts).
+ *
+ * `run` is the ffmpeg runner, passed in so a test can script what each try does.
  */
-async function makeSdrMaster(
+export async function makeSdrMaster(
   ffmpegPath: string,
   inPath: string,
   outPath: string,
   streams: SourceStreams,
   onProgress?: (frac: number) => void,
   signal?: AbortSignal,
+  run: typeof runFfmpeg = runFfmpeg,
 ): Promise<void> {
   const plan = remuxPlan(streams)
   const known = masterChoice
   const ladder = known
     ? [known, ...MASTER_LADDER.filter((r) => r.tonemap !== known.tonemap || r.encoder !== known.encoder)]
     : MASTER_LADDER
-  const expected = await sourceFrames(ffmpegPath, inPath, signal)
-  let why = 'the conversion failed'
-  for (const rung of ladder) {
+  const counted = await run(ffmpegPath, frameCountArgs(inPath), { signal })
+  const expected = counted.code === 0 ? counted.frames : 0
+
+  /** One try at one rung: it worked, or why not and whether it got as far as a frame. */
+  const attempt = async (rung: MasterRung): Promise<{ ok: true } | { ok: false; why: string; started: boolean }> => {
     // A stopped run rejects, so it never falls through to the next rung.
-    const out = await runFfmpeg(ffmpegPath, sdrMasterArgs(inPath, outPath, plan, rung.tonemap, rung.encoder), {
+    const out = await run(ffmpegPath, sdrMasterArgs(inPath, outPath, plan, rung.tonemap, rung.encoder), {
       onTime: shareOf(streams.durationS, onProgress),
       signal,
     })
     if (out.code === 0) {
       const lost = framesLost(expected, out.frames)
-      if (lost > 0) throw new Error(`the conversion lost ${lost} of ${expected} frames`)
+      if (lost > 0) return { ok: false, why: `the conversion lost ${lost} of ${expected} frames`, started: true }
+      return { ok: true }
+    }
+    return { ok: false, why: lastLine(out.stderr) || `ffmpeg exited with code ${out.code}`, started: out.frames > 0 }
+  }
+
+  let why = 'the conversion failed'
+  for (const rung of ladder) {
+    const result = await attempt(rung)
+    if (result.ok) {
       if (known !== rung) mainLog('info', `OL Premiere: HDR clips are tone mapped by ${rung.tonemap}, written by ${rung.encoder}`)
       masterChoice = rung
       return
     }
-    why = lastLine(out.stderr) || `ffmpeg exited with code ${out.code}`
-    if (out.frames > 0) throw new Error(why)
+    why = result.why
+    if (result.started) {
+      // The file, or the card. A rung with no card in it can only be the file.
+      if (!usesCard(rung)) throw new Error(why)
+      mainLog('warn', `OL Premiere: ${rung.tonemap} with ${rung.encoder} stopped part way, trying the processor only route:`, why)
+      const retry = await attempt(FALLBACK_RUNG)
+      if (!retry.ok) throw new Error(retry.why)
+      // Not remembered: the card route is still the better one for the next clip.
+      mainLog('info', 'OL Premiere: that HDR clip was tone mapped by zscale, written by software')
+      return
+    }
     mainLog('warn', `OL Premiere: HDR clips cannot use ${rung.tonemap} with ${rung.encoder}:`, why)
   }
   throw new Error(why)
