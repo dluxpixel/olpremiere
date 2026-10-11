@@ -1,0 +1,125 @@
+// @vitest-environment jsdom
+//
+// Hold to compare is a VIEW: the preview draws the picture without its effects while it is held,
+// and the project, the undo stack and the clips never hear about it.
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { previewBeforeActive, previewEpoch, resolveForPreview } from '../engine/preview'
+import { resolveFrame } from '../engine/render/resolve'
+import { recomputeDuration } from '../engine/timeline'
+import { activeSequence, defaultTransform, newProject, type Clip, type EffectInstance } from '../engine/types'
+import { holdBefore, isHoldingBefore, releaseBefore } from './compareHold'
+import { updateActiveSequence, useStore } from './store'
+
+const blur: EffectInstance = { id: 'fx1', type: 'gaussianBlur', params: { blur: 8 }, enabled: true }
+const mk = (id: string): Clip => ({
+  id,
+  assetId: `asset-${id}`,
+  startS: 0,
+  inS: 0,
+  outS: 4,
+  speed: 1,
+  enabled: true,
+  transform: defaultTransform(),
+  opacity: 1,
+  blendMode: 'normal',
+  audioGainDb: 0,
+  fadeInS: 0,
+  fadeOutS: 0,
+  effects: [blur],
+})
+
+/** Clip "a" on the first video track and clip "b" on the second, each with one effect. */
+function seed(): void {
+  updateActiveSequence('seed', (sq) => {
+    const videos = sq.tracks.filter((t) => t.kind === 'video')
+    return recomputeDuration({
+      ...sq,
+      tracks: sq.tracks.map((t) =>
+        t.id === videos[0].id ? { ...t, clips: [mk('a')] } : t.id === videos[1]?.id ? { ...t, clips: [mk('b')] } : t,
+      ),
+    })
+  })
+}
+
+const count = (ops: ReturnType<typeof resolveFrame>['ops']): number =>
+  ops.reduce((n, op) => n + (op.type === 'layer' ? op.layer.effects.length : 0), 0)
+const effectsAt = (tS: number): number =>
+  count(resolveForPreview(activeSequence(useStore.getState().project), tS).ops)
+
+beforeEach(() => {
+  useStore.getState().setProject(newProject())
+  useStore.getState().setUI({ selection: [], playheadS: 1 })
+})
+afterEach(() => releaseBefore())
+
+describe('hold to compare', () => {
+  it('shows the picture without effects while held and the real one after', () => {
+    seed()
+    const real = effectsAt(1)
+    expect(real).toBeGreaterThan(0)
+    holdBefore()
+    expect(isHoldingBefore()).toBe(true)
+    expect(previewBeforeActive()).toBe(true)
+    expect(effectsAt(1)).toBe(0)
+    releaseBefore()
+    expect(previewBeforeActive()).toBe(false)
+    expect(effectsAt(1)).toBe(real)
+  })
+
+  it('bumps the preview epoch on the hold and on the release, so a paused frame redraws', () => {
+    seed()
+    const e0 = previewEpoch()
+    holdBefore()
+    const e1 = previewEpoch()
+    releaseBefore()
+    expect(e1).toBeGreaterThan(e0)
+    expect(previewEpoch()).toBeGreaterThan(e1)
+  })
+
+  it('is safe to call twice: a held key repeats, and letting go twice is harmless', () => {
+    seed()
+    holdBefore()
+    const e = previewEpoch()
+    holdBefore()
+    expect(previewEpoch()).toBe(e)
+    releaseBefore()
+    const e2 = previewEpoch()
+    releaseBefore()
+    expect(previewEpoch()).toBe(e2)
+  })
+
+  it('writes nothing: the project is the same object and the undo stack the same length', () => {
+    seed()
+    const before = useStore.getState()
+    holdBefore()
+    releaseBefore()
+    const after = useStore.getState()
+    expect(after.project).toBe(before.project)
+    expect(after.history.undo.length).toBe(before.history.undo.length)
+    expect(activeSequence(after.project).tracks.flatMap((t) => t.clips).every((c) => c.effects.length === 1)).toBe(true)
+  })
+
+  it('compares only the clips he selected, and every clip when none is selected', () => {
+    seed()
+    useStore.getState().setUI({ selection: ['a'] })
+    holdBefore()
+    expect(effectsAt(1)).toBe(1)
+    releaseBefore()
+    useStore.getState().setUI({ selection: [] })
+    holdBefore()
+    expect(effectsAt(1)).toBe(0)
+  })
+
+  it('does not hold on an empty edit, where there is no picture to compare', () => {
+    holdBefore()
+    expect(isHoldingBefore()).toBe(false)
+    expect(previewBeforeActive()).toBe(false)
+  })
+
+  it('leaves resolveFrame alone: the real frame still has its effects during a hold', () => {
+    seed()
+    holdBefore()
+    expect(count(resolveFrame(activeSequence(useStore.getState().project), 1).ops)).toBeGreaterThan(0)
+  })
+})

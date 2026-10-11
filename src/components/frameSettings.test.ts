@@ -31,6 +31,8 @@ describe('the button says whether anything inside is on', () => {
     expect(frameSettingsActive(seq({ contentAspect: 1 }), false)).toBe(true)
     expect(frameSettingsActive(seq({ blurBackground: true }), false)).toBe(true)
     expect(frameSettingsActive(seq(), true)).toBe(true)
+    expect(frameSettingsActive(seq(), false, true)).toBe(true)
+    expect(frameSettingsActive(seq(), false, false)).toBe(false)
   })
 
   it('counts motion blur being switched OFF as a change, because it defaults ON', () => {
