@@ -54,8 +54,9 @@ export type ProjectStart = 'wide' | 'shorts'
 
 /**
  * The frame a new project opens in. A Shorts project is the phone screen shape (FORMATS 'phone'),
- * which is what TikTok and Reels play and what YouTube Shorts accepts; wide footage dropped into it
- * fills the tall frame by itself (fitNewClipToFrame), so there is nothing to set up.
+ * the tall frame measured on his iPhone's TikTok play area. It makes no claim about YouTube Shorts:
+ * the picker's own '9:16 Shorts' is the YouTube shape. Wide footage dropped into it fills the tall
+ * frame by itself (fitNewClipToFrame), so there is nothing to set up.
  */
 export function startFrame(start: ProjectStart): { w: number; h: number } {
   const key = start === 'shorts' ? 'phone' : '16:9'

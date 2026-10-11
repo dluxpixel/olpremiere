@@ -3,7 +3,8 @@
 //
 // What a person would check, in the order they would check it:
 //   - the Projects window has a "Shorts project" button next to "New project", and the header still
-//     fits its 520 px window with both,
+//     fits its window with both, with the counts "Later (3)" and "Finished (12)" showing too (the
+//     tabs stay on one line and the Close button stays inside the window),
 //   - it opens a tall edit (the Phone shape, 1080 x 2112), and his 16:9 clip, added the way he adds
 //     one, fills it with no black above or below,
 //   - a clip COPIED from a wide edit and pasted into the Shorts project fills it too (the one road
@@ -211,23 +212,65 @@ async function drawnDisc(page: Page): Promise<Disc & { pxW: number; pxH: number 
   return previewDisc(page)
 }
 
+/**
+ * Saves projects straight into storage on the Later and Finished shelves, so the tabs carry counts.
+ * Copies of the open one with their own id, the way e2e/project-delete-keeps-dialog.spec.ts seeds.
+ */
+async function seedShelves(page: Page, shelves: { later: number; finished: number; active: number }): Promise<void> {
+  await page.evaluate(async (shelves) => {
+    const storeMod = '/src/state/store.ts'
+    const persistMod = '/src/state/persistence.ts'
+    const { useStore } = (await import(/* @vite-ignore */ storeMod)) as {
+      useStore: { getState: () => { project: { id: string } } }
+    }
+    const { saveProject } = (await import(/* @vite-ignore */ persistMod)) as {
+      saveProject: (p: unknown) => Promise<void>
+    }
+    const mine = useStore.getState().project
+    await saveProject(mine)
+    const now = Date.now()
+    const put = async (kind: 'later' | 'finished' | 'active', n: number): Promise<void> => {
+      for (let i = 1; i <= n; i++) {
+        const stamp = kind === 'later' ? { laterAt: now - i * 1000 } : kind === 'finished' ? { archivedAt: now - i * 1000 } : {}
+        await saveProject({ ...mine, id: `seed-${kind}-${i}`, name: `${kind} ${i}`, updatedAt: now - i * 1000, ...stamp })
+      }
+    }
+    await put('later', shelves.later)
+    await put('finished', shelves.finished)
+    await put('active', shelves.active)
+  }, shelves)
+}
+
 test('the Projects window has a Shorts project button, and both buttons fit the header', async ({ page }) => {
   await page.goto('/')
   await editorUp(page)
+  // The worst header: both counts showing, and two digits in one of them.
+  await seedShelves(page, { later: 3, finished: 12, active: 2 })
   await page.getByTestId('edit-tabs-add').click()
   const dialog = page.getByTestId('projects-dialog')
   await expect(dialog).toBeVisible()
   const shorts = page.getByTestId('project-new-shorts')
   await expect(shorts).toHaveText('Shorts project')
   await expect(page.getByTestId('project-new')).toHaveText('New project')
+  await expect(page.getByTestId('projects-tab-active')).toHaveText('Working on')
+  await expect(page.getByTestId('projects-tab-later')).toHaveText('Later (3)')
+  await expect(page.getByTestId('projects-tab-archived')).toHaveText('Finished (12)')
 
   // Nothing is pushed past the window's right edge, and nothing wraps or clips inside the header.
   const box = (await dialog.boundingBox())!
+  const close = dialog.getByRole('button', { name: 'Close' })
   for (const id of ['project-new-shorts', 'project-new', 'projects-tab-active', 'projects-tab-later', 'projects-tab-archived']) {
     const b = (await page.getByTestId(id).boundingBox())!
     expect(b.x, `${id} starts inside`).toBeGreaterThanOrEqual(box.x)
     expect(b.x + b.width, `${id} ends inside`).toBeLessThanOrEqual(box.x + box.width + 0.5)
   }
+  // A tab that wraps ("Working on" over two lines) is taller than a single line of 12 px text.
+  for (const id of ['projects-tab-active', 'projects-tab-later', 'projects-tab-archived']) {
+    const b = (await page.getByTestId(id).boundingBox())!
+    expect(b.height, `${id} stays on one line`).toBeLessThan(30)
+  }
+  const closeBox = (await close.boundingBox())!
+  expect(closeBox.x + closeBox.width, 'Close ends inside the window').toBeLessThanOrEqual(box.x + box.width)
   const header = dialog.locator('> div').first()
   const fits = await header.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)
   expect(fits, 'header content fits its width').toBe(true)
@@ -237,6 +280,7 @@ test('the Projects window has a Shorts project button, and both buttons fit the 
   const tabs = (await page.getByTestId('projects-tab-archived').boundingBox())!
   expect(a.x + a.width).toBeLessThanOrEqual(bNew.x)
   expect(tabs.x + tabs.width).toBeLessThanOrEqual(a.x)
+  expect(bNew.x + bNew.width).toBeLessThanOrEqual(closeBox.x)
 })
 
 test('a Shorts project opens tall, and a 16:9 clip added to it fills the frame with a round disc, no band', async ({ page }) => {
