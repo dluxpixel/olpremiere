@@ -106,8 +106,9 @@ export const CAPTION_FONT_STACK = "'Montserrat', 'Arial Black', sans-serif"
 /**
  * The comic display face (Lilita One, SIL OFL), the clean-licensed stand-in for
  * Obelix Pro. It WAS the caption default, on the assumption that the genre used
- * a comic face; the measurement said otherwise. Kept as a normal font choice
- * because saved projects store this stack by value inside every title.
+ * a comic face; the measurement said otherwise for the house look. It IS the
+ * face of the Oveon caption style (2026-10-12), measured off Oveon's own frames.
+ * Saved projects also store this stack by value inside every title, so it stays.
  */
 export const COMIC_STACK = "'Lilita One', 'Arial Black', sans-serif"
 

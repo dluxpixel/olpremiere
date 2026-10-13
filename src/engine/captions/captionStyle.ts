@@ -22,7 +22,7 @@
 // Pure: no store, no DOM, no persistence.
 
 import { applyAppearanceToClip } from '../anim/appearance'
-import { CAPTION_FONT_STACK } from '../render/titleFonts'
+import { CAPTION_FONT_STACK, COMIC_STACK } from '../render/titleFonts'
 import { clipDurationS } from '../timeline'
 import {
   newTitleClip,
@@ -35,6 +35,7 @@ import {
 import {
   AUTO_CAPTION_OPTIONS,
   CAPTION_EMPHASIS_COLORS,
+  CAPTION_POP_DUR_S,
   captionCase,
   chunkWords,
   jettismCaptionDef,
@@ -169,6 +170,41 @@ export const BUILTIN_CAPTION_STYLES: readonly CaptionStyle[] = [
     refHeight: CAPTION_REF_HEIGHT,
     shape: { length: 'fixed', maxWords: 8, charsPerLine: 24, lines: 2, minDurS: 0.7, gapFrames: 2 },
     emphasisColor: DEFAULT_EMPHASIS_COLOR,
+    updatedAt: 0,
+  },
+  {
+    // ItsOveon's captions. His ask, 2026-10-12: *"look at Oveon's font and copy
+    // it exactly"*. Measured off the frames of one of Oveon's own Shorts at
+    // 1080x1920, not guessed: Lilita One (the closest of every free comic face
+    // laid over Oveon's letters), white, a black outline about 12 px wide as it
+    // shows (the raster strokes under the fill, so half of widthPx shows), no
+    // shadow, no box, the letters 218 px tall at 1920 and centred on the frame.
+    // One word at a time, in the case it was said, popping in on the house pop
+    // (the same 0.1 s grow Oveon's frames show) and cut straight out. A long word
+    // is drawn smaller to fit the width, the way Oveon's "Everybody" is.
+    // ⛔ bold is OFF: Lilita has one weight, and asking for 700 draws a smeared
+    // fake bold that Oveon's letters do not have.
+    id: 'builtin-oveon',
+    name: 'Oveon',
+    builtin: true,
+    look: {
+      fontFamily: COMIC_STACK,
+      fontSizePx: 218,
+      bold: false,
+      color: '#ffffff',
+      outline: { color: '#000000', widthPx: 25 },
+      shadow: null,
+      box: null,
+      textCase: null,
+      vAlign: 'middle',
+      offsetYPx: 0,
+      lineHeight: 1.2,
+    },
+    refHeight: CAPTION_REF_HEIGHT,
+    shape: { length: 'fixed', maxWords: 1, charsPerLine: 20, lines: 1, minDurS: AUTO_SHAPE.minDurS, gapFrames: 0 },
+    emphasisColor: DEFAULT_EMPHASIS_COLOR,
+    caseRule: 'spoken',
+    appearance: { in: 'pop', durS: CAPTION_POP_DUR_S },
     updatedAt: 0,
   },
 ]

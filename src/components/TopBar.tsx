@@ -247,7 +247,7 @@ function SaveIndicator() {
   return (
     <span
       data-testid="save-state"
-      className="flex w-[68px] shrink-0 items-center gap-1.5 whitespace-nowrap text-ui-sm text-text-secondary"
+      className="relative flex w-[68px] shrink-0 items-center gap-1.5 whitespace-nowrap text-ui-sm text-text-secondary"
     >
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
       {label}
@@ -280,7 +280,7 @@ function ProjectName() {
     <input
       data-testid="project-name"
       aria-label="Project name"
-      className="h-7 w-52 min-w-0 phone:w-auto phone:flex-1 rounded-field border border-transparent bg-transparent px-2 text-ui font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated focus:border-accent focus:bg-bg-input focus:outline-none"
+      className="relative h-7 w-52 min-w-0 phone:w-auto phone:flex-1 rounded-field border border-transparent bg-transparent px-2 text-ui font-medium text-text-primary transition-colors duration-[120ms] hover:bg-bg-elevated focus:border-accent focus:bg-bg-input focus:outline-none"
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={(e) => commit(isCommitInPlace(e))}
@@ -347,11 +347,23 @@ export function TopBar() {
       // On a phone only what a bus ride needs stays in the bar: the melon, the
       // project's name, projects, undo, redo and export. The rest is the
       // desktop's, hidden here and untouched there.
-      className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-bg-panel px-3 phone:gap-1 phone:px-2"
+      className="relative flex h-12 shrink-0 items-center gap-3 border-b border-border bg-bg-panel px-3 phone:gap-1 phone:px-2"
     >
+      {/* Snow theme only: a street lamp and falling snow behind the bar (index.css,
+          .topbar-sky, display: none in every other theme). Decoration, so it is
+          aria-hidden and takes no clicks. STACKING: this layer is positioned and
+          comes first, so every non-positioned child of the bar below is lifted with
+          `relative` to paint above it. The bar is NOT given a stacking context
+          (no z-index, isolate or transform): its dialogs are fixed z-[80] and its
+          tooltips absolute z-50, and they must keep competing with the whole app. */}
+      <div className="topbar-sky" aria-hidden="true">
+        <div className="topbar-lamp" />
+        <div className="topbar-flakes topbar-flakes-far" />
+        <div className="topbar-flakes topbar-flakes-near" />
+      </div>
       {/* The suite's melon mark, same mascot as the OL Studio DAW. One brand,
           two apps. Name reads OL Premiere: this is the video editor. */}
-      <div className="flex items-center gap-2">
+      <div className="relative flex items-center gap-2">
         <MelonMark size={18} />
         {/* The wordmark and the version share a BASELINE, not a centre. Centring
             two different type sizes by their boxes leaves the smaller one
@@ -363,7 +375,7 @@ export function TopBar() {
           <VersionTag />
         </span>
       </div>
-      <div className="h-4 w-px bg-border phone:hidden" />
+      <div className="relative h-4 w-px bg-border phone:hidden" />
       <ProjectName />
       <IconButton
         label="Projects: switch or start another edit"
@@ -425,7 +437,7 @@ export function TopBar() {
         <FolderOpen size={16} strokeWidth={1.5} />
       </IconButton>
 
-      <div className="ml-auto flex shrink-0 items-center gap-1">
+      <div className="relative ml-auto flex shrink-0 items-center gap-1">
         <IconButton
           label={nextUndo ? `Undo: ${historyLabel(nextUndo)}` : 'Undo'}
           shortcut={comboLabel('mod+z')}

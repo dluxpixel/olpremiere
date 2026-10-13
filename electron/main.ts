@@ -656,7 +656,7 @@ function createWindow(): void {
     ...place.bounds,
     minWidth: 1024,
     minHeight: 680,
-    backgroundColor: '#060709',
+    backgroundColor: '#000000',
     show: false,
     autoHideMenuBar: true,
     // Named apart on the taskbar too, so a window on his screen is never a

@@ -33,6 +33,13 @@ import { defineConfig } from '@playwright/test'
 // no CI behind it. Retrying an unexplained flake turns his only safety net into a reporter, which
 // is the exact failure shape that has already cost him four separate mechanisms. Retries become
 // defensible only once a trace names the mechanism and the mechanism is fixed.
+//
+// 2026-10-12, ONE NARROW EXCEPTION, THE RELEASE SET. His word: "make a system for when we do
+// release new updates. It doesn't take half as long. It doesn't even take a third of that long",
+// and "Let's work around the rules so that we test less also". The `release` project (below)
+// retries a failed test ONCE, alone. A test that passes on its second try is reported as flaky
+// in the ship log (Playwright's own summary names it), so it can still be found and fixed. The
+// full suite (`npm run verify`) still never retries: the rule above stands for it, word for word.
 
 // THE SUITE IS SPLIT INTO PROJECTS, AND WHAT EACH ONE IS FOR (2026-10-06)
 //
@@ -49,6 +56,13 @@ import { defineConfig } from '@playwright/test'
 //         repo and took 3 to 10 minutes. The gate's half is scrub-repaint, on the
 //         repo's own fixture. Run this one by hand on a quiet box:
 //           PowerShell:  $env:OLP_MEASURE='1'; npx playwright test --project=measure
+// release ONLY when OLP_RELEASE is set, and then it is the only project (2026-10-12). `npm run
+//         patch` sets it for its one browser step: boot (the editor mounts), mvp (the core edit
+//         flow) and export, about 90 s of tests against about 26 min for the whole suite. It
+//         retries a failed test once (see the note under "DELIBERATELY NOT ADDED"). Without
+//         OLP_RELEASE the projects above are exactly what they were, so `npm run verify` and a
+//         plain `npx playwright test` run the whole suite and nothing runs twice. The speed
+//         tests (timing) no longer block anything: in the full gate they only warn.
 //
 // ⛔ ONE WORKER FOR EVERYTHING, STILL. The ui half is the candidate for 3 workers (his
 // "4 at once max" rule), but pointer specs do real geometry and that has to be MEASURED
@@ -68,6 +82,8 @@ const TIMING = [
 ]
 const SMOKE = ['boot.spec.ts']
 const MEASURE = ['scrub-cost.spec.ts']
+/** What a release is gated on: the editor mounts, the core edit flow, and export. About 90 s. */
+const RELEASE = ['boot.spec.ts', 'mvp.spec.ts', 'export.spec.ts']
 const glob = (names: string[]): string[] => names.map((n) => `**/e2e/${n}`)
 
 // A timing spec that forgot quietBox would measure on a busy box and blame the app.
@@ -118,12 +134,14 @@ export default defineConfig({
       ],
     },
   },
-  projects: [
-    { name: 'smoke', testMatch: glob(SMOKE) },
-    { name: 'ui', testIgnore: glob([...SMOKE, ...TIMING, ...MEASURE]), dependencies: ['smoke'] },
-    { name: 'timing', testMatch: glob(TIMING), dependencies: ['smoke'] },
-    ...(process.env.OLP_MEASURE ? [{ name: 'measure', testMatch: glob(MEASURE), timeout: 300_000 }] : []),
-  ],
+  projects: process.env.OLP_RELEASE
+    ? [{ name: 'release', testMatch: glob(RELEASE), retries: 1 }]
+    : [
+        { name: 'smoke', testMatch: glob(SMOKE) },
+        { name: 'ui', testIgnore: glob([...SMOKE, ...TIMING, ...MEASURE]), dependencies: ['smoke'] },
+        { name: 'timing', testMatch: glob(TIMING), dependencies: ['smoke'] },
+        ...(process.env.OLP_MEASURE ? [{ name: 'measure', testMatch: glob(MEASURE), timeout: 300_000 }] : []),
+      ],
   webServer: {
     // 5178, NOT 5177. 5177 is his working dev server, and the ad-hoc probes in _verify/ point at
     // it on purpose. The gate gets its own port so it can never adopt his session, reload it, or

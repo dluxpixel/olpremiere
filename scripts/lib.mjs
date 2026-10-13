@@ -306,6 +306,155 @@ export async function runLoggedRetry(cmd, label, log, { tries = 3, baseDelayMs =
   }
 }
 
+// --- the no-browser checks side by side (2026-10-12) --------------------------
+//
+// His word, 2026-10-12: "make a system for when we do release new updates. It doesn't
+// take half as long. It doesn't even take a third of that long." The checks that need no
+// browser ran one after another for 212 s (the unit tests alone 103 of them). They share
+// nothing, so they run as lanes at once, bounded by his limit of four heavy jobs at once.
+
+/**
+ * Run `lanes` AT THE SAME TIME, and the steps inside each lane one after another.
+ *
+ * A lane is an array of `[command, label]` steps. A step that fails ends its lane (the
+ * steps after it depend on it: a desktop build of code that does not typecheck says
+ * nothing), but never the other lanes: every lane is waited for, so one red run names
+ * everything that is red.
+ *
+ * ⛔ A LANE'S OUTPUT IS BUFFERED AND WRITTEN ONCE, when the lane ends, to `out` and to the
+ * ship log (`log`). Four commands writing live into one terminal and one log would
+ * interleave line by line and read as noise, which is the log that has to explain a red
+ * gate. Each block still carries every `▶ label` and `✓ label (N s)` line runLogged
+ * writes. stdout and stderr share one buffer, so a lane reads in the order it happened.
+ *
+ * Resolves, never rejects: `{ ok, failed, lanes }`. `failed` is the label of the first
+ * failing step in LANE ORDER (not in the order they finished, which depends on the
+ * machine), or null. `lanes[i]` is `{ failed, output, secs }`.
+ */
+export async function runLanes(lanes, log, { out = process.stdout } = {}) {
+  const settled = await Promise.allSettled(lanes.map((steps) => runLane(steps, log, out)))
+  const results = settled.map((s) =>
+    s.status === 'fulfilled' ? s.value : { failed: `a check lane crashed: ${s.reason?.message ?? s.reason}`, output: '', secs: 0 },
+  )
+  const first = results.find((r) => r.failed !== null)
+  return { ok: !first, failed: first ? first.failed : null, lanes: results }
+}
+
+async function runLane(steps, log, out) {
+  const t0 = Date.now()
+  const chunks = []
+  // Collected as bytes and decoded once at the end: a multibyte character split across
+  // two reads would otherwise come out as two broken ones.
+  const buffer = { write: (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(String(d))) }
+  let failed = null
+  for (const [cmd, label] of steps) {
+    try {
+      await runLogged(cmd, label, null, { out: buffer, err: buffer })
+    } catch {
+      failed = label
+      break
+    }
+  }
+  const output = Buffer.concat(chunks).toString('utf8')
+  out.write(output)
+  log?.write(output)
+  return { failed, output, secs: Math.round((Date.now() - t0) / 1000) }
+}
+
+// --- the unit tests inside the parallel gate (2026-10-12) ---------------------
+//
+// ⛔ THE FIRST REAL RELEASE GATE FAILED 4 OF 426 UNIT TEST FILES ON A BUSY BOX. Four lanes at
+// once (tsc, eslint, the desktop build, vitest) saturated the machine, and four tests that pass
+// alone went red: two ran past vitest's 5 s limit (captions.test.ts, audioRender.test.ts) and two
+// failed a budget they read off the clock (timeline.test.ts 402.8x against 360, scriptAlign.test.ts
+// 2043 ms against 2000). Their budgets guard real slowdowns, so they are NOT loosened. The fix is
+// where they run:
+//   * Every test in the gate gets 30 s, not 5 s. A unit test is not a timing test, and under a
+//     busy box a 5 s limit only measures the box. vitest.config.ts is untouched for normal runs.
+//     That alone is NOT enough, measured: with only this, 3 of 4 gates still failed on a clock
+//     budget (scriptAlign 2041 to 2205 ms against 2000, timeline 915x against 900).
+//   * The files that assert on a clock leave the parallel lane and run alone, after the other
+//     lanes have finished, on a quiet box. Alone they take about 12 s.
+//   * Workers are NOT capped. Half the cores (--maxWorkers=16) made the unit test lane 10 to 17 s
+//     slower (74 s to 84 and 91 s) and fixed nothing, and a whole vitest run alone at full
+//     workers still failed scriptAlign (2041 ms), so the box has to be quiet, not just bigger.
+// No retry anywhere: a red test is red.
+
+/** Every test in the gate may take this long, tests and hooks alike. */
+export const GATE_TEST_TIMEOUT_MS = 30_000
+
+// Where vitest looks (vitest.config.ts `include`), so a file named here is a file vitest runs.
+const TEST_DIRS = {
+  src: /\.test\.tsx?$/,
+  electron: /\.test\.ts$/,
+  _verify: /\.test\.mjs$/,
+  scripts: /\.test\.mjs$/,
+}
+
+// A test that reads a clock and asserts on it: the ratio helper (perfRatio.ts), or a difference of
+// two clock reads. It over-matches on purpose (a file that only logs a time is run alone for
+// nothing, which costs seconds) because missing one puts a flaky budget back in the busy lane.
+// A line that is only a quoted string is skipped: a test that WRITES a script (lib.test.mjs) is
+// not a test that reads the clock, and running it alone cost 12 s of every ship.
+const CLOCK_ASSERT = /^(?![ \t]*[`'"]).*(?:\bbenchRatio\(|\bperfRatio\b|\b(?:performance\.now|Date\.now)\(\)\s*-\s*[A-Za-z_])/m
+
+// Reads the clock but does not belong alone. Its 3 s limit is a hang check on a real ffmpeg, not a
+// speed budget, and its one flake is the reverse of load: it asserts that a release has already
+// settled the moment release returns, a race that fails when the box is quiet (2 of 12 runs of that
+// file alone, 0 of 10 beside the other lanes). Alone it turned a gate red; in the lane it did not.
+const STAYS_IN_THE_LANE = new Set(['electron/releaseStopsFfmpeg.test.ts'])
+
+/**
+ * The unit test files that assert on the clock, as repo relative paths with forward slashes,
+ * sorted. Read from the files themselves, so a new timing test joins the list by being written.
+ */
+export function timedTestFiles(root = process.cwd()) {
+  const found = []
+  const walk = (dir, pattern) => {
+    for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${e.name}`
+      if (e.isDirectory()) {
+        if (e.name !== 'node_modules') walk(rel, pattern)
+      } else if (pattern.test(e.name) && !STAYS_IN_THE_LANE.has(rel) && CLOCK_ASSERT.test(readFileSync(join(root, rel), 'utf8'))) {
+        found.push(rel)
+      }
+    }
+  }
+  for (const [dir, pattern] of Object.entries(TEST_DIRS)) if (existsSync(join(root, dir))) walk(dir, pattern)
+  return found.sort()
+}
+
+/**
+ * The two vitest commands of the release gate: `main` is the whole suite but the clock files (it
+ * is a lane, side by side with the typechecks, lint and the build), `alone` is just the clock
+ * files (it runs after those lanes, on a quiet box), or null when there are none.
+ */
+export function unitTestPlan({ files = timedTestFiles() } = {}) {
+  const limits = `--testTimeout=${GATE_TEST_TIMEOUT_MS} --hookTimeout=${GATE_TEST_TIMEOUT_MS}`
+  const skip = files.map((f) => ` --exclude ${f}`).join('')
+  return {
+    main: `npx vitest run ${limits}${skip}`,
+    alone: files.length ? `npx vitest run ${limits} ${files.join(' ')}` : null,
+  }
+}
+
+/**
+ * Run `fn` with `env[name]` set to `value`, then put it back exactly as it was (unset
+ * stays unset), even when `fn` throws. A child started with `shell: true` inherits
+ * process.env, so this is how one step gets a variable the steps around it must not.
+ */
+export async function withEnv(name, value, fn, env = process.env) {
+  const had = name in env
+  const before = env[name]
+  env[name] = value
+  try {
+    return await fn()
+  } finally {
+    if (had) env[name] = before
+    else delete env[name]
+  }
+}
+
 /**
  * The GitHub token, from $GH_TOKEN or a gitignored `.env.release` (GH_TOKEN=...).
  * Storing it locally means shipping never needs a token pasted in again. null if none.
@@ -550,10 +699,16 @@ export function fastRefusal(lastTag, tree, cwd = process.cwd()) {
  * gate. Set in a PowerShell terminal it STAYS set for every later command in that
  * window, so a plain `npm run patch` there put scrub-cost back in the gate. The gate
  * answers for what it runs, whatever the shell it was started from still holds.
+ *
+ * ⛔ OLP_RELEASE IS CLEARED TOO (2026-10-12), for the same reason. It narrows the browser
+ * suite to the release set (playwright.config.ts), and left over in a window it would
+ * leave the FULL gate with no `smoke` or `ui` project to run. The release gate sets it
+ * itself, for its one browser step, through `withEnv`.
  */
 export function enterGate(env = process.env) {
   env.OLP_GATE = '1'
   delete env.OLP_MEASURE
+  delete env.OLP_RELEASE
 }
 
 // --- a failed gate keeps its evidence (2026-10-06) ----------------------------

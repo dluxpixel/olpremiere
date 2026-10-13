@@ -39,6 +39,29 @@ test('light mode repaints the app and survives a reload; dark restores', async (
   expect(await ground()).toBe(darkGround)
 })
 
+test('each artistic theme repaints the app and survives a reload; snow also brings the sky', async ({ page }) => {
+  await openSettings(page)
+  const ground = () =>
+    page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="topbar"]')!).backgroundColor)
+  const sky = () => page.evaluate(() => getComputedStyle(document.querySelector('.topbar-sky')!).display)
+  const seen = new Set<string>([await ground()])
+  expect(await sky()).toBe('none')
+
+  for (const name of ['snow', 'graffiti', 'sakura', 'aurora', 'sunset']) {
+    await page.getByTestId(`theme-${name}`).click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', name)
+    seen.add(await ground())
+    // Only snow has the lamp and the falling flakes; the rest keep a plain bar.
+    expect(await sky()).toBe(name === 'snow' ? 'block' : 'none')
+  }
+  // Six different grounds: black plus five themes that each have their own colour.
+  expect(seen.size).toBe(6)
+
+  // Persisted: the last pick comes back after a reload.
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'sunset')
+})
+
 test('settings write through to the real preferences they consolidate', async ({ page }) => {
   await openSettings(page)
 

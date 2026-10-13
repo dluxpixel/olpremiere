@@ -38,13 +38,24 @@ describe('the Effects browser is short', () => {
     }
   })
 
-  it('offers every gym tool he asked for on 2026-10-10', () => {
-    // Film Grain, Sharpen, Motion Blur, and the skin and highlight colour tools
+  it('offers every gym tool he asked for on 2026-10-10, except Sharpen', () => {
+    // Film Grain, Motion Blur, and the skin and highlight colour tools
     // were built and hidden. He said "Yes, show them". Strobe, RGB split and
-    // Cinematic bars are new.
-    for (const type of ['grain', 'sharpen', 'directionalBlur', 'colorWheels', 'whiteBalance', 'strobe', 'rgbSplit', 'cinematicBars']) {
+    // Cinematic bars are new. Sharpen came back with them and left again on
+    // 2026-10-12 (next test).
+    for (const type of ['grain', 'directionalBlur', 'colorWheels', 'whiteBalance', 'strobe', 'rgbSplit', 'cinematicBars']) {
       expect(types(BROWSABLE_EFFECTS)).toContain(type)
     }
+  })
+
+  it('keeps Sharpen off the shelf, but renderable for projects that already carry it', () => {
+    // His words, 2026-10-12: "sharpen is a really bad setting that just makes my
+    // videos look bad quality". The definition and its render pass stay so a saved
+    // project keeps looking the way it did.
+    expect(types(BROWSABLE_EFFECTS)).not.toContain('sharpen')
+    expect(types(TOOL_EFFECTS)).not.toContain('sharpen')
+    expect(getEffect('sharpen')?.hidden).toBe(true)
+    expect(CANONICAL_ORDER as readonly string[]).toContain('sharpen')
   })
 
   it('shows the user facing blur as Motion Blur, and keeps the move derived smear hidden', () => {

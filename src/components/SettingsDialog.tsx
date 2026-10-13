@@ -14,7 +14,16 @@ import {
   setCaptionLanguage,
   type CaptionLanguage,
 } from '../engine/captions/transcribeConfig'
-import { resolvedTheme, setPreviewQuality, setTheme, setUsageLog, useSettings, type PreviewQuality, type ThemeChoice } from '../state/settings'
+import {
+  resolvedTheme,
+  setPreviewQuality,
+  setTheme,
+  setUsageLog,
+  useSettings,
+  type ArtisticTheme,
+  type PreviewQuality,
+  type ThemeChoice,
+} from '../state/settings'
 import { olApi } from '../platform'
 import { saveWebUsageCopy } from '../state/usageStoreWeb'
 import { useStore } from '../state/store'
@@ -62,6 +71,15 @@ const THEMES: { value: ThemeChoice; label: string; Icon: typeof Moon }[] = [
   { value: 'claude', label: 'Claude', Icon: Sparkles },
   { value: 'light', label: 'Light', Icon: Sun },
   { value: 'system', label: 'System', Icon: MonitorIcon },
+]
+
+/** The artistic themes (2026-10-12), each with the two colours of its round swatch. */
+const ARTISTIC: { value: ArtisticTheme; label: string; a: string; b: string }[] = [
+  { value: 'snow', label: 'Snow', a: '#f5f5f7', b: '#2c2c2e' },
+  { value: 'graffiti', label: 'Graffiti', a: '#e3c447', b: '#7fa4b6' },
+  { value: 'sakura', label: 'Sakura', a: '#f6a9c2', b: '#160e12' },
+  { value: 'aurora', label: 'Aurora', a: '#7df3c6', b: '#a08af2' },
+  { value: 'sunset', label: 'Sunset', a: '#ff9f70', b: '#a483ea' },
 ]
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
@@ -156,6 +174,31 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                   }`}
                 >
                   <Icon size={13} strokeWidth={1.75} aria-hidden />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Row>
+          <Row label="Artistic">
+            <div className="flex max-w-[270px] flex-wrap justify-end gap-1">
+              {ARTISTIC.map(({ value, label, a, b }) => (
+                <button
+                  key={value}
+                  type="button"
+                  data-testid={`theme-${value}`}
+                  aria-pressed={theme === value}
+                  onClick={() => setTheme(value)}
+                  className={`flex h-7 items-center gap-1.5 rounded-field px-2 text-ui-sm transition-colors duration-[120ms] ${
+                    theme === value
+                      ? 'bg-accent text-accent-fg'
+                      : 'bg-bg-input text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className="size-3 shrink-0 rounded-full"
+                    style={{ background: `linear-gradient(135deg, ${a} 50%, ${b} 50%)` }}
+                  />
                   {label}
                 </button>
               ))}

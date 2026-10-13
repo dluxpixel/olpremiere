@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { newTitleClip, type Clip, type TitleDef } from '../types'
 import {
   AUTO_CAPTION_OPTIONS,
+  CAPTION_POP_DUR_S,
   captionClips,
   captionHouseCase,
   chunkWords,
@@ -31,6 +32,7 @@ import {
   type CaptionStyle,
 } from './captionStyle'
 import { captionLineWidthPx, captionTextWidthPx } from './captionFit'
+import { COMIC_STACK } from '../render/titleFonts'
 
 const HOUSE = BUILTIN_CAPTION_STYLES[0]!
 
@@ -296,5 +298,48 @@ describe('a caption holds only what fits across the frame', () => {
     // A word that fits keeps the style's size.
     const short = dressCaption(newTitleClip(jettismCaptionDef('diamonds', PHONE.height), 0, 1), YELLOW, PHONE.width, PHONE.height)
     expect(short.title!.fontSizePx).toBe(captionDefFor(YELLOW, 'diamonds', PHONE.height).fontSizePx)
+  })
+})
+
+// The Oveon style, 2026-10-12: his ask was to copy Oveon's captions exactly, and
+// every number below was measured off the frames of one of Oveon's own Shorts.
+describe('the Oveon style', () => {
+  const SHORT = { width: 1080, height: 1920, fps: 30 }
+  const OVEON = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-oveon')!
+  const dressed = (text: string): TitleDef =>
+    dressCaption(newTitleClip(jettismCaptionDef(text, SHORT.height), 0, 1), OVEON, SHORT.width, SHORT.height).title!
+
+  it('is Lilita One, white, a black outline, no shadow or box, centred on the frame', () => {
+    const def = captionDefFor(OVEON, 'more', SHORT.height)
+    expect(def.fontFamily).toBe(COMIC_STACK)
+    expect(def.fontSizePx).toBe(218)
+    // One weight only: 700 would draw a fake bold.
+    expect(def.bold).toBe(false)
+    expect(def.color).toBe('#ffffff')
+    expect(def.outline).toEqual({ color: '#000000', widthPx: 25 })
+    expect(def.shadow).toBeUndefined()
+    expect(def.box).toBeUndefined()
+    expect(def.textCase).toBeUndefined()
+    expect([def.align, def.vAlign, def.offsetYPx]).toEqual(['center', 'middle', 0])
+  })
+
+  it('puts one word in each caption, in the case it was said', () => {
+    const words = said('Everybody is here', 0, 0.3)
+    expect(chunkWords(words, chunkOptionsFor(OVEON.shape, SHORT.fps, captionFitterFor(OVEON, SHORT)))).toHaveLength(3)
+    expect(OVEON.caseRule).toBe('spoken')
+  })
+
+  it('pops in on the house pop and cuts straight out', () => {
+    const clip = dressCaption(newTitleClip(jettismCaptionDef('more', SHORT.height), 0, 1), OVEON, SHORT.width, SHORT.height)
+    expect(clip.appearance).toEqual({ in: 'pop', durS: CAPTION_POP_DUR_S })
+  })
+
+  it('draws a short word at full size and a long one just small enough to fit', () => {
+    expect(dressed('more').fontSizePx).toBe(218)
+    const long = dressed('Everybody')
+    // Lilita's own widths: about 207, where Montserrat's would have shrunk it to about 170.
+    expect(long.fontSizePx).toBeGreaterThan(200)
+    expect(long.fontSizePx).toBeLessThan(218)
+    expect(captionTextWidthPx('Everybody', long.fontSizePx, long.fontFamily)).toBeLessThanOrEqual(captionLineWidthPx(SHORT.width))
   })
 })

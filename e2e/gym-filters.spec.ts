@@ -4,8 +4,8 @@
 // shared renderer from the one pure resolver, so a filter that works in the
 // monitor but not in the file (or the other way round) is a real bug.
 //
-// One export carries all of it: nine clips of the same two seconds, the first left
-// plain as the reference and the other eight each wearing one filter. Every
+// One export carries all of it: eight clips of the same two seconds, the first left
+// plain as the reference and the other seven each wearing one filter. Every
 // reading is "this clip against the plain one at the same moment", off the monitor
 // and then off the file, so the picture itself cancels out.
 //
@@ -278,7 +278,7 @@ function lumaStd(s: Shot, reg: Region): number {
   return Math.sqrt(Math.max(0, sq / Math.max(1, n) - m * m))
 }
 
-/** Mean sideways step in luma: how hard the edges are. Falls when blurred, rises when sharpened. */
+/** Mean sideways step in luma: how hard the edges are. Falls when blurred. */
 function edgeEnergy(s: Shot, reg: Region): number {
   let sum = 0
   let n = 0
@@ -338,7 +338,6 @@ const CASES: Case[] = [
   { type: 'rgbSplit', words: 'rgb split' },
   { type: 'cinematicBars', words: 'cinematic bars' },
   { type: 'grain', words: 'film grain' },
-  { type: 'sharpen', words: 'sharpen' },
   { type: 'directionalBlur', words: 'motion blur' },
   { type: 'colorWheels', words: 'lift gamma gain' },
   { type: 'whiteBalance', words: 'white balance' },
@@ -355,15 +354,15 @@ test('every gym filter shows in the monitor and in the exported file', async ({ 
   await page.getByTestId('media-file-input').setInputFiles(FOOTAGE)
   await expect(page.getByTestId('asset-card')).toBeVisible({ timeout: 15_000 })
 
-  // Nine clips: the plain reference, then one per filter.
-  for (let i = 1; i <= 9; i++) {
+  // Eight clips: the plain reference, then one per filter.
+  for (let i = 1; i <= 8; i++) {
     await page.getByTestId('asset-card').dblclick()
     await expect(page.locator('[data-clip-kind="video"]')).toHaveCount(i)
   }
   await setFormat(page, W, H)
   const fps = await fpsOf(page)
   const clips = await videoClips(page)
-  expect(clips).toHaveLength(9)
+  expect(clips).toHaveLength(8)
   for (let i = 1; i < clips.length; i++) expect(clips[i].startS).toBeGreaterThan(clips[i - 1].startS + 0.5)
 
   // --- Found by name in the Effects tab, applied by double click ------------
@@ -437,7 +436,6 @@ test('every gym filter shows in the monitor and in the exported file', async ({ 
   expect(meanLuma(mon.cinematicBars, BOTTOM), 'bottom bar').toBeLessThan(20)
   expect(Math.abs(meanLuma(mon.cinematicBars, MID) - meanLuma(plainMon, MID)), 'the picture between the bars is untouched').toBeLessThan(8)
   expect(lumaStd(mon.grain, FLAT) - lumaStd(plainMon, FLAT), 'film grain adds noise').toBeGreaterThan(1)
-  expect(edgeEnergy(mon.sharpen, TEXT) / edgeEnergy(plainMon, TEXT), 'sharpen hardens edges').toBeGreaterThan(1.02)
   expect(edgeEnergy(mon.directionalBlur, TEXT) / edgeEnergy(plainMon, TEXT), 'motion blur softens edges').toBeLessThan(0.8)
   expect(meanLuma(mon.colorWheels, FLAT) - meanLuma(plainMon, FLAT), 'Lift / Gamma / Gain lifts the highlights').toBeGreaterThan(4)
   expect(warmth(mon.whiteBalance, FLAT) - warmth(plainMon, FLAT), 'White Balance warms the picture').toBeGreaterThan(8)
@@ -477,7 +475,6 @@ test('every gym filter shows in the monitor and in the exported file', async ({ 
       file: [meanLuma(file.cinematicBars, TOP), meanLuma(file.cinematicBars, BOTTOM), meanLuma(file.cinematicBars, MID)],
     },
     grain: { mon: lumaStd(mon.grain, FLAT) - lumaStd(plainMon, FLAT), file: lumaStd(file.grain, FLAT) - lumaStd(plainFile, FLAT) },
-    sharpen: { mon: edgeEnergy(mon.sharpen, TEXT) / edgeEnergy(plainMon, TEXT), file: edgeEnergy(file.sharpen, TEXT) / edgeEnergy(plainFile, TEXT) },
     motionBlur: { mon: edgeEnergy(mon.directionalBlur, TEXT) / edgeEnergy(plainMon, TEXT), file: edgeEnergy(file.directionalBlur, TEXT) / edgeEnergy(plainFile, TEXT) },
     colorWheels: { mon: meanLuma(mon.colorWheels, FLAT) - meanLuma(plainMon, FLAT), file: meanLuma(file.colorWheels, FLAT) - meanLuma(plainFile, FLAT) },
     whiteBalance: { mon: warmth(mon.whiteBalance, FLAT) - warmth(plainMon, FLAT), file: warmth(file.whiteBalance, FLAT) - warmth(plainFile, FLAT) },
@@ -497,7 +494,6 @@ test('every gym filter shows in the monitor and in the exported file', async ({ 
   expect(meanLuma(file.cinematicBars, BOTTOM), `bottom bar in the file ${why}`).toBeLessThan(25)
   expect(Math.abs(meanLuma(file.cinematicBars, MID) - meanLuma(plainFile, MID)), `bars leave the picture ${why}`).toBeLessThan(10)
   expect(lumaStd(file.grain, FLAT) - lumaStd(plainFile, FLAT), `film grain in the file ${why}`).toBeGreaterThan(0.5)
-  expect(edgeEnergy(file.sharpen, TEXT) / edgeEnergy(plainFile, TEXT), `sharpen in the file ${why}`).toBeGreaterThan(1.02)
   expect(edgeEnergy(file.directionalBlur, TEXT) / edgeEnergy(plainFile, TEXT), `motion blur in the file ${why}`).toBeLessThan(0.8)
   const wheelsFile = meanLuma(file.colorWheels, FLAT) - meanLuma(plainFile, FLAT)
   expect(wheelsFile, `Lift / Gamma / Gain in the file ${why}`).toBeGreaterThan(4)

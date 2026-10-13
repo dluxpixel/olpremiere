@@ -7,10 +7,17 @@ import { create } from 'zustand'
 import type { AppGuideApp } from '../engine/appGuides'
 import { notePrefsChanged } from './prefsSignal'
 
-export type ThemeChoice = 'dark' | 'light' | 'system' | 'claude'
+/**
+ * The artistic themes, added 2026-10-12 on his ask: "make some themes that just look
+ * really beautiful, not professional". All dark, each its own data-theme (index.css).
+ */
+export const ARTISTIC_THEMES = ['snow', 'graffiti', 'sakura', 'aurora', 'sunset'] as const
+export type ArtisticTheme = (typeof ARTISTIC_THEMES)[number]
+
+export type ThemeChoice = 'dark' | 'light' | 'system' | 'claude' | ArtisticTheme
 
 /** The concrete themes that map to a data-theme attribute (dark is the default). */
-export type ResolvedTheme = 'dark' | 'light' | 'claude'
+export type ResolvedTheme = 'dark' | 'light' | 'claude' | ArtisticTheme
 
 /** Preview render scale. 1 = full sequence resolution. */
 export type PreviewQuality = 1 | 0.5 | 0.25
@@ -102,7 +109,8 @@ function write(key: string, value: string | null): void {
 
 function loadTheme(): ThemeChoice {
   const v = read(THEME_KEY)
-  return v === 'light' || v === 'system' || v === 'claude' ? v : 'dark'
+  if (v === 'light' || v === 'system' || v === 'claude') return v
+  return (ARTISTIC_THEMES as readonly string[]).includes(v ?? '') ? (v as ArtisticTheme) : 'dark'
 }
 
 function loadQuality(): PreviewQuality {
@@ -176,9 +184,10 @@ export function resolvedTheme(choice: ThemeChoice): ResolvedTheme {
 }
 
 /**
- * Stamp the resolved theme on <html>. Light and Claude each key off their own
- * data-theme value; dark is the token default, so the attribute is REMOVED
- * rather than set, keeping dark the zero-config baseline.
+ * Stamp the resolved theme on <html>. Light, Claude and the artistic themes each
+ * key off their own data-theme value; dark is the token default, so the attribute
+ * is REMOVED rather than set, keeping dark the zero-config baseline. The artistic
+ * themes are all dark, so color-scheme stays dark for them (index.css :root).
  */
 function applyTheme(choice: ThemeChoice): void {
   if (typeof document === 'undefined') return

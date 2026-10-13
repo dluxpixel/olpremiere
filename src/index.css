@@ -66,25 +66,26 @@
   --radius-clip: 4px;
   --radius-mark: 2px;
 
-  /* Surfaces: cool studio blue grey, darkest to elevated. His call, 2026-09-20:
-     "i dont like the dark theme", then "make it cool studio blue grey".
-     The warm ladder before this (#0f0e0d, #141312, #1b1a18) sat inside a 5%
-     band of lightness with almost no chroma, so the three columns, the monitor
-     bed and the timeline read as one black sheet, worse still on his OLED. These
-     step 13 / 23 / 28 / 33 / 38 / 48 percent (OKLCH, hue 255) so every surface
-     is its own layer, and bg-app stays the darkest thing on screen so the
-     picture sits in a well. Chroma rises with lightness so the tint reads. */
-  --color-bg-app: #060709;
-  --color-bg-panel: #1a1d21;
-  --color-bg-elevated: #26292d;
-  --color-bg-input: #32363b;
-  --color-border: #3e4348;
-  --color-border-strong: #595e65;
+  /* Surfaces: BLACK, darkest to elevated. His call, 2026-10-12: "CHANGE COLOR FROM
+     WEIRD BLUE TO more BLACK (the entire app theme) AND TIMELINE colours as it looks
+     bad". It replaces the cool studio blue grey of 2026-09-20.
+     The lesson from before that still holds: the old warm ladder (#0f0e0d, #141312,
+     #1b1a18) sat inside a 5% band of lightness, so the three columns, the monitor bed
+     and the timeline read as one black sheet, worse still on his OLED. So these step
+     0 / 18 / 23 / 27 / 31 / 41 percent OKLCH lightness, neutral (no hue at all), which
+     keeps every surface its own layer, and bg-app stays the darkest thing on screen
+     (true black) so the picture sits in a well. */
+  --color-bg-app: #000000;
+  --color-bg-panel: #121212;
+  --color-bg-elevated: #1c1c1c;
+  --color-bg-input: #262626;
+  --color-border: #303030;
+  --color-border-strong: #4a4a4a;
 
-  /* Text: cool neutrals on the same hue, AA on every surface up to bg-input. */
-  --color-text-primary: #e8ebf1;
-  --color-text-secondary: #acb2b9;
-  --color-text-muted: #8d939b;
+  /* Text: neutral greys with no tint, AA on every surface up to bg-input. */
+  --color-text-primary: #ededed;
+  --color-text-secondary: #b3b3b3;
+  --color-text-muted: #8f8f8f;
 
   /* Accent: lavender. Primary action, selection ring, active tool, focus.
      Light fill, so text on it is dark (accent-fg), never white. */
@@ -107,22 +108,24 @@
   --color-danger: #ff6155;
   --color-warning: #ffa946;
 
-  /* Timeline clip families: fill + brighter top edge, tuned for the dark
-     ground so none of them fight the lavender selection ring. */
-  --color-clip-video: #2c4a60;
-  --color-clip-video-bd: #4f82ab;
-  --color-clip-audio: #175249;
-  --color-clip-audio-bd: #3b9483;
-  --color-clip-image: #57406a;
-  --color-clip-image-bd: #8a64a8;
+  /* Timeline clip families: fill + brighter top edge. 2026-10-12, "TIMELINE colours as
+     it looks bad": cleaner, brighter families tuned for a black ground, cyan video,
+     green audio, amber picture, magenta titles. None of them fights the lavender
+     selection ring, and the four stay far apart in hue so a track reads at a glance. */
+  --color-clip-video: #0f5560;
+  --color-clip-video-bd: #2fb9c9;
+  --color-clip-audio: #1d5a33;
+  --color-clip-audio-bd: #4cc472;
+  --color-clip-image: #6a4a14;
+  --color-clip-image-bd: #e0a63a;
   /* Titles/captions: magenta, deliberately far from the interface accent so
      the selection ring stays visible on them. */
-  --color-clip-title: #7c3a6c;
-  --color-clip-title-bd: #b357a0;
+  --color-clip-title: #6e2456;
+  --color-clip-title-bd: #e0559f;
 
   /* Overlay-only shadow (menus, toasts, dialogs): soft, on the ground's own
      near-black, never a coloured bloom. Panels never get shadows. */
-  --shadow-pop: 0 12px 32px rgba(3, 5, 9, 0.6), 0 2px 8px rgba(3, 5, 9, 0.4);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 /*
@@ -200,6 +203,297 @@
   --color-warning: #e0894d;
 
   --shadow-pop: 0 12px 32px rgba(8, 6, 4, 0.55), 0 2px 8px rgba(8, 6, 4, 0.35);
+}
+
+/*
+ * ARTISTIC THEMES, added 2026-10-12 on his ask: "make some themes that just look
+ * really beautiful, not professional". Five dark families (color-scheme stays dark),
+ * each a mood rather than a tool: Snow, Graffiti, Sakura, Aurora, Sunset. Each one
+ * sets surfaces, borders, text, the four accent tokens, the pop shadow and all eight
+ * clip tokens, so nothing falls through to the black default by accident. Ember,
+ * teal, success, playhead, danger and warning stay shared: those are signals, not
+ * decoration.
+ */
+
+/*
+ * Snow. The snow look from his other app, L1FE: true black ground, a warm lamp gold
+ * accent, and everything else snow white to grey. The top bar also gets a street
+ * lamp and falling snow (.topbar-sky below, Snow only).
+ */
+:root[data-theme='snow'] {
+  --color-bg-app: #000000;
+  --color-bg-panel: #0f0f0f;
+  --color-bg-elevated: #1a1a1a;
+  --color-bg-input: #242424;
+  --color-border: #2a2a2a;
+  --color-border-strong: #4d4d4d;
+
+  --color-text-primary: #f7f7f8;
+  --color-text-secondary: #b8b8bc;
+  --color-text-muted: #9a9aa0;
+
+  --color-accent: #f3d392;
+  --color-accent-hover: #ecc77a;
+  --color-accent-quiet: rgba(243, 211, 146, 0.14);
+  --color-accent-fg: #1a1408;
+
+  --color-clip-video: #2b2b2e;
+  --color-clip-video-bd: #d9d9de;
+  --color-clip-audio: #23262b;
+  --color-clip-audio-bd: #a9b6c2;
+  --color-clip-image: #3a3222;
+  --color-clip-image-bd: #f3d392;
+  --color-clip-title: #3a2a2a;
+  --color-clip-title-bd: #f0b8a8;
+
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+/*
+ * Graffiti. A warm brown black wall with spray can yellow, and clips in the colours
+ * of the cans.
+ */
+:root[data-theme='graffiti'] {
+  --color-bg-app: #120d0c;
+  --color-bg-panel: #171110;
+  --color-bg-elevated: #201815;
+  --color-bg-input: #2a201c;
+  --color-border: #3a2d27;
+  --color-border-strong: #5a4a40;
+
+  --color-text-primary: #f2ebd8;
+  --color-text-secondary: #cbc1a6;
+  --color-text-muted: #a99f86;
+
+  --color-accent: #e3c447;
+  --color-accent-hover: #d8b733;
+  --color-accent-quiet: rgba(227, 196, 71, 0.16);
+  --color-accent-fg: #1c1606;
+
+  --color-clip-video: #3e2a33;
+  --color-clip-video-bd: #d98fa8;
+  --color-clip-audio: #33452a;
+  --color-clip-audio-bd: #84af65;
+  --color-clip-image: #2f4550;
+  --color-clip-image-bd: #7fa4b6;
+  --color-clip-title: #5a3218;
+  --color-clip-title-bd: #e8874a;
+
+  --shadow-pop: 0 12px 32px rgba(10, 6, 4, 0.7), 0 2px 8px rgba(10, 6, 4, 0.5);
+}
+
+/*
+ * Sakura. Cherry blossom at night: a plum black ground with blossom pink, and
+ * clips in rose, leaf green, apricot and lilac.
+ */
+:root[data-theme='sakura'] {
+  --color-bg-app: #0b0709;
+  --color-bg-panel: #160e12;
+  --color-bg-elevated: #20151a;
+  --color-bg-input: #2b1c23;
+  --color-border: #3a2730;
+  --color-border-strong: #5c4250;
+
+  --color-text-primary: #f8ecf1;
+  --color-text-secondary: #d4bcc6;
+  --color-text-muted: #ad97a1;
+
+  --color-accent: #f6a9c2;
+  --color-accent-hover: #f094b3;
+  --color-accent-quiet: rgba(246, 169, 194, 0.15);
+  --color-accent-fg: #2a0f1a;
+
+  --color-clip-video: #5a2a3f;
+  --color-clip-video-bd: #e07fa3;
+  --color-clip-audio: #2c4636;
+  --color-clip-audio-bd: #86c79c;
+  --color-clip-image: #5c3a2a;
+  --color-clip-image-bd: #eba582;
+  --color-clip-title: #3f2f5c;
+  --color-clip-title-bd: #ad8de0;
+
+  --shadow-pop: 0 12px 32px rgba(8, 3, 6, 0.7), 0 2px 8px rgba(8, 3, 6, 0.5);
+}
+
+/*
+ * Aurora. The northern lights: a deep green black sky, aurora mint for the accent,
+ * and clips in teal, violet, magenta and lime like the bands of light.
+ */
+:root[data-theme='aurora'] {
+  --color-bg-app: #020706;
+  --color-bg-panel: #0a1412;
+  --color-bg-elevated: #111d1a;
+  --color-bg-input: #182824;
+  --color-border: #213530;
+  --color-border-strong: #37524a;
+
+  --color-text-primary: #e8f6f1;
+  --color-text-secondary: #b3cfc6;
+  --color-text-muted: #8fb0a6;
+
+  --color-accent: #7df3c6;
+  --color-accent-hover: #5fe8b5;
+  --color-accent-quiet: rgba(125, 243, 198, 0.14);
+  --color-accent-fg: #04241a;
+
+  --color-clip-video: #0e4a42;
+  --color-clip-video-bd: #3ed8b9;
+  --color-clip-audio: #33285c;
+  --color-clip-audio-bd: #a08af2;
+  --color-clip-image: #55204c;
+  --color-clip-image-bd: #e575c8;
+  --color-clip-title: #3c4f14;
+  --color-clip-title-bd: #b8e05c;
+
+  --shadow-pop: 0 12px 32px rgba(0, 6, 5, 0.7), 0 2px 8px rgba(0, 6, 5, 0.5);
+}
+
+/*
+ * Sunset. Golden hour: a warm ember black ground with a peach accent, and clips in
+ * coral, honey, rose and dusk violet.
+ */
+:root[data-theme='sunset'] {
+  --color-bg-app: #0a0605;
+  --color-bg-panel: #170e0b;
+  --color-bg-elevated: #21140f;
+  --color-bg-input: #2c1b15;
+  --color-border: #3c261d;
+  --color-border-strong: #5e3e31;
+
+  --color-text-primary: #fdeee5;
+  --color-text-secondary: #dbbfb0;
+  --color-text-muted: #b39888;
+
+  --color-accent: #ff9f70;
+  --color-accent-hover: #ff8a55;
+  --color-accent-quiet: rgba(255, 159, 112, 0.15);
+  --color-accent-fg: #2a1106;
+
+  --color-clip-video: #5e2a20;
+  --color-clip-video-bd: #f2835f;
+  --color-clip-audio: #574416;
+  --color-clip-audio-bd: #ebbd4e;
+  --color-clip-image: #571f44;
+  --color-clip-image-bd: #e26cab;
+  --color-clip-title: #392a5c;
+  --color-clip-title-bd: #a483ea;
+
+  --shadow-pop: 0 12px 32px rgba(8, 3, 2, 0.7), 0 2px 8px rgba(8, 3, 2, 0.5);
+}
+
+/*
+ * Snow's top bar: a night street. Two layers of small snow drift down past a lamp
+ * with a warm glow under it. Pure CSS and cheap: no script, no canvas, no frame
+ * loop. Each layer is one tall element carrying a repeating dot tile, and the only
+ * thing that animates is its transform, which stays on the compositor. The tile
+ * height is the distance fallen per loop (--fall), so the loop is seamless. About
+ * 16 s for the far layer and 10 s for the near one. It is decoration only:
+ * aria-hidden in TopBar.tsx, pointer-events: none, behind every control in the bar,
+ * and hidden outright (display: none) in every theme but Snow.
+ */
+.topbar-sky {
+  display: none;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  --flake: var(--color-text-primary);
+}
+:root[data-theme='snow'] .topbar-sky {
+  display: block;
+}
+.topbar-flakes {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: calc(var(--fall) * -1);
+  will-change: transform;
+  animation: topbar-snowfall var(--loop) linear infinite;
+}
+.topbar-flakes-far {
+  --fall: 96px;
+  --loop: 16s;
+  opacity: 0.5;
+  background-size: 120px 96px;
+  background-image:
+    radial-gradient(circle 0.9px at 22px 20px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.2px at 25px 27px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 0.9px at 49px 2px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.2px at 95px 17px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1px at 109px 19px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.1px at 19px 45px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1px at 44px 44px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1px at 50px 56px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.1px at 81px 38px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.2px at 99px 47px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1px at 3px 68px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1px at 43px 67px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1px at 70px 73px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1px at 80px 74px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1px at 113px 74px, var(--flake) 40%, transparent 100%);
+}
+.topbar-flakes-near {
+  --fall: 144px;
+  --loop: 10s;
+  opacity: 0.9;
+  background-size: 160px 144px;
+  background-image:
+    radial-gradient(circle 1.3px at 3px 30px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.4px at 34px 30px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.5px at 66px 6px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.6px at 109px 27px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.2px at 157px 12px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.4px at 20px 58px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.1px at 48px 60px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.3px at 68px 58px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.3px at 117px 49px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.2px at 155px 67px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.5px at 31px 96px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.8px at 49px 78px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.8px at 89px 74px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.4px at 101px 108px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.3px at 140px 92px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.2px at 20px 127px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.9px at 40px 137px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.5px at 91px 119px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.2px at 110px 135px, var(--flake) 40%, transparent 100%),
+    radial-gradient(circle 1.3px at 155px 135px, var(--flake) 40%, transparent 100%);
+}
+@keyframes topbar-snowfall {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(var(--fall));
+  }
+}
+.topbar-lamp {
+  position: absolute;
+  top: 9px;
+  left: 58%;
+  width: 30px;
+  height: 7px;
+  border-radius: var(--radius-mark);
+  background: var(--color-text-primary);
+  box-shadow:
+    0 0 10px 2px var(--color-accent),
+    0 0 46px 14px var(--color-accent-quiet);
+}
+.topbar-lamp::before {
+  content: '';
+  position: absolute;
+  left: -110px;
+  top: 4px;
+  width: 250px;
+  height: 120px;
+  background: radial-gradient(ellipse at 50% 0%, var(--color-accent-quiet), transparent 70%);
+}
+/* Snow stands still when he asks the system for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .topbar-flakes {
+    animation: none;
+  }
 }
 
 /* Numeric readouts (timecode, durations, meters): mono with tabular figures

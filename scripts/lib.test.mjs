@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
   changedBetween,
@@ -14,6 +15,7 @@ import {
   commitExactTree,
   enterGate,
   fastRefusal,
+  GATE_TEST_TIMEOUT_MS,
   keepEvidence,
   manifestsBeyondVersion,
   manifestsMoved,
@@ -28,10 +30,14 @@ import {
   nextVersion,
   planShip,
   releaseWork,
+  runLanes,
   runLoggedRetry,
+  timedTestFiles,
   treeHash,
   treeWith,
+  unitTestPlan,
   versionInTree,
+  withEnv,
 } from './lib.mjs'
 
 // ⛔ EVERY FOLDER THIS FILE MAKES IS REMOVED WHEN IT ENDS (2026-10-08). Each run left
@@ -642,6 +648,341 @@ describe('the gate clears what must not reach it', () => {
     enterGate(env)
     expect(env).toEqual({ OLP_GATE: '1' })
   })
+
+  // 2026-10-12: left over in a window, it would leave the full gate with no smoke or ui project.
+  it('removes OLP_RELEASE, which the release gate sets for its own browser step only', () => {
+    const env = { OLP_RELEASE: '1', OLP_MEASURE: '1', OLP_OTHER: 'kept' }
+    enterGate(env)
+    expect(env).toEqual({ OLP_GATE: '1', OLP_OTHER: 'kept' })
+  })
+})
+
+describe('withEnv', () => {
+  it('sets the variable for the call and puts a previous value back after', async () => {
+    const env = { OLP_RELEASE: 'before' }
+    const seen = await withEnv('OLP_RELEASE', '1', () => env.OLP_RELEASE, env)
+    expect(seen).toBe('1')
+    expect(env.OLP_RELEASE).toBe('before')
+  })
+
+  it('a variable that was not set is not set afterwards', async () => {
+    const env = {}
+    await withEnv('OLP_RELEASE', '1', () => expect(env.OLP_RELEASE).toBe('1'), env)
+    expect('OLP_RELEASE' in env).toBe(false)
+  })
+
+  it('puts it back when the call throws, and the error still gets out', async () => {
+    const env = { OLP_RELEASE: 'before' }
+    await expect(
+      withEnv(
+        'OLP_RELEASE',
+        '1',
+        () => {
+          throw new Error('red')
+        },
+        env,
+      ),
+    ).rejects.toThrow('red')
+    expect(env.OLP_RELEASE).toBe('before')
+  })
+
+  it('a child started inside it sees the variable, and one started after does not', async () => {
+    const child = 'node -e "console.log(\'release=\' + (process.env.OLP_RELEASE ?? \'unset\'))"'
+    const outer = process.env.OLP_RELEASE
+    delete process.env.OLP_RELEASE
+    try {
+      const inside = sink()
+      await withEnv('OLP_RELEASE', '1', () => runLogged(child, 'inside', null, { out: inside, err: sink() }))
+      const after = sink()
+      await runLogged(child, 'after', null, { out: after, err: sink() })
+      expect(inside.said.join('')).toContain('release=1')
+      expect(after.said.join('')).toContain('release=unset')
+    } finally {
+      if (outer !== undefined) process.env.OLP_RELEASE = outer
+    }
+  })
+})
+
+// 2026-10-12, his word: "make a system for when we do release new updates. It doesn't take half as
+// long." The no-browser checks were seven steps one after another for 212 s. They run as lanes at
+// once now, and these are real child processes because what matters is how the lanes react to real
+// exit codes and real streams.
+describe('runLanes', { timeout: 60_000 }, () => {
+  /**
+   * The helper scripts. `meet` writes its own flag, then waits for the other's: it only ever exits 0
+   * when the two are RUNNING AT THE SAME TIME, so lanes run one after another cannot pass it.
+   */
+  const helpers = () => {
+    const dir = scratchDir('olp-lanes-')
+    const write = (name, lines) => {
+      const file = join(dir, name)
+      writeFileSync(file, lines.join('\n'))
+      return file
+    }
+    const wait = [
+      `import { existsSync } from 'node:fs'`,
+      `export const until = async (file, ms = 20000) => {`,
+      `  const t0 = Date.now()`,
+      `  while (!existsSync(file)) {`,
+      `    if (Date.now() - t0 > ms) { console.error('never appeared: ' + file); process.exit(1) }`,
+      `    await new Promise((r) => setTimeout(r, 20))`,
+      `  }`,
+      `}`,
+    ]
+    write('wait.mjs', wait)
+    const meet = write('meet.mjs', [
+      `import { writeFileSync } from 'node:fs'`,
+      `import { until } from './wait.mjs'`,
+      `const [mine, theirs] = process.argv.slice(2)`,
+      `writeFileSync(mine, 'here')`,
+      `await until(theirs)`,
+      `console.log('met')`,
+    ])
+    // Appends a mark to a file, then exits with a code.
+    const mark = write('mark.mjs', [
+      `import { appendFileSync } from 'node:fs'`,
+      `const [file, text, code] = process.argv.slice(2)`,
+      `appendFileSync(file, text)`,
+      `process.exit(Number(code))`,
+    ])
+    // Waits for a file, lingers, then exits with a code.
+    const lateExit = write('late-exit.mjs', [
+      `import { until } from './wait.mjs'`,
+      `const [file, code] = process.argv.slice(2)`,
+      `await until(file)`,
+      `await new Promise((r) => setTimeout(r, 150))`,
+      `process.exit(Number(code))`,
+    ])
+    // Meets the other chatty lane, then prints lines on both streams, slowly, then lingers.
+    const chatty = write('chatty.mjs', [
+      `import { writeFileSync } from 'node:fs'`,
+      `import { until } from './wait.mjs'`,
+      `const [name, mine, theirs, lines, linger] = process.argv.slice(2)`,
+      `writeFileSync(mine, 'here')`,
+      `await until(theirs)`,
+      `for (let k = 0; k < Number(lines); k++) {`,
+      `  (k % 2 ? console.error : console.log)(name + ' line ' + k)`,
+      `  await new Promise((r) => setTimeout(r, 30))`,
+      `}`,
+      `await new Promise((r) => setTimeout(r, Number(linger)))`,
+    ])
+    const f = (name) => join(dir, name)
+    return {
+      dir,
+      f,
+      meet: (mine, theirs) => `node "${meet}" "${f(mine)}" "${f(theirs)}"`,
+      mark: (file, text, code) => `node "${mark}" "${f(file)}" ${text} ${code}`,
+      lateExit: (file, code) => `node "${lateExit}" "${f(file)}" ${code}`,
+      chatty: (name, mine, theirs, lines, linger) => `node "${chatty}" ${name} "${f(mine)}" "${f(theirs)}" ${lines} ${linger}`,
+    }
+  }
+
+  it('runs the lanes at the same time', async () => {
+    const h = helpers()
+    // Each side only finishes once it has seen the other start. One after another, the first
+    // would wait for a lane that never starts, give up after 20 s and fail.
+    const r = await runLanes([[[h.meet('a', 'b'), 'lane a']], [[h.meet('b', 'a'), 'lane b']]], null, { out: sink() })
+    expect(r.ok).toBe(true)
+    expect(r.failed).toBeNull()
+    expect(r.lanes.map((l) => l.failed)).toEqual([null, null])
+  })
+
+  it('runs the steps of a lane in order, and a red step ends its lane', async () => {
+    const h = helpers()
+    const trail = h.f('trail')
+    const out = sink()
+    const r = await runLanes([[[h.mark('trail', 'a', 0), 'step a'], [h.mark('trail', 'b', 2), 'step b'], [h.mark('trail', 'c', 0), 'step c']]], null, { out })
+    expect(readFileSync(trail, 'utf8')).toBe('ab')
+    expect(r.ok).toBe(false)
+    expect(r.failed).toBe('step b')
+    const said = out.said.join('')
+    expect(said).toMatch(/✓ step a \(\d+ s\)/)
+    expect(said).toMatch(/✗ step b exited 2 after \d+ s/)
+    expect(said).not.toContain('step c')
+  })
+
+  it('a red lane does not stop the others, and the first red step in LANE ORDER is named', async () => {
+    const h = helpers()
+    const r = await runLanes(
+      [
+        // Lane 1 is red too, but only after lane 2 has already failed: it finishes last.
+        [[h.lateExit('fast-red-ran', 1), 'slow red']],
+        [[h.mark('fast-red-ran', 'x', 1), 'fast red']],
+        [[h.mark('green-trail', 'a', 0), 'green a'], [h.mark('green-trail', 'b', 0), 'green b']],
+      ],
+      null,
+      { out: sink() },
+    )
+    expect(r.ok).toBe(false)
+    expect(r.failed).toBe('slow red')
+    expect(r.lanes.map((l) => l.failed)).toEqual(['slow red', 'fast red', null])
+    expect(readFileSync(h.f('green-trail'), 'utf8')).toBe('ab')
+  })
+
+  it('writes each lane as ONE block when it ends, never interleaved, to the screen and the log', async () => {
+    const h = helpers()
+    const out = sink()
+    const log = sink()
+    // Both talk at the same time on both streams. beta stops first; alpha lingers.
+    const r = await runLanes(
+      [
+        [[h.chatty('alpha', 'al', 'be', 6, 1500), 'alpha step']],
+        [[h.chatty('beta', 'be', 'al', 6, 0), 'beta step']],
+      ],
+      log,
+      { out },
+    )
+    expect(r.ok).toBe(true)
+    expect(out.said).toHaveLength(2)
+    const [first, second] = out.said
+    // The lane that ended first is written first.
+    expect(first).toContain('beta step')
+    expect(second).toContain('alpha step')
+    for (const [block, own, other] of [
+      [first, 'beta', 'alpha'],
+      [second, 'alpha', 'beta'],
+    ]) {
+      for (let k = 0; k < 6; k++) expect(block).toContain(`${own} line ${k}`)
+      expect(block).not.toContain(other)
+      expect(block).toMatch(new RegExp(`▶ ${own} step`))
+      expect(block).toMatch(new RegExp(`✓ ${own} step \\(\\d+ s\\)`))
+    }
+    // The ship log gets the same two blocks.
+    expect(log.said).toEqual(out.said)
+    expect(r.lanes.map((l) => l.output)).toEqual([second, first])
+  })
+
+  it('a lane that fails writes its red line into its block and the log', async () => {
+    const h = helpers()
+    const log = sink()
+    const r = await runLanes([[[h.mark('t', 'a', 3), 'red lane']]], log, { out: sink() })
+    expect(r.failed).toBe('red lane')
+    expect(log.said.join('')).toMatch(/✗ red lane exited 3 after \d+ s/)
+  })
+})
+
+// 2026-10-12: the first real release gate failed 4 of 426 unit test files, all of them tests that pass
+// alone. Two ran past vitest's 5 s limit and two failed a budget they read off the clock. The gate now
+// gives every test 30 s and runs the clock files alone, on a quiet box, after the parallel lanes.
+//
+// The fixture lines below each start with a quote on purpose: timedTestFiles skips a line that is only
+// a string, or this very file would be found as a clock test and run alone (12 s of every ship).
+describe('the unit tests inside the parallel gate', () => {
+  /** A repo shaped like this one, with a file for each way a test can or cannot read the clock. */
+  const fixtureRoot = () => {
+    const root = scratchDir('olp-clock-')
+    const put = (rel, lines) => {
+      const file = join(root, rel)
+      mkdirSync(join(file, '..'), { recursive: true })
+      writeFileSync(file, lines.join('\n'))
+    }
+    put('src/ratio.test.ts', [
+      "import { benchRatio } from './perfRatio'",
+      'it("is quick", () => { benchRatio(() => 1, 1, 5) })',
+    ])
+    put('src/stopwatch.test.tsx', [
+      'const t0 = performance.now()',
+      'const ms = performance.now() - t0',
+    ])
+    put('electron/wall.test.ts', [
+      'const t0 = Date.now()',
+      'expect(Date.now() - t0).toBeLessThan(3000)',
+    ])
+    put('scripts/helper-user.test.mjs', [
+      "import { x } from '../src/engine/perfRatio'",
+    ])
+    // Reads the clock but never subtracts two reads: not a budget.
+    put('src/quiet.test.ts', [
+      'const stamp = Date.now() + 5',
+      'const old = new Date(Date.now() - 400 * DAY)',
+    ])
+    // Writes a script that has a stopwatch in it, the way lib.test.mjs does: a string, not a read.
+    put('src/writer.test.ts', [
+      'write([',
+      "  `if (Date.now() - t0 > ms) { process.exit(1) }`,",
+      "  'benchRatio(() => 1)',",
+      '])',
+    ])
+    // Reads the clock, but is named as one that stays in the busy lane (its flake is a race, not load).
+    put('electron/releaseStopsFfmpeg.test.ts', [
+      'expect(Date.now() - t0).toBeLessThan(3000)',
+    ])
+    // Not tests, not where vitest looks, or someone else's.
+    put('src/ratio.ts', [
+      'export function benchRatio() {}',
+      'const ms = performance.now() - t0',
+    ])
+    put('src/node_modules/dep/dep.test.ts', [
+      'benchRatio(() => 1)',
+    ])
+    put('_verify/wrong-extension.test.ts', [
+      'benchRatio(() => 1)',
+    ])
+    return root
+  }
+
+  it('finds the test files that assert on a clock, sorted, and only those', () => {
+    expect(timedTestFiles(fixtureRoot())).toEqual([
+      'electron/wall.test.ts',
+      'scripts/helper-user.test.mjs',
+      'src/ratio.test.ts',
+      'src/stopwatch.test.tsx',
+    ])
+  })
+
+  it('finds the clock tests this repo has today, and not the test that only writes one', () => {
+    const found = timedTestFiles(fileURLToPath(new URL('..', import.meta.url)))
+    for (const f of [
+      'src/engine/captions/scriptAlign.test.ts',
+      'src/engine/timeline.test.ts',
+      'src/engine/perfGuard.test.ts',
+      'src/state/captionActions.test.ts',
+      'src/state/clipboardPair.test.ts',
+    ]) {
+      expect(found, f).toContain(f)
+    }
+    expect(found).not.toContain('scripts/lib.test.mjs')
+    // Flaky when run alone on a quiet box, fine beside the other lanes: it stays in the lane.
+    expect(found).not.toContain('electron/releaseStopsFfmpeg.test.ts')
+  })
+
+  it('gives every test and hook 30 s in the gate, on the lane and on the clock files alike', () => {
+    expect(GATE_TEST_TIMEOUT_MS).toBe(30_000)
+    const plan = unitTestPlan({ files: ['src/a.test.ts', 'src/b.test.ts'] })
+    for (const cmd of [plan.main, plan.alone]) {
+      expect(cmd).toMatch(/^npx vitest run /)
+      expect(cmd).toContain(`--testTimeout=${GATE_TEST_TIMEOUT_MS}`)
+      expect(cmd).toContain(`--hookTimeout=${GATE_TEST_TIMEOUT_MS}`)
+    }
+  })
+
+  it('takes the clock files out of the lane and runs exactly those alone', () => {
+    const files = ['electron/wall.test.ts', 'src/ratio.test.ts']
+    const plan = unitTestPlan({ files })
+    expect(plan.main.match(/--exclude \S+/g)).toEqual(files.map((f) => `--exclude ${f}`))
+    expect(plan.alone.split(' ').filter((w) => w.endsWith('.test.ts'))).toEqual(files)
+    expect(plan.alone).not.toContain('--exclude')
+  })
+
+  it('has no alone step when no test asserts on a clock, and the lane then excludes nothing', () => {
+    const plan = unitTestPlan({ files: [] })
+    expect(plan.alone).toBeNull()
+    expect(plan.main).not.toContain('--exclude')
+  })
+
+  it('never retries and never caps the workers (a retry hides a red test; the cap was slower)', () => {
+    const plan = unitTestPlan()
+    for (const cmd of [plan.main, plan.alone]) {
+      expect(cmd).not.toMatch(/--retry/)
+      expect(cmd).not.toMatch(/--maxWorkers|--poolOptions/)
+    }
+  })
+
+  it('stays well under the 8191 character limit of a Windows command line', () => {
+    const plan = unitTestPlan()
+    expect(plan.main.length).toBeLessThan(6000)
+    expect(plan.alone.length).toBeLessThan(6000)
+  })
 })
 
 // The three above only help if the script calls them. patch.mjs runs for 25 minutes inside
@@ -671,6 +1012,90 @@ describe('patch.mjs is wired to them', () => {
     expect(code).toMatch(/versionInTree\(gatedTree\)/)
     expect(code).toMatch(/manifestsBeyondVersion\(gatedTree, version\)/)
     expect(code).not.toMatch(/const current = JSON\.parse\(readFileSync/)
+  })
+})
+
+// The lanes, the two gates and the stamp only help if patch.mjs does what they say. It runs for
+// minutes inside a ship, so the wiring is read from its source, comments left out.
+describe('patch.mjs runs two gates (2026-10-12)', () => {
+  const src = readFileSync(new URL('./patch.mjs', import.meta.url), 'utf8')
+  const code = src
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n')
+
+  it('npm run verify is the full gate and a plain ship is the release gate', () => {
+    expect(code).toMatch(/const verifyOnly = args\.includes\('--verify'\)/)
+    expect(code).toMatch(/const fullGate = verifyOnly\b/)
+  })
+
+  it('runs the checks that need no browser as four lanes at once, the electron ones in order', () => {
+    expect(code).toMatch(/await runLanes\(lanes, shipLog\)/)
+    expect(code).toMatch(/if \(!checked\.ok\) fail\(checked\.failed\)/)
+    for (const cmd of ['npx tsc --noEmit', 'npx eslint .']) {
+      expect(code).toContain(`[['${cmd}',`)
+    }
+    // The unit test lane is the plan's `main` command (every file but the clock ones), never a bare
+    // `npx vitest run` with the 5 s default that failed the first real release gate (2026-10-12).
+    expect(code).toContain('[[units.main,')
+    expect(code).toMatch(/const units = unitTestPlan\(\)/)
+    expect(code).not.toMatch(/npx vitest/)
+    expect(code).toMatch(
+      /\['npx tsc -p tsconfig\.electron\.json --noEmit', '[^']+'\],\s*\['npx electron-vite build', '[^']+'\],\s*\['node scripts\/check-self-contained\.mjs', '[^']+'\],?\s*\],\s*\]/,
+    )
+  })
+
+  it('runs the clock tests alone once the lanes passed, and before the web build and the browser', () => {
+    const lanesAt = code.indexOf('if (!checked.ok) fail(checked.failed)')
+    const aloneAt = code.indexOf('if (units.alone) {')
+    expect(lanesAt).toBeGreaterThan(-1)
+    expect(aloneAt).toBeGreaterThan(lanesAt)
+    expect(aloneAt).toBeLessThan(code.indexOf('npx vite build'))
+    expect(code).toMatch(/if \(units\.alone\) \{\s*try \{\s*await run\(units\.alone, '[^']+'\)\s*\} catch \{\s*(?:\/\/[^\n]*\s*)?await new Promise\(\(resolve\) => \(shipLog \? shipLog\.write\('', resolve\) : resolve\(\)\)\)\s*fail\('[^']+'\)/)
+  })
+
+  it('builds the web bundle in the full gate only', () => {
+    expect(code.match(/npx vite build/g)).toHaveLength(1)
+    expect(code).toMatch(/if \(fullGate\) \{\s*try \{\s*await run\('npx vite build', 'web build'\)/)
+  })
+
+  it('the release gate runs the release set with OLP_RELEASE set for that one step only', () => {
+    expect(code).toMatch(/withEnv\('OLP_RELEASE', '1', \(\) => blockingBrowserRun\('npx playwright test', /)
+    expect(code).not.toMatch(/process\.env\.OLP_RELEASE\s*=/)
+  })
+
+  it('playwright.config.ts: the release project retries once, and the full suite never retries', () => {
+    // Comment lines are left out: the file's own notes say "never retries:" and would be counted.
+    const cfg = readFileSync(new URL('../playwright.config.ts', import.meta.url), 'utf8')
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//'))
+      .join('\n')
+    // The release project is wired: only when OLP_RELEASE is set, alone, with one retry.
+    expect(cfg).toMatch(/projects: process\.env\.OLP_RELEASE\s*\?\s*\[\{ name: 'release', testMatch: glob\(RELEASE\), retries: 1 \}\]/)
+    // What a release is gated on.
+    expect(cfg).toMatch(/const RELEASE = \['boot\.spec\.ts', 'mvp\.spec\.ts', 'export\.spec\.ts'\]/)
+    // That is the only `retries:` in the file, so no other project and no top level setting retries.
+    expect(cfg.match(/retries:/g)).toHaveLength(1)
+  })
+
+  it('the full gate blocks on smoke and ui, and only warns about the speed tests', () => {
+    expect(code).toMatch(/blockingBrowserRun\('npx playwright test --project=smoke --project=ui', /)
+    expect(code).toMatch(/try \{\s*await run\('npx playwright test --project=timing', '[^']*'\)\s*\} catch \{\s*tell\(/)
+  })
+
+  it('a red blocking browser run keeps its evidence in both gates', () => {
+    expect(code.match(/keepEvidence\(/g)).toHaveLength(1)
+    expect(code).toMatch(/const blockingBrowserRun = async \(cmd, label\) => \{/)
+  })
+
+  it('only the full gate stamps', () => {
+    expect(code.match(/\bwriteStamp\(/g)).toHaveLength(1)
+    expect(code).toMatch(/if \(fullGate && !fast\) writeStamp\(tree\)/)
+  })
+
+  it('lowers its own priority before it starts anything', () => {
+    expect(code).toContain('setPriority(constants.priority.PRIORITY_BELOW_NORMAL)')
+    expect(code.indexOf('setPriority(')).toBeLessThan(code.indexOf('openShipLog('))
   })
 })
 

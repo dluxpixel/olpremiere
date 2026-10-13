@@ -115,7 +115,7 @@ test('the Captions tab offers the caption style picker', async ({ page }) => {
   // The measured house style is the default, and the others are there.
   await expect(page.getByTestId('captions-default-style')).toHaveValue('house')
   const opts = await page.getByTestId('captions-default-style').locator('option').allTextContents()
-  expect(opts).toEqual(expect.arrayContaining(['House style', 'Yellow punch', 'Subtitles']))
+  expect(opts).toEqual(expect.arrayContaining(['House style', 'Yellow punch', 'Subtitles', 'Oveon']))
 })
 
 test('lowercase toggle is mirrored in the timeline clip label (B3)', async ({ page }) => {

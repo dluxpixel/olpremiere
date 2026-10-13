@@ -448,9 +448,14 @@ export const EFFECTS: EffectDef[] = [
     `,
   },
   {
-    // ON THE SHELF AGAIN, 2026-10-10 (gym filters). Hidden on 2026-07-29 only to
-    // shorten the list, never for a bug.
+    // OFF THE SHELF, 2026-10-12, his words: "sharpen is a really bad setting that
+    // just makes my videos look bad quality". It was on the shelf from 2026-10-10
+    // (gym filters). The definition stays, and so does its render pass, only so a
+    // project that already carries Sharpen keeps rendering and editing as it did.
+    // Nothing offers it any more: not the Effects browser, not the Add effect menu,
+    // not the Recent row (state/recentEffects.ts).
     type: 'sharpen',
+    hidden: true,
     label: 'Sharpen',
     description: 'Unsharp-mask detail boost. Radius sets the detail scale.',
     category: 'stylize',

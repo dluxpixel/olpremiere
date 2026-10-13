@@ -15,19 +15,43 @@
 //      after the push is what keeps the tagged source equal to the shipped build;
 //      doing it the other way round left two releases tagged one commit early.
 //
-// Skip the slow half with --fast for a docs-only change. It still typechecks,
-// lints and unit tests; it just does not drive a browser. It REFUSES a release
-// that carries anything but Markdown or docs/ (see FAST_MARK in lib.mjs for the
-// four feature releases it shipped untested), and the ones it allows say
-// "E2E SKIPPED (--fast)" in the commit and on the GitHub release.
+// TWO GATES, since 2026-10-12. His words: "make a system for when we do release new
+// updates. It doesn't take half as long. It doesn't even take a third of that long.
+// Let's somehow make it so that when it does release, it's way, way, way faster, not
+// just like how it used to be. Let's work around the rules so that we test less also".
+// And on 2026-10-11, about the timing specs: "I don't give a fuck about the speed tests".
 //
-// `npm run verify` (--verify) runs the gate alone and stamps the tree it passed
-// on. A ship of that exact tree then skips straight to publishing, and a ship
-// that died after its gate (a dropped push, a failed upload) picks up where it
-// stopped. See planShip in lib.mjs for why, measured.
+// Measured from the last gate log (2026-10-11), about 40 minutes start to finish:
+//   the checks that need no browser, one after another   212 s
+//     (typecheck renderer 22, typecheck electron 4, lint 28, unit tests 103,
+//      web build 32, desktop build 23, self-contained 0)
+//   the browser suite, every spec, 1 worker                about 26 min of tests, 38 with overhead
+//   the release (rebuild, package, upload)                 157 s
+// The target is about 7 minutes, and these are the three cuts:
+//   * `npm run patch` runs the RELEASE gate: the checks that need no browser as four
+//     lanes at once (runLanes in lib.mjs), the web build left out because
+//     electron-vite build already compiles the same renderer, and a browser suite of
+//     only boot, mvp and export (about 90 s, the `release` project in
+//     playwright.config.ts, which retries a failed test once and reports the flaky ones).
+//   * `npm run verify` (--verify) runs the FULL gate, as it always did: the lanes, then
+//     the web build, then every spec except the speed tests (smoke, ui, one worker, no
+//     retries), then the speed tests (timing) as a WARNING that blocks nothing.
+//   * Only the full gate stamps. The stamp means every check passed, and a release gate
+//     did not run every check. A tree stamped by verify still goes straight to
+//     publishing in `npm run patch`, as before. See planShip in lib.mjs for why, measured.
+//
+// Skip the browser with --fast for a docs-only change. It still typechecks, lints and
+// unit tests; it just does not drive a browser. It REFUSES a release that carries
+// anything but Markdown or docs/ (see FAST_MARK in lib.mjs for the four feature
+// releases it shipped untested), and the ones it allows say "E2E SKIPPED (--fast)" in
+// the commit and on the GitHub release.
+//
+// A ship that died after its gate (a dropped push, a failed upload) picks up where it
+// stopped, without gating again.
 
 import { execFileSync, execSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { constants, setPriority } from 'node:os'
 import { join } from 'node:path'
 import {
   changedBetween,
@@ -44,16 +68,29 @@ import {
   nextVersion,
   openShipLog,
   planShip,
+  runLanes,
   runLogged,
   SHIP_LOG,
   treeHash,
   treeWith,
+  unitTestPlan,
   versionInTree,
+  withEnv,
 } from './lib.mjs'
+
+// His PC must never lag while a ship runs. Every check this script starts inherits this
+// priority on Windows, so four lanes and a browser do not take the machine from him.
+try {
+  setPriority(constants.priority.PRIORITY_BELOW_NORMAL)
+} catch {
+  // A priority that cannot be lowered is not a reason to stop a release.
+}
 
 const args = process.argv.slice(2)
 const fast = args.includes('--fast')
 const verifyOnly = args.includes('--verify')
+// `npm run verify` is the FULL gate and `npm run patch` the RELEASE gate (see the header).
+const fullGate = verifyOnly
 // ⛔ EVERY FLAG COMES OUT OF THE MESSAGE. `--fast` was filtered and `--fix` was
 // not when it was added, which would have put the word "--fix" in the middle of
 // a release commit and in the GitHub release body.
@@ -71,6 +108,11 @@ if (!message && !verifyOnly) {
 // that cost.
 const shipLog = openShipLog(`ship: ${new Date().toISOString()}`)
 const run = (cmd, label) => runLogged(cmd, label, shipLog)
+// A plain line, on screen and in the ship log.
+const tell = (say) => {
+  process.stdout.write(say)
+  shipLog?.write(say)
+}
 
 /**
  * ⛔ A RELEASE THAT MAY ALREADY BE LIVE (lib.mjs MAY_BE_LIVE) is not "did not publish",
@@ -109,8 +151,10 @@ const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new
 // this file may hash the tree for a verdict at the start of a run.
 const startTree = treeHash()
 
-// The gate, in one place, for a ship and for --verify alike. Only a FULL gate
-// stamps: --fast skipped the browser, so it proved less than a stamp promises.
+// The gate, in one place, for a ship and for --verify alike. There are two (see the header):
+// `fullGate` (--verify) is every check, and the release gate (a plain ship) is the lanes and
+// a browser suite of boot, mvp and export. Only a FULL gate without --fast stamps: the
+// release gate and --fast both skipped something, so they proved less than a stamp promises.
 //
 // Returns the tree it checked, which is the ONLY tree a ship may commit.
 //
@@ -133,37 +177,73 @@ const gate = async (tree) => {
   // put scrub-cost back in the gate (see enterGate in lib.mjs).
   enterGate()
 
-  // 1. THE CHECKS THAT NEED NO BROWSER, one after another, as before. Running them
-  // side by side would save about a minute, and it would put seven heavy jobs on
-  // his machine at once, past his limit of four at once (his PC must never lag).
+  // 1. THE CHECKS THAT NEED NO BROWSER, as FOUR LANES AT ONCE (2026-10-12; they ran one
+  // after another for 212 s). Four is his limit of heavy jobs at once, so his PC does not
+  // lag, and this process runs below normal priority on top of that. Each lane is a line
+  // of steps that depend on each other; the lanes share nothing:
+  //   1. the renderer typecheck
+  //   2. lint
+  //   3. the unit tests (103 s alone, so this lane sets the time of the whole step), every
+  //      test file but the ones that assert on the clock (see unitTestPlan in lib.mjs)
+  //   4. the electron typecheck, then the desktop build, then the self-contained check
+  // Every lane is waited for, then the first failing step in lane order names the failure.
+  // Each lane's output is written as one block when it ends (see runLanes in lib.mjs).
+  //
+  // ⛔ 2026-10-12: THE FIRST REAL RELEASE GATE FAILED 4 OF 426 TEST FILES UNDER THESE LANES, on
+  // 5 s timeouts and on clock budgets (timeline.test.ts, scriptAlign.test.ts). Every test now gets
+  // 30 s in the gate, and the files that assert on the clock run alone in step 1b below, on a
+  // quiet box. Measured in lib.mjs. No retry: a red test is red.
   //
   // ⛔ THE DESKTOP BUNDLE IS BUILT HERE NOW, not first after the push. The gate used
   // to build only the web bundle, so a main process bundling error, or a new
   // dependency main reaches for (what check-self-contained exists to catch), failed
   // in release.mjs after the version was already public. The release still rebuilds
   // after the bump, because the version is baked in.
-  const checks = [
-    ['npx tsc --noEmit', 'typecheck (renderer)'],
-    ['npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)'],
-    ['npx eslint .', 'lint'],
-    ['npx vitest run', 'unit tests'],
-    ['npx vite build', 'web build'],
-    ['npx electron-vite build', 'desktop build'],
-    ['node scripts/check-self-contained.mjs', 'the desktop bundle needs no node_modules'],
+  const units = unitTestPlan()
+  const lanes = [
+    [['npx tsc --noEmit', 'typecheck (renderer)']],
+    [['npx eslint .', 'lint']],
+    [[units.main, 'unit tests']],
+    [
+      ['npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)'],
+      ['npx electron-vite build', 'desktop build'],
+      ['node scripts/check-self-contained.mjs', 'the desktop bundle needs no node_modules'],
+    ],
   ]
-  for (const [cmd, label] of checks) {
+  tell(`\n▶ the ${fullGate ? 'FULL' : 'RELEASE'} gate: ${lanes.length} lanes of checks at once, each one shown when it ends\n`)
+  const checked = await runLanes(lanes, shipLog)
+  // process.exit in fail() drops pending stream writes, so the red lane's block would be lost from the ship log.
+  await new Promise((resolve) => (shipLog ? shipLog.write('', resolve) : resolve()))
+  if (!checked.ok) fail(checked.failed)
+
+  // 1b. THE UNIT TESTS THAT ASSERT ON THE CLOCK, ALONE (2026-10-12), now that the other lanes
+  // are done and the box is quiet. About 12 s. They guard real slowdowns, so their budgets are
+  // untouched; a busy box was the only thing that failed them.
+  if (units.alone) {
     try {
-      await run(cmd, label)
+      await run(units.alone, 'unit tests that assert on the clock, alone')
     } catch {
-      fail(label)
+      // Same as the lanes: let the tail of its output reach the ship log before fail() exits.
+      await new Promise((resolve) => (shipLog ? shipLog.write('', resolve) : resolve()))
+      fail('unit tests that assert on the clock, alone')
+    }
+  }
+
+  // The web build is in the FULL gate only. `electron-vite build` above already compiles
+  // the same renderer, so in a release this would be a second build of the same code (32 s).
+  if (fullGate) {
+    try {
+      await run('npx vite build', 'web build')
+    } catch {
+      fail('web build')
     }
   }
 
   // 2. THE BROWSER SUITE. A red one moves its traces out of test-results/ first,
   // because the next Playwright run anywhere in this repo empties that folder.
-  if (!fast) {
+  const blockingBrowserRun = async (cmd, label) => {
     try {
-      await run('npx playwright test', 'end to end')
+      await run(cmd, label)
     } catch {
       // Flushed before it is copied, so the kept log ends where the run did.
       await new Promise((resolve) => (shipLog ? shipLog.write('\n[gate] the browser suite failed, keeping its evidence\n', resolve) : resolve()))
@@ -173,7 +253,28 @@ const gate = async (tree) => {
         console.error(say)
         shipLog?.write(say)
       }
-      fail('end to end')
+      fail(label)
+    }
+  }
+  if (!fast) {
+    if (fullGate) {
+      // Everything except the speed tests blocks, and nothing retries.
+      await blockingBrowserRun('npx playwright test --project=smoke --project=ui', 'end to end')
+      // ⛔ THE SPEED TESTS ONLY WARN (his word, 2026-10-11: "I don't give a fuck about the
+      // speed tests"). They are wall clock and real time playback numbers, which a busy
+      // box moves, and they cost most of the browser time. They still run, so a real
+      // regression shows in the log, but a red one blocks nothing.
+      try {
+        await run('npx playwright test --project=timing', 'speed tests (a warning only)')
+      } catch {
+        tell('\n⚠ The speed tests failed. That no longer blocks anything (his word, 2026-10-11), so the gate carries on.\n')
+      }
+    } else {
+      // The release set (playwright.config.ts): boot, mvp and export, a failed test retried
+      // once. A test that passes on its second try is named as flaky in Playwright's own
+      // summary in the ship log, so it can be fixed. OLP_RELEASE is set for this one step
+      // and put back after (the child inherits process.env).
+      await withEnv('OLP_RELEASE', '1', () => blockingBrowserRun('npx playwright test', 'end to end (release set)'))
     }
   }
 
@@ -188,16 +289,19 @@ const gate = async (tree) => {
     shipLog?.write(say)
     process.exit(1)
   }
-  const done = `\n✓ the gate passed in ${Math.round((Date.now() - t0) / 60_000)} min\n`
+  const done = `\n✓ the ${fullGate ? 'full' : 'release'} gate passed in ${((Date.now() - t0) / 60_000).toFixed(1)} min\n`
   process.stdout.write(done)
   shipLog?.write(done)
-  if (!fast) writeStamp(tree)
+  // Only the full gate, with its browser suite, proves what a stamp promises.
+  if (fullGate && !fast) writeStamp(tree)
   return tree
 }
 
 if (verifyOnly) {
   await gate(startTree)
-  console.log(`\n✅ Verified${fast ? ' without the browser suite, so nothing was stamped' : ': this exact code passed every check, and a ship of it goes straight to publishing'}.`)
+  console.log(
+    `\n✅ Verified${fast ? ' without the browser suite, so nothing was stamped' : ': this exact code passed the full gate (the speed tests only warn), and a ship of it goes straight to publishing'}.`,
+  )
   process.exit(0)
 }
 

@@ -1170,6 +1170,9 @@ export function clipEdges(track: Track, clip: Clip): ClipEdges {
  * export. 36 of the 84 audio clips in his projects started off the grid, voice
  * takes included. Moving a start by at most half a sample (10.4 microseconds at
  * 48 kHz) plays every sample exactly as it is in the file.
+ * Probed in Chromium 149, 2026-10-12: a fractional READ offset is rounded to the
+ * nearest whole sample at rate 1 (+0.5 copied a whole sample, +0.3 the lower one).
+ * Only a fractional start TIME blends, so never snap the offset as well.
  */
 export function onSampleGrid(t: number, sampleRate: number): number {
   return Math.round(t * sampleRate) / sampleRate
