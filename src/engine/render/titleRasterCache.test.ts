@@ -46,13 +46,16 @@ class StubOffscreenCanvas {
 
 vi.stubGlobal('OffscreenCanvas', StubOffscreenCanvas)
 
-const { clearTitleCache, rasterizeTitle, titleCacheBytes, TITLE_CACHE_BUDGET_BYTES } = await import('./titleRaster')
+const { beginTitleFrame, clearTitleCache, rasterizeTitle, titleCacheBytes, TITLE_CACHE_BUDGET_BYTES } = await import('./titleRaster')
 
 const W = 320
 const H = 180
 // A 9:16 Shorts raster: 8.3 MB each, so a handful of them exceeds the budget.
 const SHORT_W = 1080
 const SHORT_H = 1920
+// The Phone shape: 9.1 MB each, so five fit in the export's 48 MB where six 9:16 ones did.
+const PHONE_W = 1080
+const PHONE_H = 2112
 const defFor = (text: string): TitleDef => ({ ...defaultTitleDef(text) })
 
 describe('title raster cache', () => {
@@ -112,5 +115,39 @@ describe('title raster cache', () => {
     const canvas = rasterizeTitle(recent, W, H)
     for (let i = 0; i < 5; i++) rasterizeTitle(defFor(`other-${i}`), W, H)
     expect(rasterizeTitle(recent, W, H)).toBe(canvas)
+  })
+
+  it('holds every title the frame being drawn uses, even past the budget (the Phone export crawl)', () => {
+    // 2026-10-16: six captions on screen at once, at 1080x2112, is more than the export's budget.
+    // The oldest was evicted to fit the newest and asked for again next frame, so every caption was
+    // drawn and uploaded again on every frame, and a Phone export ran at a sixth of its speed.
+    const onScreen = Math.ceil(TITLE_CACHE_BUDGET_BYTES / (PHONE_W * PHONE_H * 4)) + 1
+    const defs = Array.from({ length: onScreen }, (_, i) => defFor(`caption-${i}`))
+    beginTitleFrame()
+    const first = defs.map((d) => rasterizeTitle(d, PHONE_W, PHONE_H))
+    for (let frame = 0; frame < 3; frame++) {
+      beginTitleFrame()
+      defs.forEach((d, i) => expect(rasterizeTitle(d, PHONE_W, PHONE_H), `caption ${i}, frame ${frame}`).toBe(first[i]))
+    }
+  })
+
+  it('rasters only earlier frames used still go back to the budget', () => {
+    const onScreen = Math.ceil(TITLE_CACHE_BUDGET_BYTES / (PHONE_W * PHONE_H * 4)) + 1
+    beginTitleFrame()
+    for (let i = 0; i < onScreen; i++) rasterizeTitle(defFor(`old-${i}`), PHONE_W, PHONE_H)
+    expect(titleCacheBytes()).toBeGreaterThan(TITLE_CACHE_BUDGET_BYTES)
+    // The next frame shows one new caption: the old ones are no longer held.
+    beginTitleFrame()
+    const next = defFor('next')
+    const canvas = rasterizeTitle(next, PHONE_W, PHONE_H)
+    expect(titleCacheBytes()).toBeLessThanOrEqual(TITLE_CACHE_BUDGET_BYTES)
+    expect(rasterizeTitle(next, PHONE_W, PHONE_H)).toBe(canvas)
+  })
+
+  it('without frames counted (the preview) the plain budget holds, as before', () => {
+    const many = Math.ceil(TITLE_CACHE_BUDGET_BYTES / (PHONE_W * PHONE_H * 4)) + 1
+    const defs = Array.from({ length: many }, (_, i) => defFor(`preview-${i}`))
+    for (let pass = 0; pass < 2; pass++) for (const d of defs) rasterizeTitle(d, PHONE_W, PHONE_H)
+    expect(titleCacheBytes()).toBeLessThanOrEqual(TITLE_CACHE_BUDGET_BYTES)
   })
 })

@@ -58,7 +58,9 @@ import { defineConfig } from '@playwright/test'
 //           PowerShell:  $env:OLP_MEASURE='1'; npx playwright test --project=measure
 // release ONLY when OLP_RELEASE is set, and then it is the only project (2026-10-12). `npm run
 //         patch` sets it for its one browser step: boot (the editor mounts), mvp (the core edit
-//         flow) and export, about 90 s of tests against about 26 min for the whole suite. It
+//         flow), export, and export-shapes (every frame shape exports done and keeps pace with
+//         9:16, about 30 s; added 2026-10-16 after a Phone export crawled at a sixth of the
+//         speed), about 2 min of tests against about 26 min for the whole suite. It
 //         retries a failed test once (see the note under "DELIBERATELY NOT ADDED"). Without
 //         OLP_RELEASE the projects above are exactly what they were, so `npm run verify` and a
 //         plain `npx playwright test` run the whole suite and nothing runs twice. The speed
@@ -82,8 +84,8 @@ const TIMING = [
 ]
 const SMOKE = ['boot.spec.ts']
 const MEASURE = ['scrub-cost.spec.ts']
-/** What a release is gated on: the editor mounts, the core edit flow, and export. About 90 s. */
-const RELEASE = ['boot.spec.ts', 'mvp.spec.ts', 'export.spec.ts']
+/** What a release is gated on: the editor mounts, the core edit flow, export, and every frame shape. About 2 min. */
+const RELEASE = ['boot.spec.ts', 'mvp.spec.ts', 'export.spec.ts', 'export-shapes.spec.ts']
 const glob = (names: string[]): string[] => names.map((n) => `**/e2e/${n}`)
 
 // A timing spec that forgot quietBox would measure on a busy box and blame the app.

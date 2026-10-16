@@ -30,7 +30,7 @@ import { browserConfigCheck, pickDecoderOptions } from './decoderChoice'
 import { createRenderer } from '../render/glRenderer'
 import { registerLutAssets } from '../effects/lutBank'
 import { resolveFrame } from '../render/resolve'
-import { rasterizeTitle } from '../render/titleRaster'
+import { beginTitleFrame, rasterizeTitle } from '../render/titleRaster'
 
 
 import { loadTitleFonts, titleFontStacksIn } from '../render/titleFonts'
@@ -406,6 +406,8 @@ async function runNative(init: Extract<ExportRequest, { type: 'init' }>): Promis
       // anything new, so the ceiling has room without evicting a live provider.
       providers.beginFrame()
       providers.reap(t)
+      // Hold this frame's titles whatever the cache budget (titleRaster.ts).
+      beginTitleFrame()
       const frame = resolveFrame(sequence, t)
       const layers: RenderLayer[] = []
       for (const op of frame.ops) {
@@ -913,6 +915,8 @@ async function run(init: Extract<ExportRequest, { type: 'init' }>): Promise<void
       // anything new, so the ceiling has room without evicting a live provider.
       providers.beginFrame()
       providers.reap(t)
+      // Hold this frame's titles whatever the cache budget (titleRaster.ts).
+      beginTitleFrame()
       const frame = resolveFrame(sequence, t)
 
       const layers: RenderLayer[] = []

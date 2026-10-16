@@ -319,6 +319,8 @@ interface CacheEntry {
   canvas: OffscreenCanvas
   /** The def that keys this entry in identityCache, so eviction can drop it too. */
   def: TitleDef
+  /** The beginTitleFrame() count this raster was last asked for in (0: never counted). */
+  frame: number
 }
 
 /**
@@ -340,6 +342,18 @@ interface CacheEntry {
  * line between the two: the export worker keeps the old careful number, the
  * interface he is looking at gets thirty-odd captions of headroom on a machine
  * with 32 GB in it.
+ *
+ * ⛔ IN THE EXPORT THE BUDGET NEVER EVICTS A TITLE THE CURRENT FRAME IS USING
+ * (2026-10-16). 48 MB is six rasters at 1080x1920 but only five at the Phone
+ * shape, 1080x2112. With six titles on screen at once the oldest was evicted to
+ * make room for the sixth, then asked for again next frame, so EVERY title was
+ * drawn and uploaded again on EVERY frame: a 2 s test export ran at 16.9 frames a
+ * second at 9:16 and 2.9 at Phone, and his own Phone export crawled at 22%. The
+ * worker now calls beginTitleFrame() once per frame, and a raster asked for since
+ * then is held whatever the budget says, because the frame cannot be drawn
+ * without it. Only rasters from earlier frames are evicted to the budget. That
+ * holds a frame's own titles and nothing more, which the GPU holds anyway. The
+ * preview never calls it and keeps the plain budget.
  */
 export const TITLE_CACHE_BUDGET_BYTES = typeof window === 'undefined' ? 48 * 1024 * 1024 : 256 * 1024 * 1024
 const CACHE_BUDGET_BYTES = TITLE_CACHE_BUDGET_BYTES
@@ -362,12 +376,28 @@ let cacheBytes = 0
 // eviction from the bounded list MUST delete the matching identity entry, or a
 // word-caption timeline (one title clip per word) retains one canvas per word and
 // CACHE_LIMIT bounds nothing.
-let identityCache = new WeakMap<TitleDef, { w: number; h: number; canvas: OffscreenCanvas }>()
+let identityCache = new WeakMap<TitleDef, { w: number; h: number; entry: CacheEntry }>()
+
+/** Frames counted by beginTitleFrame(). 0 until the first call, which is the preview's case. */
+let frameNo = 0
+
+/**
+ * A new output frame starts: the rasters it asks for from here on are held until
+ * the next call, whatever the budget (see TITLE_CACHE_BUDGET_BYTES). The export
+ * worker calls this once per frame.
+ */
+export function beginTitleFrame(): void {
+  frameNo++
+}
+
+/** Is this entry asked for by the frame being drawn now? Never true without beginTitleFrame(). */
+const inThisFrame = (e: CacheEntry): boolean => frameNo !== 0 && e.frame === frameNo
 
 export function clearTitleCache(): void {
   cache.length = 0
   cacheBytes = 0
   identityCache = new WeakMap()
+  frameNo = 0
 }
 
 /** Bytes the title cache is currently holding (for tests and diagnostics). */
@@ -412,7 +442,10 @@ export function rasterizeTitle(
   scale = 1,
 ): OffscreenCanvas {
   const fast = identityCache.get(defIn)
-  if (fast && fast.w === width && fast.h === height) return fast.canvas
+  if (fast && fast.w === width && fast.h === height) {
+    fast.entry.frame = frameNo
+    return fast.entry.canvas
+  }
   // Everything below reads the SCALED def; the identity cache stays keyed on the
   // caller's original object, which is the one the store holds.
   const def = scaleTitleDef(defIn, scale)
@@ -424,8 +457,9 @@ export function rasterizeTitle(
     // identity map now points at, so it is the one eviction has to clear.
     if (hit.def !== defIn) identityCache.delete(hit.def)
     hit.def = defIn
+    hit.frame = frameNo
     cache.push(hit) // touch → most-recently-used
-    identityCache.set(defIn, { w: width, h: height, canvas: hit.canvas })
+    identityCache.set(defIn, { w: width, h: height, entry: hit })
     return hit.canvas
   }
 
@@ -566,17 +600,24 @@ export function rasterizeTitle(
     if (def.shadow && !hasOutline) clearShadow()
   }
 
-  cache.push({ key, canvas, def: defIn })
+  const entry: CacheEntry = { key, canvas, def: defIn, frame: frameNo }
+  cache.push(entry)
   cacheBytes += canvasBytes(canvas)
-  // Always keep the raster we were just asked for, even if it alone exceeds the
-  // budget, because refusing it would re-rasterize it on the very next frame.
-  while (cacheBytes > CACHE_BUDGET_BYTES && cache.length > 1) {
-    const evicted = cache.shift()
-    if (!evicted) break
-    cacheBytes -= canvasBytes(evicted.canvas)
-    identityCache.delete(evicted.def)
+  // Always keep the raster we were just asked for (the last one), even if it
+  // alone exceeds the budget, because refusing it would re-rasterize it on the
+  // very next frame. For the same reason, skip every raster the current frame
+  // has asked for (inThisFrame), oldest first otherwise.
+  for (let i = 0; cacheBytes > CACHE_BUDGET_BYTES && i < cache.length - 1; ) {
+    const e = cache[i]
+    if (inThisFrame(e)) {
+      i++
+      continue
+    }
+    cache.splice(i, 1)
+    cacheBytes -= canvasBytes(e.canvas)
+    identityCache.delete(e.def)
   }
-  identityCache.set(defIn, { w: width, h: height, canvas })
+  identityCache.set(defIn, { w: width, h: height, entry })
   return canvas
 }
 
