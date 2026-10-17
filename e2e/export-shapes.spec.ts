@@ -20,9 +20,17 @@
 //     run. A ratio, never a fixed number, so a slow or busy machine moves every shape together and
 //     only a shape that falls apart fails.
 //
+// A second test, the same day: AN EXPORT THAT STOPS MOVING ENDS. His Phone export of 2026-10-15
+// started at 16:01 and never logged an outcome, with a live ffmpeg left holding the file. It freezes
+// the real ffmpeg of a Phone export mid-run (the way a starved or blocked encoder looks to the app:
+// it stops taking frames) and checks the export still ENDS, with a plain failure he can read, no
+// ffmpeg left running, no half file left behind, and an outcome in the usage log. The stall limit is
+// shortened through src/engine/export/stallWatch.ts (setStallLimitMs), a seam and not a setting.
+//
 // Everything it writes goes under os.tmpdir(): the release gate fails if the tree changes.
 
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -130,6 +138,35 @@ async function keepOffScreen(app: ElectronApplication): Promise<void> {
   })
 }
 
+/**
+ * Start the built app on its own profile, kept off his screen and below normal priority, with the
+ * save dialog answering from globalThis.__shapeOut.
+ */
+async function launchQuiet(userData: string): Promise<ElectronApplication> {
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${userData}`],
+    env: { ...process.env, ELECTRON_RENDERER_URL: RENDERER_URL },
+  })
+  try {
+    await keepOffScreen(app)
+    const mainPid = await app.evaluate(() => process.pid)
+    try {
+      os.setPriority(mainPid, os.constants.priority.PRIORITY_BELOW_NORMAL)
+    } catch {
+      // Best effort: the ratio is still fair, only louder on the machine.
+    }
+    await app.evaluate(({ dialog }) => {
+      const g = globalThis as unknown as { __shapeOut: string }
+      g.__shapeOut = ''
+      dialog.showSaveDialog = (async () => ({ canceled: false, filePath: g.__shapeOut })) as typeof dialog.showSaveDialog
+    })
+  } catch (err) {
+    await app.close().catch(() => undefined)
+    throw err
+  }
+  return app
+}
+
 async function editorWindow(app: ElectronApplication): Promise<Page> {
   const deadline = Date.now() + 60_000
   while (Date.now() < deadline) {
@@ -146,13 +183,13 @@ async function editorWindow(app: ElectronApplication): Promise<Page> {
  * The buttons are pressed with a dispatched click: a window kept at opacity 0 paints its animation
  * frames slowly, and Playwright's "is it still moving" wait on a plain click cost about 4 s an export.
  */
-async function exportOnce(win: Page): Promise<{ text: string; ms: number }> {
+async function exportOnce(win: Page, limitMs = EXPORT_LIMIT_MS): Promise<{ text: string; ms: number }> {
   await win.getByTestId('export-open').dispatchEvent('click')
   // On the desktop Export asks which preset first; "Just this once" is the plain save dialog.
   await win.getByTestId('export-once').dispatchEvent('click')
   const t0 = Date.now()
   let text = ''
-  while (Date.now() - t0 < EXPORT_LIMIT_MS) {
+  while (Date.now() - t0 < limitMs) {
     text = (await win.getByTestId('export-dialog').innerText().catch(() => '')).replace(/\s+/g, ' ')
     if (/where you chose|to your downloads|stopped|failed|could not|try again/i.test(text)) break
     await win.waitForTimeout(250)
@@ -172,24 +209,8 @@ test('every frame shape exports a phone HDR clip, ends, and keeps pace with 9:16
   const run = fs.mkdtempSync(path.join(os.tmpdir(), 'olp-export-shapes-run-'))
   const userData = path.join(run, 'profile')
 
-  const app = await electron.launch({
-    args: ['.', `--user-data-dir=${userData}`],
-    env: { ...process.env, ELECTRON_RENDERER_URL: RENDERER_URL },
-  })
+  const app = await launchQuiet(userData)
   try {
-    await keepOffScreen(app)
-    const mainPid = await app.evaluate(() => process.pid)
-    try {
-      os.setPriority(mainPid, os.constants.priority.PRIORITY_BELOW_NORMAL)
-    } catch {
-      // Best effort: the ratio is still fair, only louder on the machine.
-    }
-    await app.evaluate(({ dialog }) => {
-      const g = globalThis as unknown as { __shapeOut: string }
-      g.__shapeOut = ''
-      dialog.showSaveDialog = (async () => ({ canceled: false, filePath: g.__shapeOut })) as typeof dialog.showSaveDialog
-    })
-
     const win = await editorWindow(app)
     await expect(win.getByTestId('export-open')).toBeVisible({ timeout: 60_000 })
 
@@ -296,6 +317,186 @@ test('every frame shape exports a phone HDR clip, ends, and keeps pace with 9:16
     }
   } finally {
     await app.close().catch(() => undefined)
+    fs.rmSync(run, { recursive: true, force: true, maxRetries: 3 })
+  }
+})
+
+// ---------------------------------------------------------------------------------------------
+// AN EXPORT THAT STOPS MOVING ENDS (2026-10-17)
+
+const STALL_MODULE = '/src/engine/export/stallWatch.ts'
+/** The stall limit the test asks the app for. Real life is 2 minutes; this keeps the check short. */
+const STALL_LIMIT_MS = 6_000
+/** How long the frozen export may take to end: the limit, two looks, and the render running ahead. */
+const STALL_END_LIMIT_MS = 45_000
+
+/**
+ * Freezes the encoder of the next export, the way a starved or blocked one looks from the app: it
+ * stays alive and stops taking frames. A small PowerShell loop, started and compiled BEFORE the
+ * export so it can freeze ffmpeg within a moment of its start: it waits for an ffmpeg that was
+ * given raw video on stdin (the export; the preview and HDR master ffmpegs never are) and suspends
+ * it. It never touches any other process, runs hidden, and below normal priority.
+ */
+async function freezeNextExportEncoder(dir: string): Promise<{ frozen: Promise<number>; stop: () => void }> {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class OlpFreeze { [DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr h); }'",
+    "[Console]::Out.WriteLine('ready'); [Console]::Out.Flush()",
+    '$seen = @{}',
+    'while ($true) {',
+    '  foreach ($p in @(Get-Process -Name ffmpeg -ErrorAction SilentlyContinue)) {',
+    '    if ($seen.ContainsKey($p.Id)) { continue }',
+    '    $seen[$p.Id] = $true',
+    '    try {',
+    "      $cmd = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $p.Id) -ErrorAction SilentlyContinue).CommandLine",
+    "      if ($cmd -and $cmd -match 'rawvideo') {",
+    '        [void][OlpFreeze]::NtSuspendProcess($p.Handle)',
+    "        [Console]::Out.WriteLine('froze ' + $p.Id); [Console]::Out.Flush()",
+    '      }',
+    "    } catch { [Console]::Out.WriteLine('skipped ' + $p.Id + ' ' + $_); [Console]::Out.Flush() }",
+    '  }',
+    '  Start-Sleep -Milliseconds 60',
+    '}',
+  ].join('\n')
+  const file = path.join(dir, 'freeze-next-export.ps1')
+  fs.writeFileSync(file, script)
+  const child: ChildProcess = spawn('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  try {
+    if (child.pid) os.setPriority(child.pid, os.constants.priority.PRIORITY_BELOW_NORMAL)
+  } catch {
+    // Best effort.
+  }
+  let out = ''
+  let err = ''
+  const lookers = new Set<() => void>()
+  child.stderr?.on('data', (b: Buffer) => (err += b.toString()))
+  child.stdout?.on('data', (b: Buffer) => {
+    out += b.toString()
+    for (const look of [...lookers]) look()
+  })
+  const waitFor = (re: RegExp, ms: number, what: string): Promise<RegExpExecArray> =>
+    new Promise((resolve, reject) => {
+      const end = (): void => {
+        clearTimeout(timer)
+        lookers.delete(look)
+        child.off('exit', onExit)
+      }
+      const timer = setTimeout(() => {
+        end()
+        reject(new Error(`${what}: not seen in ${ms / 1000} s. Output: ${out} ${err}`))
+      }, ms)
+      const look = (): void => {
+        const m = re.exec(out)
+        if (m) {
+          end()
+          resolve(m)
+        }
+      }
+      const onExit = (): void => {
+        end()
+        reject(new Error(`${what}: the freezer ended. Output: ${out} ${err}`))
+      }
+      lookers.add(look)
+      child.once('exit', onExit)
+      look()
+    })
+  const stop = (): void => {
+    child.kill()
+  }
+  try {
+    await waitFor(/ready/, 30_000, 'the freezer starting')
+  } catch (e) {
+    stop()
+    throw e
+  }
+  const frozen = waitFor(/froze (\d+)/, 60_000, 'the export ffmpeg being frozen').then((m) => Number(m[1]))
+  // A rejection nobody awaits yet (the test fails earlier) must not crash the run.
+  frozen.catch(() => undefined)
+  return { frozen, stop }
+}
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+test('a frozen encoder does not hang the export: it ends with a plain failure, and nothing is left running', async () => {
+  test.setTimeout(150_000)
+  if (!runsWithFfmpeg()) test.skip(true, 'needs the bundled ffmpeg')
+  if (!fs.existsSync(MAIN_JS)) {
+    if (process.env.OLP_GATE) throw new Error(`${MAIN_JS} is missing: the gate builds it before this step`)
+    test.skip(true, `needs a build at ${MAIN_JS} (npx electron-vite build)`)
+  }
+  const phone = FORMATS.find((f) => f.key === 'phone')
+  expect(phone, 'the app offers the Phone shape').toBeTruthy()
+
+  const clips = await fixtures()
+  const run = fs.mkdtempSync(path.join(os.tmpdir(), 'olp-export-stall-run-'))
+  const userData = path.join(run, 'profile')
+  const app = await launchQuiet(userData)
+  let freezer: Awaited<ReturnType<typeof freezeNextExportEncoder>> | null = null
+  let frozenPid = 0
+  try {
+    const win = await editorWindow(app)
+    await expect(win.getByTestId('export-open')).toBeVisible({ timeout: 60_000 })
+
+    // His project: an iPhone clip, no titles, exported at the Phone shape.
+    await win.getByTestId('media-file-input').setInputFiles([clips.hdr])
+    await expect(win.getByTestId('asset-card')).toHaveCount(1, { timeout: 60_000 })
+    await win.getByTestId('asset-card').dblclick()
+    await expect(win.locator('[data-clip-kind="video"]')).toHaveCount(1, { timeout: 15_000 })
+    await win.getByTestId('format-select').selectOption('phone')
+
+    // The stall limit, shortened for this check only. A sibling of the page's own copy of the module.
+    await parkModules(win, [STALL_MODULE])
+    await win.evaluate(
+      ({ STALL_MODULE, ms }) => {
+        const mods = (window as unknown as { __e2eMods: Record<string, unknown> }).__e2eMods
+        ;(mods[STALL_MODULE] as typeof import('../src/engine/export/stallWatch')).setStallLimitMs(ms)
+      },
+      { STALL_MODULE, ms: STALL_LIMIT_MS },
+    )
+
+    const file = path.join(run, 'Phone-frozen.mp4')
+    await app.evaluate((_e, p) => ((globalThis as unknown as { __shapeOut: string }).__shapeOut = p), file)
+    freezer = await freezeNextExportEncoder(run)
+    void freezer.frozen.then((pid) => (frozenPid = pid)).catch(() => undefined)
+    const end = await exportOnce(win, STALL_END_LIMIT_MS)
+    expect(frozenPid, 'the export ffmpeg was frozen, so something was tested').toBeGreaterThan(0)
+
+    console.log(`frozen encoder (pid ${frozenPid}): the export ended in ${(end.ms / 1000).toFixed(1)} s with "${end.text.slice(-110)}"`)
+    // It ENDED, in plain words, inside the limit.
+    expect(end.text, 'the frozen export ended as a plain failure (never left on a percentage)').toMatch(/stopped making progress/)
+    expect(end.text, 'no machine words in what he reads').not.toMatch(/ffmpeg|worker|exit code|undefined/i)
+    expect(end.ms, 'it did not take longer than the limit allows').toBeLessThan(STALL_END_LIMIT_MS)
+
+    // No encoder left running, and no half file left behind.
+    await expect.poll(() => alive(frozenPid), { message: 'the frozen ffmpeg was ended', timeout: 15_000 }).toBe(false)
+    await expect.poll(() => fs.existsSync(file), { message: 'no half written file is left', timeout: 10_000 }).toBe(false)
+
+    // The usage log holds an outcome for it: the 2026-10-15 export never logged one.
+    await expect
+      .poll(() => exportLines(userData).map((l) => l.d.outcome), { message: 'the usage log has an outcome', timeout: 15_000 })
+      .toEqual(['failed'])
+  } finally {
+    freezer?.stop()
+    if (frozenPid && alive(frozenPid)) {
+      // A hang left this behind (the unfixed app): never leave a frozen encoder on his machine.
+      spawn('taskkill', ['/PID', String(frozenPid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+    }
+    await Promise.race([app.close().catch(() => undefined), new Promise((r) => setTimeout(r, 10_000))])
+    try {
+      app.process().kill()
+    } catch {
+      // Already gone.
+    }
     fs.rmSync(run, { recursive: true, force: true, maxRetries: 3 })
   }
 })

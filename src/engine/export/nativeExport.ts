@@ -15,6 +15,7 @@ import type { Id, Project } from '../types'
 import { planAudioMix } from './audioRender'
 import type { ExportAsset, ExportProgress, ExportRequest, ExportResponse, ExportSettings } from './messages'
 import { exportSpeed, type ExportSpeed, type StageTimes } from './stageClock'
+import { STALLED_MESSAGE, stallLimits, startStallWatch, type StallWatch } from './stallWatch'
 
 export interface NativeExportResult {
   outPath: string
@@ -222,7 +223,10 @@ export async function exportNative(
   // step, and only the highest count yet is ever shown.
   let encoded = 0
   let workerDone = false
+  // Looks for an export that stopped moving (stallWatch.ts says why); started with the worker below.
+  let stall: StallWatch | undefined
   const unsub = api.onNativeProgress((p) => {
+    stall?.poke()
     encoded = Math.max(encoded, Math.min(p.frame, framesTotal))
     onProgress({ phase: workerDone ? 'finalizing' : 'video', framesDone: encoded, framesTotal })
   })
@@ -234,6 +238,7 @@ export async function exportNative(
       if (settled) return
       settled = true
       signal.removeEventListener('abort', onAbort)
+      stall?.stop()
       unsub()
       worker.terminate()
       fn()
@@ -249,9 +254,27 @@ export async function exportNative(
     }
     signal.addEventListener('abort', onAbort)
 
+    // ⛔ AN EXPORT THAT STOPS MOVING ENDS. Every wait in this pipeline (ffmpeg taking a frame, the
+    // worker reading one back from the graphics card, a decoder answering) used to have no end, so
+    // one that never came left the dialog on a percentage for good with ffmpeg still holding the
+    // file (his Phone export of 2026-10-15 never logged an outcome). Any sign of life below calls
+    // poke(); with none for the limit the export is stopped the way a failed write stops it, and
+    // he is told in plain words. Before the first frame and after the last, the limit is longer.
+    stall = startStallWatch({
+      limitMs: () => (firstFrameAt === 0 || workerDone ? stallLimits().slowMs : stallLimits().runMs),
+      tickMs: stallLimits().tickMs,
+      onStall: () => {
+        if (settled) return
+        void api.nativeCancel()
+        // A Cancel he pressed that then never finished is still a cancel, not a failure.
+        done(() => reject(signal.aborted ? abortError() : new Error(STALLED_MESSAGE)))
+      },
+    })
+
     worker.onmessage = (e: MessageEvent<ExportResponse>) => {
       const msg = e.data
       if (settled) return
+      stall?.poke()
       if (msg.type === 'frame') {
         if (!firstFrameAt) firstFrameAt = performance.now()
         // ffmpeg's stdin is a raw RGBA pipe with no framing, so two writes in
@@ -263,6 +286,7 @@ export async function exportNative(
           .then(async () => {
             if (settled || signal.aborted) return
             const res = await api.nativeWriteFrame(data)
+            stall?.poke()
             // A write that fails BECAUSE the user cancelled must not latch an
             // error over the abort, or the dialog would sit on a red
             // "ffmpeg is not running" instead of just closing.

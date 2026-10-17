@@ -49,6 +49,7 @@ vi.mock('./audioRender', () => ({
 }))
 
 const { exportNative, interleaveF32 } = await import('./nativeExport')
+const { setStallLimitMs, STALLED_MESSAGE } = await import('./stallWatch')
 
 /** The export worker, standing still until the test speaks for it. */
 class FakeWorker {
@@ -644,5 +645,131 @@ describe('the shipped export carries the music beats', () => {
     await flush()
     expect(h.beatCalls).toHaveLength(0)
     expect(sentSequence().beatGridS).toBeUndefined()
+  })
+})
+
+describe('⛔ an export that stops moving ends, it never hangs (his Phone export of 2026-10-15)', () => {
+  // The limits are shortened so the real timer is waited on for a moment, not two minutes: 300 ms
+  // while frames flow (looking every 100 ms), 5 times that before the first frame and after the last.
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+  const pending = (run: Promise<unknown>): { value: 'pending' | 'settled' } => {
+    const state = { value: 'pending' as 'pending' | 'settled' }
+    run.then(
+      () => (state.value = 'settled'),
+      () => (state.value = 'settled'),
+    )
+    return state
+  }
+  beforeEach(() => setStallLimitMs(300))
+  afterEach(() => setStallLimitMs(null))
+
+  it('a frame that ffmpeg never takes ends it in plain words, stops ffmpeg, and ends the worker', async () => {
+    const run = start()
+    await flush()
+    const w = FakeWorker.last
+    w.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    await flush()
+    expect(main.writes).toHaveLength(1)
+    // main.writes[0] is never settled: the pipe is full and ffmpeg is not reading.
+    await expect(run).rejects.toThrow(STALLED_MESSAGE)
+    expect(main.log).toContain('cancel')
+    expect(w.terminated).toBe(true)
+  })
+
+  it('a worker that goes quiet after its first frame ends it too', async () => {
+    const run = start()
+    await flush()
+    const w = FakeWorker.last
+    w.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    await flush()
+    main.writes[0].settle({ ok: true })
+    // Nothing more comes: a readback that never returned.
+    await expect(run).rejects.toThrow(STALLED_MESSAGE)
+    expect(main.log).toContain('cancel')
+  })
+
+  it('a slow export that keeps moving is never stopped', async () => {
+    const run = start()
+    const state = pending(run)
+    await flush()
+    const w = FakeWorker.last
+    // Eight frames, each taking two thirds of the limit: 2 s in all, far past the limit itself.
+    for (let n = 1; n <= 8; n++) {
+      w.emit({ type: 'frame', data: frame(n) } as ExportResponse)
+      await sleep(200)
+      main.writes[n - 1].settle({ ok: true })
+      await flush()
+      expect(state.value).toBe('pending')
+    }
+    w.emit({ type: 'done' } as ExportResponse)
+    await expect(run).resolves.toMatchObject({ outPath: 'C:' + String.fromCharCode(92) + 'Videos' + String.fromCharCode(92) + 'Holiday.mp4' })
+  })
+
+  it("ffmpeg's own progress is a sign of life while a frame is still going in", async () => {
+    const run = start()
+    const state = pending(run)
+    await flush()
+    FakeWorker.last.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    await flush()
+    for (let n = 1; n <= 10; n++) {
+      main.ffmpegSays(n)
+      await sleep(100)
+    }
+    expect(state.value).toBe('pending')
+    await expect(run).rejects.toThrow(STALLED_MESSAGE)
+  })
+
+  it('before the first frame the limit is 5 times longer, so opening big files is not a stall', async () => {
+    const run = start()
+    const state = pending(run)
+    await flush()
+    await sleep(900)
+    expect(state.value).toBe('pending')
+    FakeWorker.last.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    await expect(run).rejects.toThrow(STALLED_MESSAGE)
+  })
+
+  it('a finish that never answers ends it after the longer limit, not the short one', async () => {
+    main.finish.hold = true
+    const run = start()
+    const state = pending(run)
+    await flush()
+    const w = FakeWorker.last
+    w.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    await flush()
+    main.writes[0].settle({ ok: true })
+    w.emit({ type: 'done' } as ExportResponse)
+    await sleep(900)
+    expect(main.log).toContain('finish')
+    expect(state.value).toBe('pending')
+    await expect(run).rejects.toThrow(STALLED_MESSAGE)
+    expect(main.log).toContain('cancel')
+  })
+
+  it('a Cancel he pressed that never finishes is a cancel, never a failure', async () => {
+    const stuck = new Promise<void>(() => undefined)
+    main.api.nativeCancel = () => {
+      main.log.push('cancel')
+      return stuck
+    }
+    const ctrl = new AbortController()
+    const run = start(ctrl.signal)
+    await flush()
+    ctrl.abort()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('a finished export leaves nothing running to fire later', async () => {
+    const run = start()
+    await flush()
+    const w = FakeWorker.last
+    w.emit({ type: 'frame', data: frame(1) } as ExportResponse)
+    await flush()
+    main.writes[0].settle({ ok: true })
+    w.emit({ type: 'done' } as ExportResponse)
+    await expect(run).resolves.toBeDefined()
+    main.log.length = 0
+    await sleep(1800)
+    expect(main.log).not.toContain('cancel')
   })
 })
