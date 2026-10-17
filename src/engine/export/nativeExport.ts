@@ -358,15 +358,24 @@ export async function exportNative(
       done(() => reject(new Error(`Export worker crashed: ${e.message || 'unknown error'}`)))
     }
 
-    worker.postMessage({
-      type: 'init',
-      settings,
-      sequence: renderSequence,
-      assets: exportAssets,
-      audio: null,
-      luts: lutsUsedBy(sequence, project.luts),
-      native: true,
-      frameBudgetBytes: budgets().frames,
-    } satisfies ExportRequest)
+    // ⛔ A THROW HERE ENDS THE EXPORT (2026-10-17). By now the stall watch, the progress
+    // subscription and the worker are all running. A message that cannot be copied to the worker,
+    // or a throw while it is built, used to reject without done(), so all three were left behind
+    // and the leaked watch could later stop another export.
+    try {
+      worker.postMessage({
+        type: 'init',
+        settings,
+        sequence: renderSequence,
+        assets: exportAssets,
+        audio: null,
+        luts: lutsUsedBy(sequence, project.luts),
+        native: true,
+        frameBudgetBytes: budgets().frames,
+      } satisfies ExportRequest)
+    } catch (err) {
+      void api.nativeCancel()
+      done(() => reject(err instanceof Error ? err : new Error(String(err))))
+    }
   })
 }

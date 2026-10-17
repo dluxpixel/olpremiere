@@ -773,3 +773,37 @@ describe('⛔ an export that stops moving ends, it never hangs (his Phone export
     expect(main.log).not.toContain('cancel')
   })
 })
+
+describe('⛔ a start message the worker cannot take ends the export, with nothing left running', () => {
+  // The init message went out with no catch: a DataCloneError, or a throw while it was built,
+  // rejected with the stall watch, the progress subscription and the worker all still alive, and
+  // the leaked watch could stop another export ten minutes later (review, 2026-10-17).
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('rejects with the reason, stops ffmpeg, ends the worker, and nothing fires later', async () => {
+    // Only the watch's own clock is faked, so the steps before the worker still run as they do.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+    vi.spyOn(FakeWorker.prototype, 'postMessage').mockImplementation(function (this: FakeWorker, m: ExportRequest) {
+      if (m.type === 'init') throw new DOMException('Failed to execute postMessage: could not be cloned.', 'DataCloneError')
+      this.posted.push(m)
+    })
+    const run = start()
+    await expect(run).rejects.toThrow(/could not be cloned/)
+    const w = FakeWorker.last
+    expect(w.terminated).toBe(true)
+    // ffmpeg was already running, so it is stopped.
+    expect(main.log).toContain('cancel')
+    // The progress subscription is gone: ffmpeg speaking now reaches nothing.
+    const seen = progress.length
+    main.ffmpegSays(5)
+    expect(progress.length).toBe(seen)
+    // Well past the 10 minute limit before the first frame: the watch is stopped, so no cancel.
+    main.log.length = 0
+    vi.advanceTimersByTime(11 * 60_000)
+    await flush()
+    expect(main.log).not.toContain('cancel')
+  })
+})

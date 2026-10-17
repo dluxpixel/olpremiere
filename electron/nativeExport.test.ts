@@ -351,3 +351,62 @@ describe('the sound, written a segment at a time', () => {
     expect(await readdir(userData)).not.toContain('quit.mp4')
   }, 30_000)
 })
+
+describe('⛔ the closing step says it is alive, so a slow faststart is never stopped as a stall', () => {
+  // After stdin closes, ffmpeg's +faststart pass rewrites the whole file and prints nothing. On a
+  // big file on a slow disk the page's stall watch stopped it after 10 minutes, and a stop deletes
+  // the file, so a nearly done export was lost (review, 2026-10-17).
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('the grace is the file moved at 10 MiB/s, plus a minute', () => {
+    expect(native.finishGraceMs(0)).toBe(60_000)
+    expect(native.finishGraceMs(10 * 1024 * 1024)).toBe(61_000)
+    // A 20 GiB file: 2048 s to move, plus the minute.
+    expect(native.finishGraceMs(20 * 1024 * 1024 * 1024)).toBe(60_000 + 2_048_000)
+  })
+
+  it('beats every 5 s while ffmpeg runs inside the grace, and stops after it', () => {
+    vi.useFakeTimers()
+    const startedAt = Date.now()
+    let beats = 0
+    native.startFinishHeartbeat({ alive: () => true, graceMs: 60_000, startedAt, send: () => beats++ })
+    vi.advanceTimersByTime(4_999)
+    expect(beats).toBe(0)
+    vi.advanceTimersByTime(1)
+    expect(beats).toBe(1)
+    vi.advanceTimersByTime(50_000)
+    expect(beats).toBe(11)
+    // 60 s in: the grace is over, so it goes quiet for good and a hung ffmpeg is still caught.
+    vi.advanceTimersByTime(5_000)
+    expect(beats).toBe(11)
+    vi.advanceTimersByTime(10 * 60_000)
+    expect(beats).toBe(11)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('stops as soon as ffmpeg has exited', () => {
+    vi.useFakeTimers()
+    let running = true
+    let beats = 0
+    native.startFinishHeartbeat({ alive: () => running, graceMs: 600_000, startedAt: Date.now(), send: () => beats++ })
+    vi.advanceTimersByTime(15_000)
+    expect(beats).toBe(3)
+    running = false
+    vi.advanceTimersByTime(60_000)
+    expect(beats).toBe(3)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('the stop it hands back ends it at once', () => {
+    vi.useFakeTimers()
+    let beats = 0
+    const stop = native.startFinishHeartbeat({ alive: () => true, graceMs: 600_000, startedAt: Date.now(), send: () => beats++ })
+    vi.advanceTimersByTime(5_000)
+    stop()
+    vi.advanceTimersByTime(60_000)
+    expect(beats).toBe(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})

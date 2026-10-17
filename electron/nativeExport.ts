@@ -31,6 +31,10 @@ interface Job {
   closed: Promise<number | null>
   /** cancel() took it: whatever ffmpeg's exit code, there is no file and finish says so. */
   cancelled: boolean
+  /** The window that started it, where progress and finish's heartbeat go. */
+  win: BrowserWindow
+  /** Stops finish's heartbeat; set only while finish waits on ffmpeg. */
+  stopBeat?: () => void
 }
 let job: Job | null = null
 let pendingAudioPath: string | null = null
@@ -79,6 +83,7 @@ export function cancelSync(): void {
   }
   if (job) {
     job.cancelled = true
+    job.stopBeat?.()
     try {
       job.ffmpeg.stdin.destroy()
       job.ffmpeg.kill('SIGKILL')
@@ -344,7 +349,7 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
   ffmpeg.stdout.on('data', (d: Buffer) => readProgress(d.toString()))
   // stdin EPIPE if ffmpeg dies early is swallowed above; the close code surfaces the error.
 
-  job = { ffmpeg, outPath, audioPath, totalFrames: config.totalFrames, stderr: '', closed, cancelled: false }
+  job = { ffmpeg, outPath, audioPath, totalFrames: config.totalFrames, stderr: '', closed, cancelled: false, win }
   // Keep stderr live-updated on the job.
   ffmpeg.stderr.on('data', () => job && (job.stderr = stderr))
   return { started: true, outPath }
@@ -438,12 +443,81 @@ export function writeFrame(frame: ArrayBuffer): Promise<void> {
   })
 }
 
+// ⛔ THE CLOSING STEP SAYS IT IS ALIVE (2026-10-17). Once stdin closes, ffmpeg
+// flushes the encoder and then runs the +faststart pass (exportArgs.ts), which
+// rewrites the whole file and prints nothing. On a big file on a slow disk that
+// can be quiet for over 10 minutes, and the page's stall watch (stallWatch.ts)
+// then stopped a file that was nearly done, and a stop deletes it, so he was
+// told nothing was saved. So main says "still here" every few seconds while
+// ffmpeg runs, for as long as moving the file at a slow 10 MiB/s would take,
+// plus a minute. After that it goes quiet, so an ffmpeg that is truly stuck
+// is still caught by the page's 10 minute limit and every export still ends.
+// Not the file's time or size as the sign: on Windows the last write time is
+// not reliably updated until ffmpeg closes the file, and faststart moves data
+// in place, so the size barely changes.
+
+/** How often the closing step says it is alive. */
+export const FINISH_BEAT_MS = 5_000
+
+/** How long the closing step may say it is alive: the file moved at 10 MiB/s, plus a minute. */
+export function finishGraceMs(sizeBytes: number): number {
+  return 60_000 + (sizeBytes / (10 * 1024 * 1024)) * 1000
+}
+
+/**
+ * Calls send() every FINISH_BEAT_MS while alive() and less than graceMs has passed
+ * since startedAt. Stops itself after either; the returned function stops it too.
+ */
+export function startFinishHeartbeat(opts: {
+  alive: () => boolean
+  graceMs: number
+  startedAt: number
+  send: () => void
+  now?: () => number
+}): () => void {
+  const now = opts.now ?? Date.now
+  const id = setInterval(() => {
+    if (!opts.alive() || now() - opts.startedAt >= opts.graceMs) {
+      clearInterval(id)
+      return
+    }
+    opts.send()
+  }, FINISH_BEAT_MS)
+  return () => clearInterval(id)
+}
+
 // -- finish: close stdin, wait for exit, clean up --------------------------
 export async function finish(): Promise<NativeFinishResult> {
   if (!job) return { ok: false, error: 'no export in progress' }
   const j = job
   j.ffmpeg.stdin.end()
-  const code = await j.closed
+  const closedAt = Date.now()
+  let writtenBytes = 0
+  try {
+    writtenBytes = (await stat(j.outPath)).size
+  } catch {
+    // No size means the shortest grace, still a minute.
+  }
+  // A cancel while the size was read has already stopped ffmpeg: nothing to say.
+  if (!j.cancelled) {
+    j.stopBeat = startFinishHeartbeat({
+      alive: () => j.ffmpeg.exitCode === null && j.ffmpeg.signalCode === null,
+      graceMs: finishGraceMs(writtenBytes),
+      startedAt: closedAt,
+      // The same message as ffmpeg's frame= lines. Frame 0 never moves the percent,
+      // since the page keeps the highest count it has seen.
+      send: () => {
+        if (!j.win.isDestroyed()) j.win.webContents.send('native:progress', { frame: 0, totalFrames: j.totalFrames })
+      },
+    })
+  }
+  let code: number | null
+  try {
+    code = await j.closed
+  } finally {
+    j.stopBeat?.()
+    j.stopBeat = undefined
+  }
   if (job === j) job = null
   if (j.audioPath) void unlink(j.audioPath).catch(() => {})
   // ⛔ A CANCEL WHILE THIS WAITED. cancel() kills ffmpeg, and this wait was
@@ -481,6 +555,7 @@ export async function cancel(): Promise<void> {
   job = null
   // Before anything can yield: a finish() waiting on this job reads it first.
   j.cancelled = true
+  j.stopBeat?.()
   try {
     j.ffmpeg.stdin.destroy()
     j.ffmpeg.kill('SIGKILL')

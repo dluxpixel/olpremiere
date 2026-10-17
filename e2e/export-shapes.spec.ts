@@ -454,7 +454,8 @@ test('a frozen encoder does not hang the export: it ends with a plain failure, a
     await expect(win.locator('[data-clip-kind="video"]')).toHaveCount(1, { timeout: 15_000 })
     await win.getByTestId('format-select').selectOption('phone')
 
-    // The stall limit, shortened for this check only. A sibling of the page's own copy of the module.
+    // The stall limit, shortened for this check only. This is the page's own copy of the module,
+    // the same instance, imported from the Vite dev server, which is why setStallLimitMs reaches it.
     await parkModules(win, [STALL_MODULE])
     await win.evaluate(
       ({ STALL_MODULE, ms }) => {
