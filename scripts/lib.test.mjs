@@ -1072,8 +1072,8 @@ describe('patch.mjs runs two gates (2026-10-12)', () => {
       .join('\n')
     // The release project is wired: only when OLP_RELEASE is set, alone, with one retry.
     expect(cfg).toMatch(/projects: process\.env\.OLP_RELEASE\s*\?\s*\[\{ name: 'release', testMatch: glob\(RELEASE\), retries: 1 \}\]/)
-    // What a release is gated on.
-    expect(cfg).toMatch(/const RELEASE = \['boot\.spec\.ts', 'mvp\.spec\.ts', 'export\.spec\.ts'\]/)
+    // What a release is gated on. export-shapes since 2026-10-17: every frame shape exports.
+    expect(cfg).toMatch(/const RELEASE = \['boot\.spec\.ts', 'mvp\.spec\.ts', 'export\.spec\.ts', 'export-shapes\.spec\.ts'\]/)
     // That is the only `retries:` in the file, so no other project and no top level setting retries.
     expect(cfg.match(/retries:/g)).toHaveLength(1)
   })
