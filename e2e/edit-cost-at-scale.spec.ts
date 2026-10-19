@@ -23,6 +23,27 @@ import type { Page } from '@playwright/test'
 import { expect, test } from './quietBox'
 import { parkModules, type ParkedWindow } from './storeWrites'
 
+// ⛔ THIS FILE RUNS ON THE REAL GPU (2026-10-19). Headless Chromium falls back to
+// SwiftShader, a CPU pretending to be a GPU, and the linear light composite costs
+// it 140 to 330 ms long tasks his RTX 4060 never sees, so the playback test below
+// read about 7/s on a machine that plays at 29/s. The GPU flags are GPU_LAUNCH from
+// _verify/gpu.mjs, written out because this file is type checked; the rest are the
+// config's own, since this replaces its list. Playwright allows a browser change
+// only at file level, so the drag test runs here too: it is DOM work and the GPU
+// only takes painting off its CPU.
+test.use({
+  launchOptions: {
+    args: [
+      '--autoplay-policy=no-user-gesture-required',
+      '--use-fake-device-for-media-stream',
+      '--use-fake-ui-for-media-stream',
+      '--use-angle=default',
+      '--enable-gpu',
+      '--ignore-gpu-blocklist',
+    ],
+  },
+})
+
 const FIXTURE = 'e2e/.fixtures/clip.webm'
 const MOVES = 60
 
@@ -34,11 +55,12 @@ interface Row {
 
 /** Lay `wanted` copies of the imported video clip end to end, and report the real count. */
 async function fill(page: Page, wanted: number): Promise<number> {
-  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts'])
+  await parkModules(page, ['/src/state/store.ts', '/src/engine/types.ts', '/src/engine/timeline.ts'])
   return page.evaluate((wanted: number) => {
     const mods = (window as unknown as ParkedWindow).__e2eMods
     const storeMod = '/src/state/store.ts'
     const typesMod = '/src/engine/types.ts'
+    const timelineMod = '/src/engine/timeline.ts'
     const { useStore, updateActiveSequence } = mods[storeMod] as {
       useStore: { getState: () => { project: unknown } }
       updateActiveSequence: (label: string, fn: (s: unknown) => unknown) => void
@@ -47,6 +69,7 @@ async function fill(page: Page, wanted: number): Promise<number> {
       activeSequence: (p: unknown) => Seq
       newId: () => string
     }
+    const { recomputeDuration } = mods[timelineMod] as { recomputeDuration: (s: Seq) => Seq }
     interface Clip {
       id: string
       startS: number
@@ -68,9 +91,14 @@ async function fill(page: Page, wanted: number): Promise<number> {
     // sentence is "a lot of clips AND CUTS", so they have to be cuts: short
     // enough that the run he is looking at really does hold all of them.
     const slice = Math.min(len(first), 0.2)
+    // ⛔ THE LENGTH IS REFRESHED HERE (2026-10-19). A raw sequence write keeps the
+    // old durationS, so every size played as the one imported clip, about 2 s long:
+    // playback ran out inside the window, the pause cleared the health record, and
+    // the reading was taken in the first instant of a restart at 0. That is where
+    // the "about 7/s" of 2026-10-11 came from, not from the app.
     updateActiveSequence('lay copies', (s) => {
       const seq = s as Seq
-      return {
+      return recomputeDuration({
         ...seq,
         tracks: seq.tracks.map((t) =>
           t.kind !== 'video'
@@ -86,7 +114,7 @@ async function fill(page: Page, wanted: number): Promise<number> {
                 })),
               },
         ),
-      }
+      })
     })
     return videoClips(activeSequence(useStore.getState().project)).length
   }, wanted)
@@ -142,13 +170,14 @@ async function playHealth(page: Page, forMs: number): Promise<{ served: number; 
   })
   await page.keyboard.press(' ')
   await page.waitForTimeout(forMs)
-  await page.keyboard.press(' ')
-  return page.evaluate(async (forMs: number) => {
+  // ⛔ READ BEFORE THE PAUSE. A pause resets the health record, so a reading taken
+  // after it measures the instant after the reset and nothing that played.
+  const h = await page.evaluate(async (forMs: number) => {
     const mod = '/src/engine/previewTruth.ts'
     const { previewHealth } = (await import(/* @vite-ignore */ mod)) as {
       previewHealth: (withinMs?: number) => { count: number; spanS: number; wrongRatio: number; p95ErrMs: number }
     }
-    const h = previewHealth(forMs + 1000)
+    const h = previewHealth(forMs)
     return {
       served: h.count,
       perS: h.spanS > 0 ? +(h.count / h.spanS).toFixed(1) : 0,
@@ -156,6 +185,8 @@ async function playHealth(page: Page, forMs: number): Promise<{ served: number; 
       p95: Math.round(h.p95ErrMs),
     }
   }, forMs)
+  await page.keyboard.press(' ')
+  return h
 }
 
 test('a drag does not get dramatically dearer as the timeline fills up', async ({ page }) => {
@@ -240,7 +271,15 @@ test('the picture keeps up while it plays across a lot of cuts', async ({ page }
   // exists to catch.
   await page.locator('[data-clip-kind="video"]').first().click()
   await page.keyboard.press('Home')
-  await playHealth(page, 2500)
+  await playHealth(page, 1500)
+
+  // Which renderer drew this, so a number from a software fallback is never read
+  // as his machine.
+  const renderer = await page.evaluate(() => {
+    const gl = document.createElement('canvas').getContext('webgl2')
+    const ext = gl?.getExtension('WEBGL_debug_renderer_info')
+    return gl && ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : 'no webgl2'
+  })
 
   const rows: string[] = []
   const perS: { clips: number; perS: number; wrongPct: number }[] = []
@@ -248,12 +287,14 @@ test('the picture keeps up while it plays across a lot of cuts', async ({ page }
     const clips = await fill(page, wanted)
     await page.locator('[data-clip-kind="video"]').first().click()
     await page.keyboard.press('Home')
-    const h = await playHealth(page, 2500)
+    // 1.5 s, because the smallest timeline is 2 s long and the window must end
+    // before the edit does.
+    const h = await playHealth(page, 1500)
     rows.push(`${String(clips).padStart(4)} cuts: ${h.perS}/s served, ${h.wrongPct}% were the wrong frame, p95 error ${h.p95} ms`)
     perS.push({ clips, perS: h.perS, wrongPct: h.wrongPct })
   }
   const table = rows.join('\n')
-  console.log(`\nwhat the picture did while playing:\n${table}\n`)
+  console.log(`\nwhat the picture did while playing, on ${renderer}:\n${table}\n`)
 
   // ⛔ MEASUREMENT FIRST. The only thing asserted is that playback did not stop
   // dead and did not start serving mostly wrong frames, because those are the
