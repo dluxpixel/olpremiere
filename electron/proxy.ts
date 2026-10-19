@@ -128,6 +128,8 @@ interface Upload {
   abort: AbortController
   /** The transcode while it runs, so a release can wait for the encoder to be gone. */
   running: Promise<unknown> | null
+  /** All of finishProxy, its own tidying included, so a release returns only once that has settled. */
+  finishing: Promise<unknown> | null
 }
 const uploads = new Map<string, Upload>()
 
@@ -162,6 +164,7 @@ export async function beginProxy(): Promise<string> {
     handle: await open(inPath, 'w'),
     abort: new AbortController(),
     running: null,
+    finishing: null,
   })
   building++
   return id
@@ -192,10 +195,18 @@ export async function chunkProxy(id: string, bytes: ArrayBuffer): Promise<void> 
  * a missing proxy only means the preview reads the original, which is exactly
  * what it did before proxies existed.
  */
-export async function finishProxy(id: string): Promise<{ size: number }> {
+export function finishProxy(id: string): Promise<{ size: number }> {
   const up = uploads.get(id)
   const handle = up?.handle
-  if (!up || !handle) throw new Error('proxy: unknown upload')
+  if (!up || !handle) return Promise.reject(new Error('proxy: unknown upload'))
+  // Kept on the job before anything is awaited, so a release at any point after this
+  // line can wait for the whole of it. See releaseProxy.
+  const finishing = transcode(up, handle)
+  up.finishing = finishing
+  return finishing
+}
+
+async function transcode(up: Upload, handle: FileHandle): Promise<{ size: number }> {
   try {
     await handle.close()
     up.handle = null
@@ -241,6 +252,12 @@ export async function releaseProxy(id: string): Promise<void> {
   // with the encoder running on for minutes for a page that is gone.
   up.abort.abort()
   await up.running?.catch(() => undefined)
+  // ⛔ AND THE FINISH THAT STARTED IT, which still has its own `finally` to run after the
+  // encoder is gone. Waiting on the encoder alone let a release return before the finish
+  // had settled (2 of 12 runs of releaseStopsFfmpeg.test.ts alone, 2026-10-19). The finish
+  // never waits on a release, an encoder asked to start on a stopped signal refuses at once,
+  // and what is left after it is a stat and a delete, so this cannot hang.
+  await up.finishing?.catch(() => undefined)
   await up.handle?.close().catch(() => undefined)
   await rm(up.inPath, { force: true }).catch(() => undefined)
   await rm(up.outPath, { force: true }).catch(() => undefined)

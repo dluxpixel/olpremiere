@@ -1,6 +1,6 @@
 // Shared release helpers.
 import { execFileSync, spawn } from 'node:child_process'
-import { copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -398,11 +398,10 @@ const TEST_DIRS = {
 // not a test that reads the clock, and running it alone cost 12 s of every ship.
 const CLOCK_ASSERT = /^(?![ \t]*[`'"]).*(?:\bbenchRatio\(|\bperfRatio\b|\b(?:performance\.now|Date\.now)\(\)\s*-\s*[A-Za-z_])/m
 
-// Reads the clock but does not belong alone. Its 3 s limit is a hang check on a real ffmpeg, not a
-// speed budget, and its one flake is the reverse of load: it asserts that a release has already
-// settled the moment release returns, a race that fails when the box is quiet (2 of 12 runs of that
-// file alone, 0 of 10 beside the other lanes). Alone it turned a gate red; in the lane it did not.
-const STAYS_IN_THE_LANE = new Set(['electron/releaseStopsFfmpeg.test.ts'])
+// ⛔ NO FILE IS EXEMPT. electron/releaseStopsFfmpeg.test.ts was once kept in the busy lane because
+// it failed 2 of 12 runs alone. That was a real race in the app, not the box: a release returned
+// before the finish it stopped had settled. Fixed in proxy.ts and remux.ts (2026-10-19), so it
+// runs alone by the same rule as every other clock file.
 
 /**
  * The unit test files that assert on the clock, as repo relative paths with forward slashes,
@@ -415,7 +414,7 @@ export function timedTestFiles(root = process.cwd()) {
       const rel = `${dir}/${e.name}`
       if (e.isDirectory()) {
         if (e.name !== 'node_modules') walk(rel, pattern)
-      } else if (pattern.test(e.name) && !STAYS_IN_THE_LANE.has(rel) && CLOCK_ASSERT.test(readFileSync(join(root, rel), 'utf8'))) {
+      } else if (pattern.test(e.name) && CLOCK_ASSERT.test(readFileSync(join(root, rel), 'utf8'))) {
         found.push(rel)
       }
     }
@@ -436,6 +435,25 @@ export function unitTestPlan({ files = timedTestFiles() } = {}) {
     main: `npx vitest run ${limits}${skip}`,
     alone: files.length ? `npx vitest run ${limits} ${files.join(' ')}` : null,
   }
+}
+
+/**
+ * The four lanes of step 1 of the gate (patch.mjs), as `[cmd, label]` steps for runLanes. Each
+ * lane is a line of steps that depend on each other; the lanes share nothing. Built here, not in
+ * patch.mjs, so a test can read the real lanes instead of the source text that builds them.
+ * `units` is unitTestPlan(): the unit test lane is its `main`, never a bare `npx vitest run`.
+ */
+export function gateLanes(units) {
+  return [
+    [['npx tsc --noEmit', 'typecheck (renderer)']],
+    [['npx eslint .', 'lint']],
+    [[units.main, 'unit tests']],
+    [
+      ['npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)'],
+      ['npx electron-vite build', 'desktop build'],
+      ['node scripts/check-self-contained.mjs', 'the desktop bundle needs no node_modules'],
+    ],
+  ]
 }
 
 /**
@@ -747,6 +765,59 @@ export function keepEvidence({ from, root = EVIDENCE_DIR, extra = [], keep = 3, 
     const runs = readdirSync(root).filter((n) => statSync(join(root, n)).isDirectory()).sort()
     for (const old of runs.slice(0, Math.max(0, runs.length - keep))) rmSync(join(root, old), { recursive: true, force: true })
     return dest
+  } catch {
+    return null
+  }
+}
+
+// --- a flaky pass in the release gate leaves a trace (2026-10-19) -------------
+//
+// The release set retries a failed test once (playwright.config.ts), and its note promises a
+// test that only passes on the retry can still be found and fixed. Playwright names it in its
+// summary, but only in last-ship.log, which the next ship overwrites. So the gate reads the
+// summary, says so in a warning, and keeps the names in gate-evidence. It never fails the ship:
+// the retry is his choice, and a test that passed on its retry passed.
+
+/**
+ * The tests Playwright's list reporter counted as flaky, read from its summary:
+ *
+ *     2 flaky
+ *       [release] › e2e\mvp.spec.ts:3:7 › core edit flow › cut, trim and undo ───────
+ *       [release] › e2e\export.spec.ts:2:5 › exports a 9:16 movie ───────────────────
+ *     4 passed (1.3m)
+ *
+ * Returns `{ count, names }`. `count` is the number Playwright printed, so a summary whose names
+ * cannot be read still counts. Pure: the caller hands it the text.
+ */
+export function flakyTests(output) {
+  // eslint-disable-next-line no-control-regex
+  const lines = String(output ?? '').replace(/\u001b\[[0-9;]*m/g, '').split(/\r?\n/)
+  let at = -1
+  for (let i = lines.length - 1; i >= 0 && at < 0; i--) if (/^\s*\d+ flaky\s*$/.test(lines[i])) at = i
+  if (at < 0) return { count: 0, names: [] }
+  const count = Number(lines[at].trim().split(' ')[0])
+  const names = []
+  for (const line of lines.slice(at + 1)) {
+    const m = /^\s+(\[[^\]]+\] › .*?)\s*─*\s*$/.exec(line)
+    if (!m) break
+    names.push(m[1])
+  }
+  return { count, names }
+}
+
+/**
+ * Keep the names of a release gate's flaky tests in `<root>/<stamp>/flaky.txt`, the same
+ * gate-evidence folder a red gate keeps its traces in. Returns the file, or null. Never throws:
+ * keeping a note must not be the thing that stops a release.
+ */
+export function recordFlaky({ count, names }, { root = EVIDENCE_DIR, now = new Date() } = {}) {
+  try {
+    const dest = join(root, now.toISOString().replace(/[:.]/g, '-'))
+    mkdirSync(dest, { recursive: true })
+    const file = join(dest, 'flaky.txt')
+    const lines = [`${count} flaky in the release gate, ${now.toISOString()}: each failed once and passed on its retry.`, ...names]
+    writeFileSync(file, `${lines.join('\n')}\n`)
+    return file
   } catch {
     return null
   }

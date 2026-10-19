@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { defineConfig } from '@playwright/test'
 
 // THE GATE MUST OWN WHAT IT TESTS, AND IT MUST LEAVE EVIDENCE (2026-08-04)
@@ -38,7 +38,8 @@ import { defineConfig } from '@playwright/test'
 // release new updates. It doesn't take half as long. It doesn't even take a third of that long",
 // and "Let's work around the rules so that we test less also". The `release` project (below)
 // retries a failed test ONCE, alone. A test that passes on its second try is reported as flaky
-// in the ship log (Playwright's own summary names it), so it can still be found and fixed. The
+// (Playwright's own summary names it), and the gate names it in a warning and keeps the names in
+// gate-evidence, which the next ship does not overwrite, so it can still be found and fixed. The
 // full suite (`npm run verify`) still never retries: the rule above stands for it, word for word.
 
 // THE SUITE IS SPLIT INTO PROJECTS, AND WHAT EACH ONE IS FOR (2026-10-06)
@@ -94,6 +95,14 @@ for (const name of TIMING) {
   const src = readFileSync(new URL(`./e2e/${name}`, import.meta.url), 'utf8')
   if (!/from '\.\/quietBox'/.test(src)) {
     throw new Error(`e2e/${name} is a timing spec and must import { test } from './quietBox'`)
+  }
+}
+
+// A release spec that was renamed or deleted matches nothing, and the release gate would pass
+// on the specs that are left without ever saying one is gone. Refuse to start instead.
+for (const name of RELEASE) {
+  if (!existsSync(new URL(`./e2e/${name}`, import.meta.url))) {
+    throw new Error(`e2e/${name} is in the release set and does not exist`)
   }
 }
 

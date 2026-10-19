@@ -59,6 +59,8 @@ import {
   enterGate,
   FAST_MARK,
   fastRefusal,
+  flakyTests,
+  gateLanes,
   isTransientFailure,
   keepEvidence,
   loadToken,
@@ -68,6 +70,7 @@ import {
   nextVersion,
   openShipLog,
   planShip,
+  recordFlaky,
   runLanes,
   runLogged,
   SHIP_LOG,
@@ -107,7 +110,7 @@ if (!message && !verifyOnly) {
 // minute gate can always be read back. See runLogged in lib.mjs for the day
 // that cost.
 const shipLog = openShipLog(`ship: ${new Date().toISOString()}`)
-const run = (cmd, label) => runLogged(cmd, label, shipLog)
+const run = (cmd, label, opts) => runLogged(cmd, label, shipLog, opts)
 // A plain line, on screen and in the ship log.
 const tell = (say) => {
   process.stdout.write(say)
@@ -200,16 +203,7 @@ const gate = async (tree) => {
   // in release.mjs after the version was already public. The release still rebuilds
   // after the bump, because the version is baked in.
   const units = unitTestPlan()
-  const lanes = [
-    [['npx tsc --noEmit', 'typecheck (renderer)']],
-    [['npx eslint .', 'lint']],
-    [[units.main, 'unit tests']],
-    [
-      ['npx tsc -p tsconfig.electron.json --noEmit', 'typecheck (electron)'],
-      ['npx electron-vite build', 'desktop build'],
-      ['node scripts/check-self-contained.mjs', 'the desktop bundle needs no node_modules'],
-    ],
-  ]
+  const lanes = gateLanes(units)
   tell(`\n▶ the ${fullGate ? 'FULL' : 'RELEASE'} gate: ${lanes.length} lanes of checks at once, each one shown when it ends\n`)
   const checked = await runLanes(lanes, shipLog)
   // process.exit in fail() drops pending stream writes, so the red lane's block would be lost from the ship log.
@@ -241,9 +235,9 @@ const gate = async (tree) => {
 
   // 2. THE BROWSER SUITE. A red one moves its traces out of test-results/ first,
   // because the next Playwright run anywhere in this repo empties that folder.
-  const blockingBrowserRun = async (cmd, label) => {
+  const blockingBrowserRun = async (cmd, label, opts) => {
     try {
-      await run(cmd, label)
+      await run(cmd, label, opts)
     } catch {
       // Flushed before it is copied, so the kept log ends where the run did.
       await new Promise((resolve) => (shipLog ? shipLog.write('\n[gate] the browser suite failed, keeping its evidence\n', resolve) : resolve()))
@@ -271,10 +265,36 @@ const gate = async (tree) => {
       }
     } else {
       // The release set (playwright.config.ts): boot, mvp and export, a failed test retried
-      // once. A test that passes on its second try is named as flaky in Playwright's own
-      // summary in the ship log, so it can be fixed. OLP_RELEASE is set for this one step
-      // and put back after (the child inherits process.env).
-      await withEnv('OLP_RELEASE', '1', () => blockingBrowserRun('npx playwright test', 'end to end (release set)'))
+      // once. OLP_RELEASE is set for this one step and put back after (the child inherits
+      // process.env).
+      //
+      // ⛔ A TEST THAT PASSES ON ITS SECOND TRY IS FLAKY, AND THAT MUST OUTLIVE THIS RUN. Playwright
+      // names it in its summary, but only in last-ship.log, which the next ship overwrites. So
+      // the output is read as it goes past, and a flaky one is named in a warning and kept in
+      // gate-evidence (flakyTests and recordFlaky in lib.mjs). A warning only: it passed.
+      const said = []
+      let saidBytes = 0
+      const keep = (stream) => ({
+        write: (d) => {
+          const b = Buffer.isBuffer(d) ? d : Buffer.from(String(d))
+          said.push(b)
+          saidBytes += b.length
+          // Bounded, the summary is at the end. Whole chunks only, so no character is cut.
+          while (saidBytes > 256_000 && said.length > 1) saidBytes -= said.shift().length
+          stream.write(d)
+        },
+      })
+      const tee = { out: keep(process.stdout), err: keep(process.stderr) }
+      await withEnv('OLP_RELEASE', '1', () => blockingBrowserRun('npx playwright test', 'end to end (release set)', tee))
+      const flaky = flakyTests(Buffer.concat(said).toString('utf8'))
+      if (flaky.count) {
+        const kept = recordFlaky(flaky)
+        tell(
+          `\n⚠ ${flaky.count} release test${flaky.count === 1 ? '' : 's'} failed once and passed on the retry (flaky). That blocks nothing; it is named so it can be found and fixed:\n` +
+            flaky.names.map((n) => `   ${n}\n`).join('') +
+            (kept ? `   Kept in ${kept}\n` : ''),
+        )
+      }
     }
   }
 

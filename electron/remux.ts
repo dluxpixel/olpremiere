@@ -55,6 +55,8 @@ interface Job {
   abort: AbortController
   /** The conversion while it runs, so a release can wait for ffmpeg to be gone. */
   running: Promise<unknown> | null
+  /** All of finishRemux, its own tidying included, so a release returns only once that has settled. */
+  finishing: Promise<unknown> | null
 }
 const jobs = new Map<string, Job>()
 
@@ -81,6 +83,7 @@ export async function beginRemux(): Promise<string> {
     handle: await open(inPath, 'w'),
     abort: new AbortController(),
     running: null,
+    finishing: null,
   })
   return id
 }
@@ -96,16 +99,30 @@ export async function chunkRemux(id: string, bytes: ArrayBuffer): Promise<void> 
  * Convert what was uploaded. The SOURCE temp goes immediately; the OUTPUT stays
  * until `releaseRemux`, because the renderer still has to read it back.
  */
-export async function finishRemux(
+export function finishRemux(
   id: string,
   mode: ConvertMode = 'convert',
   onProgress?: (frac: number) => void,
 ): Promise<ConvertResult> {
   const job = jobs.get(id)
-  if (!job?.handle) throw new Error('remux: unknown upload')
+  const handle = job?.handle
+  if (!job || !handle) return Promise.reject(new Error('remux: unknown upload'))
+  // Kept on the job before anything is awaited, so a release at any point after this
+  // line can wait for the whole of it, the busy flag included. See releaseRemux.
+  const finishing = convert(job, handle, mode, onProgress)
+  job.finishing = finishing
+  return finishing
+}
+
+async function convert(
+  job: Job,
+  handle: FileHandle,
+  mode: ConvertMode,
+  onProgress?: (frac: number) => void,
+): Promise<ConvertResult> {
   working++
   try {
-    await job.handle.close()
+    await handle.close()
     job.handle = null
     const run = convertToMp4(ffmpegPath(), job.inPath, job.outPath, mode, onProgress, job.abort.signal)
     job.running = run
@@ -152,6 +169,12 @@ export async function releaseRemux(id: string): Promise<void> {
   jobs.delete(id)
   job.abort.abort()
   await job.running?.catch(() => undefined)
+  // ⛔ AND THE FINISH THAT STARTED IT, which drops the busy flag and deletes the source in
+  // its own `finally` after ffmpeg is gone. Waiting on ffmpeg alone let a release return
+  // with the updater still told a conversion was running (releaseStopsFfmpeg.test.ts,
+  // 2026-10-19). The finish never waits on a release, and every ffmpeg step left in it
+  // refuses at once on a stopped signal, so this cannot hang.
+  await job.finishing?.catch(() => undefined)
   await job.handle?.close().catch(() => undefined)
   await rm(job.inPath, { force: true }).catch(() => undefined)
   await rm(job.outPath, { force: true }).catch(() => undefined)

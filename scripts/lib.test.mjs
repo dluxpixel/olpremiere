@@ -15,7 +15,9 @@ import {
   commitExactTree,
   enterGate,
   fastRefusal,
+  flakyTests,
   GATE_TEST_TIMEOUT_MS,
+  gateLanes,
   keepEvidence,
   manifestsBeyondVersion,
   manifestsMoved,
@@ -29,6 +31,7 @@ import {
   MINOR_ROLLOVER,
   nextVersion,
   planShip,
+  recordFlaky,
   releaseWork,
   runLanes,
   runLoggedRetry,
@@ -903,10 +906,6 @@ describe('the unit tests inside the parallel gate', () => {
       "  'benchRatio(() => 1)',",
       '])',
     ])
-    // Reads the clock, but is named as one that stays in the busy lane (its flake is a race, not load).
-    put('electron/releaseStopsFfmpeg.test.ts', [
-      'expect(Date.now() - t0).toBeLessThan(3000)',
-    ])
     // Not tests, not where vitest looks, or someone else's.
     put('src/ratio.ts', [
       'export function benchRatio() {}',
@@ -942,8 +941,6 @@ describe('the unit tests inside the parallel gate', () => {
       expect(found, f).toContain(f)
     }
     expect(found).not.toContain('scripts/lib.test.mjs')
-    // Flaky when run alone on a quiet box, fine beside the other lanes: it stays in the lane.
-    expect(found).not.toContain('electron/releaseStopsFfmpeg.test.ts')
   })
 
   it('gives every test and hook 30 s in the gate, on the lane and on the clock files alike', () => {
@@ -1029,20 +1026,34 @@ describe('patch.mjs runs two gates (2026-10-12)', () => {
     expect(code).toMatch(/const fullGate = verifyOnly\b/)
   })
 
-  it('runs the checks that need no browser as four lanes at once, the electron ones in order', () => {
+  it('runs the checks that need no browser as the lanes gateLanes builds, all at once', () => {
+    expect(code).toMatch(/const units = unitTestPlan\(\)/)
+    expect(code).toMatch(/const lanes = gateLanes\(units\)/)
     expect(code).toMatch(/await runLanes\(lanes, shipLog\)/)
     expect(code).toMatch(/if \(!checked\.ok\) fail\(checked\.failed\)/)
-    for (const cmd of ['npx tsc --noEmit', 'npx eslint .']) {
-      expect(code).toContain(`[['${cmd}',`)
-    }
+    // No lane is built by hand here, and no vitest run either.
+    expect(code).not.toMatch(/npx vitest/)
+    expect(code).not.toMatch(/npx tsc|npx eslint|electron-vite build|check-self-contained/)
+  })
+
+  it('gateLanes: four lanes, these steps in this order, the unit lane is the plan\'s main', () => {
+    const units = unitTestPlan()
+    const lanes = gateLanes(units)
+    expect(lanes).toHaveLength(4)
+    expect(lanes.map((steps) => steps.map(([, label]) => label))).toEqual([
+      ['typecheck (renderer)'],
+      ['lint'],
+      ['unit tests'],
+      ['typecheck (electron)', 'desktop build', 'the desktop bundle needs no node_modules'],
+    ])
     // The unit test lane is the plan's `main` command (every file but the clock ones), never a bare
     // `npx vitest run` with the 5 s default that failed the first real release gate (2026-10-12).
-    expect(code).toContain('[[units.main,')
-    expect(code).toMatch(/const units = unitTestPlan\(\)/)
-    expect(code).not.toMatch(/npx vitest/)
-    expect(code).toMatch(
-      /\['npx tsc -p tsconfig\.electron\.json --noEmit', '[^']+'\],\s*\['npx electron-vite build', '[^']+'\],\s*\['node scripts\/check-self-contained\.mjs', '[^']+'\],?\s*\],\s*\]/,
-    )
+    expect(lanes.map((steps) => steps.map(([cmd]) => cmd))).toEqual([
+      ['npx tsc --noEmit'],
+      ['npx eslint .'],
+      [units.main],
+      ['npx tsc -p tsconfig.electron.json --noEmit', 'npx electron-vite build', 'node scripts/check-self-contained.mjs'],
+    ])
   })
 
   it('runs the clock tests alone once the lanes passed, and before the web build and the browser', () => {
@@ -1078,6 +1089,16 @@ describe('patch.mjs runs two gates (2026-10-12)', () => {
     expect(cfg.match(/retries:/g)).toHaveLength(1)
   })
 
+  it('playwright.config.ts refuses to start when a release spec does not exist, and each one does', () => {
+    const cfg = readFileSync(new URL('../playwright.config.ts', import.meta.url), 'utf8')
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//'))
+      .join('\n')
+    expect(cfg).toMatch(/for \(const name of RELEASE\) \{\s*if \(!existsSync\(new URL\(`\.\/e2e\/\$\{name\}`, import\.meta\.url\)\)\) \{\s*throw new Error\(/)
+    const names = JSON.parse(cfg.match(/const RELEASE = (\[[^\]]*\])/)[1].replace(/'/g, '"'))
+    for (const name of names) expect(existsSync(new URL(`../e2e/${name}`, import.meta.url)), name).toBe(true)
+  })
+
   it('the full gate blocks on smoke and ui, and only warns about the speed tests', () => {
     expect(code).toMatch(/blockingBrowserRun\('npx playwright test --project=smoke --project=ui', /)
     expect(code).toMatch(/try \{\s*await run\('npx playwright test --project=timing', '[^']*'\)\s*\} catch \{\s*tell\(/)
@@ -1085,7 +1106,18 @@ describe('patch.mjs runs two gates (2026-10-12)', () => {
 
   it('a red blocking browser run keeps its evidence in both gates', () => {
     expect(code.match(/keepEvidence\(/g)).toHaveLength(1)
-    expect(code).toMatch(/const blockingBrowserRun = async \(cmd, label\) => \{/)
+    expect(code).toMatch(/const blockingBrowserRun = async \(cmd, label, opts\) => \{/)
+  })
+
+  it('the release gate names its flaky tests and keeps them, without failing the ship', () => {
+    // The release run's own output is read, after it passed, and a flaky one only warns.
+    const at = code.indexOf('const tee = ')
+    const block = code.slice(at, code.indexOf('const after = treeHash()'))
+    expect(at).toBeGreaterThan(-1)
+    expect(block).toMatch(/^const tee = \{ out: keep\(process\.stdout\), err: keep\(process\.stderr\) \}\s*await withEnv\('OLP_RELEASE', '1', \(\) => blockingBrowserRun\('npx playwright test', '[^']+', tee\)\)/)
+    expect(block).toMatch(/const flaky = flakyTests\(Buffer\.concat\(said\)\.toString\('utf8'\)\)/)
+    expect(block).toMatch(/if \(flaky\.count\) \{\s*const kept = recordFlaky\(flaky\)\s*tell\(/)
+    expect(block).not.toMatch(/\bfail\(|process\.exit/)
   })
 
   it('only the full gate stamps', () => {
@@ -1096,6 +1128,102 @@ describe('patch.mjs runs two gates (2026-10-12)', () => {
   it('lowers its own priority before it starts anything', () => {
     expect(code).toContain('setPriority(constants.priority.PRIORITY_BELOW_NORMAL)')
     expect(code.indexOf('setPriority(')).toBeLessThan(code.indexOf('openShipLog('))
+  })
+})
+
+// 2026-10-19: the release set retries a failed test once, and a test that passed on its retry was
+// named only in last-ship.log, which the next ship overwrites. The text below is a real Playwright
+// 1 worker run, list reporter, piped the way the gate pipes it: two tests failed once and passed on
+// the retry, two passed first time.
+const PLAYWRIGHT_FLAKY = String.raw`
+Running 4 tests using 1 worker
+
+  ok 1 [release] › e2e\boot.spec.ts:2:5 › the editor mounts (5ms)
+  x  2 [release] › e2e\export.spec.ts:2:5 › exports a 9:16 movie (3ms)
+  ok 3 [release] › e2e\export.spec.ts:2:5 › exports a 9:16 movie (retry #1) (4ms)
+  x  4 [release] › e2e\mvp.spec.ts:3:7 › core edit flow › cut, trim and undo (3ms)
+  ok 5 [release] › e2e\mvp.spec.ts:3:7 › core edit flow › cut, trim and undo (retry #1) (5ms)
+  ok 6 [release] › e2e\mvp.spec.ts:6:7 › core edit flow › drag a clip (1ms)
+
+
+  1) [release] › e2e\export.spec.ts:2:5 › exports a 9:16 movie ─────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 1
+    Received: 0
+
+      1 | import { test, expect } from '@playwright/test'
+      2 | test('exports a 9:16 movie', ({}, info) => {
+    > 3 |   expect(info.retry).toBe(1)
+        |                      ^
+      4 | })
+      5 |
+        at C:\Users\skyle\AppData\Local\Temp\pw\e2e\export.spec.ts:3:22
+
+    Error Context: test-results\export-exports-a-9-16-movie-release\error-context.md
+
+  2) [release] › e2e\mvp.spec.ts:3:7 › core edit flow › cut, trim and undo ─────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 1
+    Received: 0
+
+      2 | test.describe('core edit flow', () => {
+      3 |   test('cut, trim and undo', ({}, info) => {
+    > 4 |     expect(info.retry).toBe(1)
+        |                        ^
+      5 |   })
+      6 |   test('drag a clip', () => {
+      7 |     expect(2).toBe(2)
+        at C:\Users\skyle\AppData\Local\Temp\pw\e2e\mvp.spec.ts:4:24
+
+    Error Context: test-results\mvp-core-edit-flow-cut-trim-and-undo-release\error-context.md
+
+  2 flaky
+    [release] › e2e\export.spec.ts:2:5 › exports a 9:16 movie ──────────────────────────────────────
+    [release] › e2e\mvp.spec.ts:3:7 › core edit flow › cut, trim and undo ──────────────────────────
+  2 passed (1.3s)
+`
+
+describe('a flaky pass in the release gate', () => {
+  const NAMES = [
+    String.raw`[release] › e2e\export.spec.ts:2:5 › exports a 9:16 movie`,
+    String.raw`[release] › e2e\mvp.spec.ts:3:7 › core edit flow › cut, trim and undo`,
+  ]
+
+  it('reads the flaky count and every flaky test from the summary, and nothing else', () => {
+    expect(flakyTests(PLAYWRIGHT_FLAKY)).toEqual({ count: 2, names: NAMES })
+  })
+
+  it('reads it the same with Windows line ends and colour codes', () => {
+    const coloured = PLAYWRIGHT_FLAKY.replace('  2 flaky', '  \u001b[33m2 flaky\u001b[39m').replace(/\n/g, '\r\n')
+    expect(flakyTests(coloured)).toEqual({ count: 2, names: NAMES })
+  })
+
+  it('finds nothing in a clean run, or in no output at all', () => {
+    expect(flakyTests('\nRunning 4 tests using 1 worker\n\n  ok 1 [release] › e2e\\boot.spec.ts:2:5 › the editor mounts (5ms)\n\n  4 passed (1.4m)\n')).toEqual({ count: 0, names: [] })
+    expect(flakyTests('')).toEqual({ count: 0, names: [] })
+    expect(flakyTests(undefined)).toEqual({ count: 0, names: [] })
+  })
+
+  it('still counts a summary whose names it cannot read', () => {
+    expect(flakyTests('  1 flaky\n  3 passed (1.0m)\n')).toEqual({ count: 1, names: [] })
+  })
+
+  it('keeps the names in a gate-evidence run folder, and never throws', () => {
+    const root = scratchDir('olp-flaky-')
+    const now = new Date('2026-10-19T12:34:56.789Z')
+    const file = recordFlaky(flakyTests(PLAYWRIGHT_FLAKY), { root, now })
+    expect(file).toBe(join(root, '2026-10-19T12-34-56-789Z', 'flaky.txt'))
+    const lines = readFileSync(file, 'utf8').trim().split('\n')
+    expect(lines[0]).toMatch(/^2 flaky in the release gate, 2026-10-19T12:34:56\.789Z/)
+    expect(lines.slice(1)).toEqual(NAMES)
+    // A root that cannot be made (a file is in the way) is a null, not a thrown error.
+    const blocked = join(root, 'a-file')
+    writeFileSync(blocked, '')
+    expect(recordFlaky({ count: 1, names: [] }, { root: blocked, now })).toBeNull()
   })
 })
 
