@@ -374,12 +374,41 @@ describe('the Word box style', () => {
   it('puts three words on the screen at a time, on one line', () => {
     expect(WORD_BOX.shape).toMatchObject({ length: 'fixed', maxWords: 3, lines: 1 })
     const words = said("awake doesn't really mean what you think", 0, 0.3)
-    // The shape alone, with no fit check: the fit check measures a font other than
-    // Montserrat and Lilita One with Montserrat's widths (captionFit.ts).
-    const chunks = chunkWords(words, chunkOptionsFor(WORD_BOX.shape, SHORT.fps))
+    const chunks = chunkWords(words, chunkOptionsFor(WORD_BOX.shape, SHORT.fps, captionFitterFor(WORD_BOX, SHORT, captionHouseCase)))
     expect(wordsIn(chunks)).toEqual(words.map((w) => w.text))
     expect(chunks.every((c) => c.text.split(/\s+/).length <= 3)).toBe(true)
     expect(chunks[0]!.text).toBe("awake doesn't really")
+  })
+
+  // Oswald is condensed (captionFit.ts has its own widths for it). Measured with
+  // Montserrat's widths a run like "awake doesn't really" read 1216 px against a
+  // 950 px line, and the style's three words were cut to two on a 1080x1920 Short.
+  describe('keeps three words a caption on a tall frame', () => {
+    const PHONE = { width: 1080, height: 2112, fps: 30 }
+    const cut = (text: string, seq = SHORT): string[] =>
+      chunkWords(
+        said(text, 0, 0.3),
+        chunkOptionsFor(WORD_BOX.shape, seq.fps, captionFitterFor(WORD_BOX, seq, captionHouseCase)),
+      ).map((c) => c.text)
+    // Each of these is wider than the line in Montserrat's widths and narrower in Oswald's.
+    const BOTH = ["they didn't believe", 'most people never', 'people never realize']
+    const SHORT_ONLY = ["awake doesn't really", 'everybody knows that']
+
+    it('on the 1080x1920 Short, for ordinary words', () => {
+      for (const run of [...BOTH, ...SHORT_ONLY]) expect(cut(run), run).toEqual([run])
+      expect(cut('so i went to the store and then home')).toEqual(['so i went', 'to the store', 'and then home'])
+    })
+
+    it('on the Phone frame, which draws the font bigger in the same width', () => {
+      for (const run of BOTH) expect(cut(run, PHONE), run).toEqual([run])
+      expect(cut('so i went to the store and then home', PHONE)).toEqual(['so i went', 'to the store', 'and then home'])
+    })
+
+    it('still cuts a run that is really too wide for the line', () => {
+      // 987 px at the Short size and 1085 px on the Phone frame, against 950.
+      expect(cut('something else entirely')).toEqual(['something else', 'entirely'])
+      expect(cut('something else entirely', PHONE)).toEqual(['something else', 'entirely'])
+    })
   })
 
   it('dresses a caption with the box colours and keeps the words he said', () => {

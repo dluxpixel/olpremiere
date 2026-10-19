@@ -2,6 +2,9 @@
 // rises, where the word times come from, and that the title handed on is the same
 // object whenever nothing about it changed.
 
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { defaultTitleDef, newTitleClip, type Clip, type TitleDef } from '../types'
 import {
@@ -350,5 +353,58 @@ describe('wordPopTitle with a word box', () => {
     expect(t.boxWord).toEqual({ at: 0, word: 'one' })
     const late = wordPopTitle(retyped, retyped.outS - 0.01)!
     expect(late.boxWord).toEqual({ at: 3, word: 'four' })
+  })
+})
+
+// ⛔ DECIDED IN ONE PLACE (the header of wordPop.ts). The monitor and the export worker
+// both draw layer.title, so the lit word and the box agree between the preview and the
+// file only while layerFor in render/resolve.ts is the one place that works them out.
+// A second caller of wordPopTitle, or a direct call to activeWordAt or popScaleAt, is a
+// second answer to "which word is it", and this reads the source to catch one.
+const SRC = fileURLToPath(new URL('../..', import.meta.url))
+
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name)
+    if (statSync(path).isDirectory()) return sourceFiles(path)
+    return /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) ? [path] : []
+  })
+}
+
+/** A file's code with its comments cut, so a name in a comment is not a call. */
+const codeOf = (path: string): string =>
+  readFileSync(path, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '')
+
+/** Every source file outside wordPop.ts that calls `name(`, with how many calls it makes. */
+function callersOf(name: string): string[] {
+  const own = join(SRC, 'engine', 'captions', 'wordPop.ts')
+  const call = new RegExp(`\\b${name}\\s*\\(`, 'g')
+  return sourceFiles(SRC)
+    .filter((path) => path !== own)
+    .flatMap((path) => {
+      const n = codeOf(path).match(call)?.length ?? 0
+      return n > 0 ? [`${relative(SRC, path).replace(/\\/g, '/')} x${n}`] : []
+    })
+}
+
+describe('wordPopTitle has exactly one caller', () => {
+  it('is layerFor in render/resolve.ts, once', () => {
+    expect(callersOf('wordPopTitle')).toEqual(['engine/render/resolve.ts x1'])
+  })
+
+  it('is called there as the layer title, inside layerFor', () => {
+    const code = codeOf(join(SRC, 'engine', 'render', 'resolve.ts'))
+    const start = code.indexOf('function layerFor(')
+    expect(start).toBeGreaterThan(-1)
+    // A top level function ends at the first closing brace in column 0.
+    const layerFor = code.slice(start, code.indexOf('\n}\n', start))
+    expect(layerFor).toContain('title: wordPopTitle(clip, sourceTimeS)')
+  })
+
+  it('leaves activeWordAt and popScaleAt to wordPop.ts alone', () => {
+    expect(callersOf('activeWordAt')).toEqual([])
+    expect(callersOf('popScaleAt')).toEqual([])
   })
 })

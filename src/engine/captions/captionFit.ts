@@ -15,8 +15,11 @@
 // in two rather than allowed to wrap. Lilita One has its own table (the Oveon
 // style, 2026-10-12): it draws about a fifth narrower than Montserrat, so with
 // Montserrat's widths a long word in it was shrunk to a size it never needed.
-// Any other font is measured with Montserrat's widths, which is close for the
-// sans fonts and an estimate for the rest.
+// Oswald has its own table too (the Word box style, 2026-10-19): it is a
+// condensed face, about 28% narrower than Montserrat at the same size, so with
+// Montserrat's widths the style's fixed three words were measured too wide for
+// the line and cut to two on a 1080x1920 frame. Any other font is measured with
+// Montserrat's widths, which is close for the sans fonts and an estimate for the rest.
 //
 // Pure: no canvas, no store.
 
@@ -41,12 +44,24 @@ const LILITA_ADVANCE = [
   362, 459,
 ] as const
 
+/** Oswald at weight 700, advance per 1000 em, for ' ' (32) to '~' (126). */
+const OSWALD_ADVANCE = [
+  256, 257, 360, 534, 485, 1006, 570, 170, 338, 328, 423, 449, 238, 324, 244, 422, 550, 385, 514, 514, 524, 509, 538,
+  439, 521, 538, 278, 285, 398, 442, 398, 483, 950, 551, 588, 563, 586, 447, 434, 582, 610, 301, 349, 567, 443, 704,
+  561, 586, 571, 586, 600, 514, 445, 588, 526, 697, 515, 493, 433, 332, 422, 324, 476, 368, 307, 460, 506, 468, 503,
+  470, 320, 502, 509, 265, 269, 510, 274, 753, 507, 483, 505, 504, 383, 424, 351, 504, 421, 597, 442, 448, 392, 374,
+  262, 379, 481,
+] as const
+
 /** A character outside the table and with no plain letter under it: about a capital's width. */
 const OTHER = 720
 
-/** The width table for a font stack: Lilita One's own when it leads, Montserrat's otherwise. */
-const tableFor = (fontFamily?: string): readonly number[] =>
-  fontFamily && /^\s*['"]?Lilita One/i.test(fontFamily) ? LILITA_ADVANCE : ADVANCE
+/** The width table for a font stack: Lilita One's or Oswald's own when it leads, Montserrat's otherwise. */
+function tableFor(fontFamily?: string): readonly number[] {
+  if (fontFamily && /^\s*['"]?Lilita One/i.test(fontFamily)) return LILITA_ADVANCE
+  if (fontFamily && /^\s*['"]?Oswald\b/i.test(fontFamily)) return OSWALD_ADVANCE
+  return ADVANCE
+}
 
 /** Width of one character, per 1000 em. An accented letter is as wide as its plain one. */
 function advance(ch: string, table: readonly number[]): number {
