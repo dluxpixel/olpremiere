@@ -32,7 +32,7 @@ import {
   type CaptionStyle,
 } from './captionStyle'
 import { captionLineWidthPx, captionTextWidthPx } from './captionFit'
-import { COMIC_STACK } from '../render/titleFonts'
+import { COMIC_STACK, OSWALD_STACK } from '../render/titleFonts'
 
 const HOUSE = BUILTIN_CAPTION_STYLES[0]!
 
@@ -341,5 +341,101 @@ describe('the Oveon style', () => {
     expect(long.fontSizePx).toBeGreaterThan(200)
     expect(long.fontSizePx).toBeLessThan(218)
     expect(captionTextWidthPx('Everybody', long.fontSizePx, long.fontFamily)).toBeLessThanOrEqual(captionLineWidthPx(SHORT.width))
+  })
+})
+
+// The Word box style, 2026-10-19: his ask was to copy the captions of a frame he
+// sent, white capitals three at a time with a rounded crimson box on the word
+// being said, and to have the box as an option on any style.
+describe('the Word box style', () => {
+  const SHORT = { width: 1080, height: 1920, fps: 30 }
+  const WORD_BOX = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-word-box')!
+  const BOX = { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' }
+
+  it('is built in, named Word box, and cannot be edited in place', () => {
+    expect(WORD_BOX).toBeDefined()
+    expect(WORD_BOX.name).toBe('Word box')
+    expect(WORD_BOX.builtin).toBe(true)
+  })
+
+  it('is white capitals in Oswald with a dark outline, no shadow or background, and the crimson box', () => {
+    const def = captionDefFor(WORD_BOX, 'awake', SHORT.height)
+    expect(def.fontFamily).toBe(OSWALD_STACK)
+    expect(def.bold).toBe(true)
+    expect(def.color).toBe('#ffffff')
+    expect(def.textCase).toBe('upper')
+    expect(def.outline).toEqual({ color: '#000000', widthPx: 13 })
+    expect(def.shadow).toBeUndefined()
+    expect(def.box).toBeUndefined()
+    expect(def.wordBox).toEqual(BOX)
+    expect([def.align, def.vAlign, def.offsetYPx]).toEqual(['center', 'middle', 0])
+  })
+
+  it('puts three words on the screen at a time, on one line', () => {
+    expect(WORD_BOX.shape).toMatchObject({ length: 'fixed', maxWords: 3, lines: 1 })
+    const words = said("awake doesn't really mean what you think", 0, 0.3)
+    // The shape alone, with no fit check: the fit check measures a font other than
+    // Montserrat and Lilita One with Montserrat's widths (captionFit.ts).
+    const chunks = chunkWords(words, chunkOptionsFor(WORD_BOX.shape, SHORT.fps))
+    expect(wordsIn(chunks)).toEqual(words.map((w) => w.text))
+    expect(chunks.every((c) => c.text.split(/\s+/).length <= 3)).toBe(true)
+    expect(chunks[0]!.text).toBe("awake doesn't really")
+  })
+
+  it('dresses a caption with the box colours and keeps the words he said', () => {
+    const plain = newTitleClip(jettismCaptionDef("awake doesn't really", SHORT.height), 0, 1)
+    const spoken = said("awake doesn't really", 0, 0.3).map(({ text, startS, endS }) => ({ text, startS, endS }))
+    const clip: Clip = { ...plain, captionWords: spoken }
+    const out = dressCaption(clip, WORD_BOX, SHORT.width, SHORT.height)
+    expect(out.title!.wordBox).toEqual(BOX)
+    expect(out.captionWords).toEqual(clip.captionWords)
+    // What is stored is the colours only: which word is boxed is worked out per frame.
+    expect(out.title!.boxWord).toBeUndefined()
+  })
+
+  it('scales its text with the frame and leaves the box colours alone', () => {
+    const small = captionDefFor(WORD_BOX, 'x', 1080)
+    expect(small.fontSizePx).toBe(51)
+    expect(small.wordBox).toEqual(BOX)
+  })
+
+  it('is the only built in with a box: every other style draws exactly as it did', () => {
+    for (const s of BUILTIN_CAPTION_STYLES) {
+      if (s.id === WORD_BOX.id) continue
+      expect(captionDefFor(s, 'x', 1920).wordBox).toBeUndefined()
+    }
+  })
+})
+
+describe('the word box in a saved look', () => {
+  const BOX = { color: 'rgba(10,20,30,0.5)', borderColor: '#336699' }
+
+  it('round trips through lookOfTitle, a save and cleanStyle', () => {
+    const def: TitleDef = { ...jettismCaptionDef('x', 1920), wordBox: BOX }
+    const look = lookOfTitle(def)
+    expect(look.wordBox).toEqual(BOX)
+    // A copy, not the title's own object.
+    expect(look.wordBox).not.toBe(BOX)
+    const saved = JSON.parse(JSON.stringify(style({ look, refHeight: 1920 }))) as CaptionStyle
+    expect(captionDefFor(cleanStyle(saved)!, 'x', 1920)).toEqual(def)
+  })
+
+  it('writes a title with no box as null, so the box stays off after a save', () => {
+    const def: TitleDef = { ...jettismCaptionDef('x', 1920) }
+    expect(lookOfTitle(def).wordBox).toBeNull()
+    const saved = JSON.parse(JSON.stringify(style({ look: lookOfTitle(def), refHeight: 1920 }))) as CaptionStyle
+    expect(captionDefFor(cleanStyle(saved)!, 'x', 1920).wordBox).toBeUndefined()
+    expect('wordBox' in captionDefFor(cleanStyle(saved)!, 'x', 1920)).toBe(false)
+  })
+
+  it('takes a box away that the caption had, when the style says none', () => {
+    const boxed = dressCaption(newTitleClip({ ...jettismCaptionDef('x', 1920), wordBox: BOX }, 0, 1), style({ look: { wordBox: BOX } }), 1080, 1920)
+    expect(boxed.title!.wordBox).toEqual(BOX)
+    const off = dressCaption(boxed, style({ look: { wordBox: null } }), 1080, 1920)
+    expect('wordBox' in off.title!).toBe(false)
+  })
+
+  it('a style that says nothing about the box leaves the house caption without one', () => {
+    expect(captionDefFor(style({ look: { color: '#00ff00' } }), 'x', 1920).wordBox).toBeUndefined()
   })
 })

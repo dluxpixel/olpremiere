@@ -1217,3 +1217,44 @@ describe('a stretched clip', () => {
     expect(asLayer(ops[1]).transform.fit).toBe('stretch')
   })
 })
+
+// His ask, 2026-10-19: a box round the word being said. Which word is decided at
+// resolve time, in one place, so the monitor and the export draw the same one.
+describe('the word box follows the word being said', () => {
+  const boxed = (over: Partial<Clip> = {}): Clip =>
+    clip({
+      startS: 5,
+      inS: 0,
+      outS: 1.4,
+      assetId: '',
+      title: { ...defaultTitleDef('one two three'), wordBox: { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' } },
+      captionWords: [
+        { text: 'one', startS: 0.2, endS: 0.55 },
+        { text: 'two', startS: 0.6, endS: 0.95 },
+        { text: 'three', startS: 1.0, endS: 1.4 },
+      ],
+      ...over,
+    })
+  const titleAt = (c: Clip, t: number) => asLayer(resolveFrame(seqOf([track({ clips: [c] })]), t).ops[0]).title
+
+  it('resolved inside the second word, the box is on the second word', () => {
+    expect(titleAt(boxed(), 5.7)?.boxWord).toEqual({ at: 1, word: 'two' })
+  })
+
+  it('moves to the next word as it starts, and the stored title is never written to', () => {
+    const c = boxed()
+    expect(titleAt(c, 5.3)?.boxWord).toEqual({ at: 0, word: 'one' })
+    expect(titleAt(c, 6.1)?.boxWord).toEqual({ at: 2, word: 'three' })
+    expect(c.title!.boxWord).toBeUndefined()
+  })
+
+  it('is the clip title itself before the first word, so nothing is boxed yet', () => {
+    const c = boxed()
+    expect(titleAt(c, 5.1)).toBe(c.title)
+  })
+
+  it('leaves a caption with no word box exactly as it was', () => {
+    const plain = boxed({ title: defaultTitleDef('one two three') })
+    expect(titleAt(plain, 5.7)).toBe(plain.title)
+  })
+})

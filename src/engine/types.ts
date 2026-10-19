@@ -723,6 +723,25 @@ export interface TitleDef {
    * any raster size.
    */
   wordScales?: { at: number; word: string; scale: number }[]
+  /**
+   * Word box (his ask, 2026-10-19, from a frame of a Short): *"Look at this text
+   * ... completely copy the system ... Also add it as an option if I want to
+   * highlight my text too."* The word being said sits in a rounded box with a
+   * coloured border and a dark see-through fill, drawn BEHIND the letters, while
+   * the letters themselves stay put. STORED, and just the two colours: the box
+   * geometry is fixed in em (a share of `fontSizePx`) measured off his frame, so it
+   * scales with the font, and which word is boxed depends on the time, so the
+   * resolver works that out per frame (see captions/wordPop.ts) and hands the
+   * rasterizer `boxWord`. Works with or without `wordPop`. Absent on every title
+   * made before this, which draw exactly as they always did.
+   */
+  wordBox?: { color: string; borderColor: string }
+  /**
+   * RESOLVE TIME ONLY, never stored: the word that wears the box right now. Named
+   * like `wordColors` (`at` counts the words of `text`, from 0, `word` is the word
+   * itself, so a retyped caption cannot box the wrong one).
+   */
+  boxWord?: { at: number; word: string }
 }
 
 /**

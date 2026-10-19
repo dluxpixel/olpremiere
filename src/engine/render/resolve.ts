@@ -9,6 +9,7 @@ import { contentBox, type ContentBox } from '../contentFrame'
 import { resolveChannel } from '../effects/channels'
 import { strobeFlash } from '../effects/gym'
 import { resolveStack } from '../effects/registry'
+import { wordPopTitle } from '../captions/wordPop'
 import { clipDurationS, clipEndS } from '../timeline'
 import { DEFAULT_SHUTTER_ANGLE, shutterSeconds } from './motionBlur'
 import type { Clip, Sequence, Track, Transition } from '../types'
@@ -123,7 +124,10 @@ function layerFor(
     assetId: clip.assetId,
     sourceTimeS,
     isImage: false,
-    title: clip.title,
+    // The caption's word pop and word box are worked out HERE, from the clip's
+    // own content clock, so the monitor and the export worker draw the same word.
+    // Any other title comes back as the very same object. → captions/wordPop.ts
+    title: wordPopTitle(clip, sourceTimeS),
     speed: clip.speed,
     // Stamped only when frozen, so every other layer keeps its exact shape.
     ...(clip.freezeAtS !== undefined ? { frozen: true as const } : {}),

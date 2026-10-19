@@ -149,6 +149,17 @@ export const LUCKIEST_GUY_STACK = "'Luckiest Guy', 'Arial Black', sans-serif"
 export const TIKTOK_SANS_STACK = "'TikTok Sans', 'Segoe UI', system-ui, sans-serif"
 
 /**
+ * Oswald (SIL OFL, bundled as Oswald-700.ttf, listed in BUNDLED-FONTS.md). The face
+ * of the Word box caption style (his ask, 2026-10-19, a frame of a Short with the
+ * word being said in a rounded box). Picked by measuring his frame, not by eye:
+ * the ink of "AWAKE DOESN'T REALLY" against the height of its capitals, for every
+ * bundled face, and Oswald lands within 4% on the whole line and on each word
+ * where Montserrat, the house face, is 58% too wide. Its stems match too (0.22 of
+ * the cap height against 0.21 in his frame).
+ */
+export const OSWALD_STACK = "'Oswald', 'Arial Black', sans-serif"
+
+/**
  * Figtree (the UI family) doubling as the default title face. Served from the
  * same self-hosted woff2 the UI loads (public/fonts), and registered in the
  * export worker's own FontFaceSet so titled text matches preview == export.
@@ -195,7 +206,7 @@ export const CUSTOM_TITLE_FONTS: CustomTitleFont[] = [
   { label: 'Kanit', family: 'Kanit', stack: "'Kanit', 'Comic Sans MS', cursive", url: kanitUrl, weight: '900 900', group: 'fun' },
   { label: 'League Spartan', family: 'League Spartan', stack: "'League Spartan', system-ui, sans-serif", url: leagueSpartanUrl, weight: '900 900', group: 'clean' },
   { label: 'Manrope', family: 'Manrope', stack: "'Manrope', system-ui, sans-serif", url: manropeUrl, weight: '800 800', group: 'clean' },
-  { label: 'Oswald', family: 'Oswald', stack: "'Oswald', 'Arial Black', sans-serif", url: oswaldUrl, weight: '700 700', group: 'impact' },
+  { label: 'Oswald', family: 'Oswald', stack: OSWALD_STACK, url: oswaldUrl, weight: '700 700', group: 'impact' },
   { label: 'Outfit', family: 'Outfit', stack: "'Outfit', system-ui, sans-serif", url: outfitUrl, weight: '900 900', group: 'clean' },
   { label: 'Passion One', family: 'Passion One', stack: "'Passion One', 'Arial Black', sans-serif", url: passionOneUrl, weight: '900 900', group: 'impact' },
   { label: 'Permanent Marker', family: 'Permanent Marker', stack: "'Permanent Marker', 'Comic Sans MS', cursive", url: permanentMarkerUrl, weight: '400 400', group: 'fun' },

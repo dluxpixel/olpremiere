@@ -134,8 +134,8 @@ describe('popWordsFor', () => {
   })
 
   it('spreads a caption that has no word times at all', () => {
-    const { captionWords: _gone, ...bare } = caption()
-    const words = popWordsFor(bare as Clip)
+    const bare = { ...caption(), captionWords: undefined } as Clip
+    const words = popWordsFor(bare)
     expect(words.map((x) => x.text)).toEqual(['one', 'two', 'three'])
     expect(words[0]!.startS).toBe(0)
   })
@@ -199,8 +199,8 @@ describe('wordPopTitle', () => {
   })
 
   it('is undefined for a clip with no title', () => {
-    const { title: _t, ...bare } = caption()
-    expect(wordPopTitle(bare as Clip, 0.7)).toBeUndefined()
+    const bare = { ...caption(), title: undefined } as Clip
+    expect(wordPopTitle(bare, 0.7)).toBeUndefined()
   })
 
   it('lights only the word being said, in the pop colour, with its scale while it rises', () => {
@@ -275,5 +275,80 @@ describe('wordPopTitle', () => {
     for (let i = 0; i < 500; i++) wordPopTitle(clip, 0.6 + (i / 500) * WORD_POP_RISE_S)
     // Still answers, and still the right word.
     expect(wordPopTitle(clip, 0.7)!.wordColors![0]!.word).toBe('two')
+  })
+})
+
+describe('wordPopTitle with a word box', () => {
+  const BOX = { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' }
+  /** The box alone: no pop colour, no pop scale. */
+  const boxOnly = (over: Partial<Clip> = {}, title: Partial<TitleDef> = {}): Clip =>
+    caption(over, { wordPop: undefined, wordBox: BOX, ...title })
+
+  it('marks the word being said and nothing else when the box is on its own', () => {
+    const t = wordPopTitle(boxOnly(), 0.7)!
+    expect(t.boxWord).toEqual({ at: 1, word: 'two' })
+    expect(t.wordColors).toBeUndefined()
+    expect(t.wordScales).toBeUndefined()
+    // The stored look rides along untouched.
+    expect(t.wordBox).toEqual(BOX)
+    expect(t.text).toBe('one two three')
+  })
+
+  it('moves to the next word the instant it starts, and stays on the last one', () => {
+    const clip = boxOnly()
+    expect(wordPopTitle(clip, 0.2)!.boxWord).toEqual({ at: 0, word: 'one' })
+    expect(wordPopTitle(clip, 0.5999)!.boxWord).toEqual({ at: 0, word: 'one' })
+    expect(wordPopTitle(clip, 0.6)!.boxWord).toEqual({ at: 1, word: 'two' })
+    expect(wordPopTitle(clip, 1.0)!.boxWord).toEqual({ at: 2, word: 'three' })
+    expect(wordPopTitle(clip, 99)!.boxWord).toEqual({ at: 2, word: 'three' })
+  })
+
+  it('is the same title before the first word is said', () => {
+    const clip = boxOnly()
+    expect(wordPopTitle(clip, 0.1)).toBe(clip.title)
+  })
+
+  it('gives the very same object for the same word, a different one for the next word', () => {
+    const clip = boxOnly()
+    // The box does not pop, so a whole word is one state however many frames it lasts.
+    expect(wordPopTitle(clip, 0.61)).toBe(wordPopTitle(clip, 0.9))
+    expect(wordPopTitle(clip, 0.61)).not.toBe(wordPopTitle(clip, 1.1))
+    // The title on the clip is never written to.
+    expect(clip.title!.boxWord).toBeUndefined()
+  })
+
+  it('hands back the same title for an inverted backdrop title, box or not', () => {
+    const clip = boxOnly({}, { invertBackdrop: true })
+    expect(wordPopTitle(clip, 0.7)).toBe(clip.title)
+  })
+
+  it('hands back the same title when there is neither a pop nor a box', () => {
+    const clip = caption({}, { wordPop: undefined })
+    expect(wordPopTitle(clip, 0.7)).toBe(clip.title)
+  })
+
+  it('works together with the pop: the lit word, its scale and its box are the same word', () => {
+    const clip = caption({}, { wordBox: BOX })
+    const t = wordPopTitle(clip, 0.6 + WORD_POP_RISE_S / 2)!
+    expect(t.wordColors).toEqual([{ at: 1, word: 'two', color: '#A3FF12' }])
+    expect(t.wordScales![0]).toMatchObject({ at: 1, word: 'two' })
+    expect(t.boxWord).toEqual({ at: 1, word: 'two' })
+  })
+
+  it('keeps the field order stable with both on, boxWord last', () => {
+    const clip = caption({}, { wordBox: BOX })
+    const a = Object.keys(wordPopTitle(clip, 0.62)!)
+    // The instant a word starts it has not grown yet, so it has no scale.
+    const b = Object.keys(wordPopTitle(clip, 0.6)!)
+    expect(a.slice(-3)).toEqual(['wordColors', 'wordScales', 'boxWord'])
+    expect(b.slice(-2)).toEqual(['wordColors', 'boxWord'])
+  })
+
+  it('reads the words he said, and falls back to spread words after a retype', () => {
+    const retyped = boxOnly({}, { text: 'one two three four' })
+    const t = wordPopTitle(retyped, retyped.inS + 0.01)!
+    expect(t.boxWord).toEqual({ at: 0, word: 'one' })
+    const late = wordPopTitle(retyped, retyped.outS - 0.01)!
+    expect(late.boxWord).toEqual({ at: 3, word: 'four' })
   })
 })

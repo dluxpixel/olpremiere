@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blockLayout, colorRuns, wordColorsOn, wrapLinesWith } from './titleRaster'
+import { WORD_BOX_CAP_EM, WORD_BOX_EM, blockLayout, colorRuns, wordBoxRect, wordColorsOn, wrapLinesWith } from './titleRaster'
 
 // A deterministic measurer: each char is 10px wide. No canvas needed in node.
 const measure10 = (s: string): number => s.length * 10
@@ -154,5 +154,108 @@ describe('words in their own colour', () => {
     expect(wordColorsOn(['i', 'hit', 'a', 'pr'], lit)).toEqual([null, null, null, null])
     // Twice in the caption: the one nearest where it was.
     expect(wordColorsOn(['record', 'a', 'b', 'record'], lit)).toEqual([null, null, null, '#ff0'])
+  })
+})
+
+// His ask, 2026-10-19: a rounded box round the word being said, off a frame of a
+// Short. The numbers below are that frame's table, counted in its em: with a cap
+// height of 25 px (his frame) the em is 36 px, so every table entry times 36 is
+// the px below.
+describe('the word box', () => {
+  /** Ten pixels per character, so every x can be counted by hand. */
+  const m = measure10
+  const CAP = 25
+  const EM = CAP / WORD_BOX_CAP_EM
+  const rect = (
+    lines: string[],
+    boxWord: { at: number; word: string },
+    anchorX = 200,
+    align: 'left' | 'center' | 'right' = 'center',
+    cap = CAP,
+  ) => wordBoxRect(lines, boxWord, m, anchorX, align, 100, 80, cap)
+
+  it('is his frame in em: the cap is 25 px of a 36 px size', () => {
+    expect(EM).toBeCloseTo(36, 9)
+    const r = rect(['one two three'], { at: 1, word: 'two' })!
+    expect(r.radius).toBeCloseTo(0.22 * 36, 9)
+    expect(r.border).toBeCloseTo(0.11 * 36, 9)
+    expect(r.edge).toBeCloseTo(0.05 * 36, 9)
+    expect(WORD_BOX_EM.side).toBe(0.19)
+  })
+
+  it('goes round a centred word with the side margin each side', () => {
+    // "one two three" is 130 wide, centred on 200: it starts at 135, "two" at 135 + 40.
+    const r = rect(['one two three'], { at: 1, word: 'two' })!
+    expect(r.x).toBeCloseTo(175 - 0.19 * 36, 9)
+    expect(r.w).toBeCloseTo(30 + 2 * 0.19 * 36, 9)
+  })
+
+  it('sits from the top margin above the cap top to the bottom margin below the baseline', () => {
+    const r = rect(['one two three'], { at: 1, word: 'two' })!
+    expect(r.y).toBeCloseTo(100 - CAP - 0.29 * 36, 9)
+    expect(r.h).toBeCloseTo(CAP + (0.29 + 0.18) * 36, 9)
+  })
+
+  it('goes round a left aligned word where the whole line puts it', () => {
+    expect(rect(['one two three'], { at: 0, word: 'one' }, 50, 'left')!.x).toBeCloseTo(50 - 0.19 * 36, 9)
+    expect(rect(['one two three'], { at: 2, word: 'three' }, 50, 'left')!.x).toBeCloseTo(50 + 80 - 0.19 * 36, 9)
+  })
+
+  it('goes round a right aligned word where the whole line puts it', () => {
+    // 130 wide ending at 200: starts at 70, "three" at 70 + 80.
+    expect(rect(['one two three'], { at: 2, word: 'three' }, 200, 'right')!.x).toBeCloseTo(150 - 0.19 * 36, 9)
+  })
+
+  it('finds a word on the second line, a line height further down', () => {
+    const r = rect(['one two', 'three'], { at: 2, word: 'three' }, 0, 'left')!
+    expect(r.x).toBeCloseTo(-0.19 * 36, 9)
+    expect(r.y).toBeCloseTo(100 + 80 - CAP - 0.29 * 36, 9)
+  })
+
+  it('is null once the word is retyped away, never round whatever sits there now', () => {
+    expect(rect(['one three'], { at: 1, word: 'two' })).toBeNull()
+    expect(rect([''], { at: 0, word: 'two' })).toBeNull()
+  })
+
+  it('finds the word in any case and with its punctuation', () => {
+    const r = rect(['Really?'], { at: 0, word: 'really' }, 0, 'left')
+    expect(r).not.toBeNull()
+    expect(r!.w).toBeCloseTo(70 + 2 * 0.19 * 36, 9)
+  })
+
+  it('picks the repeated word nearest where it was, the earlier one on a tie', () => {
+    const lines = ['a b a']
+    expect(rect(lines, { at: 0, word: 'a' }, 0, 'left')!.x).toBeCloseTo(-0.19 * 36, 9)
+    expect(rect(lines, { at: 2, word: 'a' }, 0, 'left')!.x).toBeCloseTo(40 - 0.19 * 36, 9)
+    expect(rect(lines, { at: 1, word: 'a' }, 0, 'left')!.x).toBeCloseTo(-0.19 * 36, 9)
+  })
+
+  it('measures the side margin from the glyph edge when it is told where the ink is', () => {
+    const ink = () => ({ left: 2, right: 28 })
+    const r = wordBoxRect(['one two three'], { at: 1, word: 'two' }, m, 200, 'center', 100, 80, CAP, ink)!
+    expect(r.x).toBeCloseTo(175 + 2 - 0.19 * 36, 9)
+    expect(r.w).toBeCloseTo(26 + 2 * 0.19 * 36, 9)
+  })
+
+  it('grows with the cap height and with nothing else', () => {
+    const a = rect(['one two three'], { at: 1, word: 'two' }, 0, 'left', 25)!
+    const b = rect(['one two three'], { at: 1, word: 'two' }, 0, 'left', 50)!
+    expect(b.radius).toBeCloseTo(a.radius * 2, 9)
+    expect(b.border).toBeCloseTo(a.border * 2, 9)
+    // The margins double; the word does not.
+    expect(b.w - 30).toBeCloseTo((a.w - 30) * 2, 9)
+  })
+
+  it('is null for a cap height that is not a size, and for a blank word', () => {
+    expect(rect(['one two'], { at: 0, word: 'one' }, 0, 'left', 0)).toBeNull()
+    expect(rect(['one two'], { at: 0, word: 'one' }, 0, 'left', Number.NaN)).toBeNull()
+    expect(rect(['one two'], { at: 0, word: '...' })).toBeNull()
+  })
+
+  it('is an overlay: the box for the next word sits exactly one word further along the line', () => {
+    // The box is worked out from the line, so the line never has to make room for it.
+    const two = rect(['one two three'], { at: 1, word: 'two' })!
+    const three = rect(['one two three'], { at: 2, word: 'three' })!
+    expect(three.x - two.x).toBeCloseTo(40, 9)
   })
 })

@@ -745,6 +745,7 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
 
   const shape = draft.shape
   const box = look.box ? splitColour(look.box.color) : null
+  const wordBox = look.wordBox ? splitColour(look.wordBox.color) : null
 
   return (
     <div className="flex flex-col gap-2">
@@ -979,6 +980,48 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
                 testId="caption-style-box-opacity"
                 ariaLabel="Background opacity, percent"
                 onCommit={(v) => setLook({ box: { ...look.box!, color: joinColour(box.hex, v / 100) } })}
+              />
+            </>
+          )}
+        </Row>
+        <Row
+          label="Word box"
+          labelFor="caption-style-word-box"
+          labelTitle="A box behind the word being said"
+          lead={
+            <input
+              id="caption-style-word-box"
+              type="checkbox"
+              aria-label="Word box"
+              data-testid="caption-style-word-box"
+              checked={!!look.wordBox}
+              onChange={(e) =>
+                setLook({ wordBox: e.target.checked ? { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' } : null })
+              }
+              className="shrink-0 accent-accent"
+            />
+          }
+        >
+          {look.wordBox && wordBox && (
+            <>
+              <ColourWell
+                value={look.wordBox.color}
+                onChange={(hex) => setLook({ wordBox: { ...look.wordBox!, color: joinColour(hex, wordBox.alpha) } })}
+                label="Word box colour"
+                testId="caption-style-word-box-color"
+              />
+              <ScrubField
+                value={Math.round(wordBox.alpha * 100)}
+                spec={{ min: 0, max: 100, step: 1, sens: 0.5 }}
+                testId="caption-style-word-box-opacity"
+                ariaLabel="Word box opacity, percent"
+                onCommit={(v) => setLook({ wordBox: { ...look.wordBox!, color: joinColour(wordBox.hex, v / 100) } })}
+              />
+              <ColourWell
+                value={look.wordBox.borderColor}
+                onChange={(hex) => setLook({ wordBox: { ...look.wordBox!, borderColor: hex } })}
+                label="Word box border colour"
+                testId="caption-style-word-box-border"
               />
             </>
           )}

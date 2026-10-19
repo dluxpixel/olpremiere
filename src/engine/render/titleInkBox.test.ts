@@ -66,6 +66,22 @@ describe('titleInkBoxUV', () => {
     expect(boxed.v0).toBeLessThan(plain.v0)
   })
 
+  it('holds the word box, which can sit round any word of the line', () => {
+    const wordBox = { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' }
+    const plain = inkBox(title({ outline: undefined, shadow: undefined }))!
+    const boxed = inkBox(title({ outline: undefined, shadow: undefined, wordBox }))!
+    expect(boxed.u0).toBeLessThan(plain.u0)
+    expect(boxed.u1).toBeGreaterThan(plain.u1)
+    // The margin above the capitals is taller than the line's own space above them.
+    expect(boxed.v0).toBeLessThan(plain.v0)
+    // Below the baseline the line's own space already holds the box, so it need not grow.
+    expect(boxed.v1).toBeGreaterThanOrEqual(plain.v1)
+    // An inverted backdrop draws no box, so it does not make the click target bigger.
+    const inverted = inkBox(title({ outline: undefined, shadow: undefined, invertBackdrop: true }))!
+    const invertedBoxed = inkBox(title({ outline: undefined, shadow: undefined, invertBackdrop: true, wordBox }))!
+    expect(invertedBoxed).toEqual(inverted)
+  })
+
   it('is null when the title draws nothing at all', () => {
     expect(inkBox(title({ text: '' }))).toBeNull()
     expect(inkBox(title({ fontSizePx: 0 }))).toBeNull()

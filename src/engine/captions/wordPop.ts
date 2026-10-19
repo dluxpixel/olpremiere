@@ -6,6 +6,10 @@
 // so it is worked out at resolve time and handed to the rasterizer as the two
 // fields a title already understands (`wordColors`) or now does (`wordScales`).
 //
+// The word box (his ask, 2026-10-19, off a frame of a Short) rides on the same
+// clock: `title.wordBox` is stored, and the word it goes round right now is
+// `boxWord`, set here and nowhere else. It works with or without the pop.
+//
 // ⛔ DECIDED IN ONE PLACE. `layerFor` in render/resolve.ts is the only caller of
 // wordPopTitle, and the monitor and the export worker both draw layer.title, so
 // what he sees in the preview is what the file gets. Nothing else may call
@@ -117,23 +121,29 @@ const DERIVED_CAP = 48
 
 /**
  * The title to draw for `clip` at content time `sourceTimeS`. The very same
- * object when the clip has no word pop, is not a title, or no word is being said
- * yet (every other caption draws exactly as it always did). Otherwise a copy
- * with the word being said in the pop colour and, while it rises, its scale.
+ * object when the clip has neither a word pop nor a word box, is not a title, or
+ * no word is being said yet (every other caption draws exactly as it always
+ * did). Otherwise a copy that marks the word being said:
+ *   wordPop   that word in the pop colour and, while it rises, its scale
+ *   wordBox   `boxWord`, the word the rounded box is drawn around (the raster
+ *             draws it behind the letters and never moves a word)
+ * The two work alone or together.
  *
- * Only the word being said is lit: it goes back to normal as the next word
- * starts, because a trail of lit words would hide which one is being said. It
+ * Only the word being said is marked: it goes back to normal as the next word
+ * starts, because a trail of marked words would hide which one is being said. It
  * takes the pop colour even when it is a word he leaned on.
  */
 export function wordPopTitle(clip: Clip, sourceTimeS: number): TitleDef | undefined {
   const title = clip.title
-  if (!title?.wordPop || title.invertBackdrop) return title
+  if (!title || title.invertBackdrop || !(title.wordPop || title.wordBox)) return title
   const words = popWordsFor(clip)
   const at = activeWordAt(words, sourceTimeS)
   if (at < 0) return title
   const word = words[at]!
+  const pop = title.wordPop
   const rate = Math.abs(clip.speed || 1)
-  const scale = popScaleAt((sourceTimeS - word.startS) / rate)
+  // The box does not pop, so a box on its own has one state per word, not one per frame.
+  const scale = pop ? popScaleAt((sourceTimeS - word.startS) / rate) : 1
   const key = `${at}|${word.text}|${scale}`
   let byState = derived.get(title)
   const known = byState?.get(key)
@@ -146,9 +156,14 @@ export function wordPopTitle(clip: Clip, sourceTimeS: number): TitleDef | undefi
   }
   const next: TitleDef = {
     ...title,
-    // Last, so the word being said wears the pop colour over any highlight it had.
-    wordColors: [...(title.wordColors ?? []), { at, word: word.text, color: title.wordPop.color || WORD_POP_COLOR }],
-    ...(scale !== 1 ? { wordScales: [{ at, word: word.text, scale }] } : {}),
+    ...(pop
+      ? {
+          // Last, so the word being said wears the pop colour over any highlight it had.
+          wordColors: [...(title.wordColors ?? []), { at, word: word.text, color: pop.color || WORD_POP_COLOR }],
+          ...(scale !== 1 ? { wordScales: [{ at, word: word.text, scale }] } : {}),
+        }
+      : {}),
+    ...(title.wordBox ? { boxWord: { at, word: word.text } } : {}),
   }
   byState.set(key, next)
   return next

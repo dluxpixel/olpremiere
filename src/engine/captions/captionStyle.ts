@@ -22,7 +22,7 @@
 // Pure: no store, no DOM, no persistence.
 
 import { applyAppearanceToClip } from '../anim/appearance'
-import { CAPTION_FONT_STACK, COMIC_STACK } from '../render/titleFonts'
+import { CAPTION_FONT_STACK, COMIC_STACK, OSWALD_STACK } from '../render/titleFonts'
 import { clipDurationS } from '../timeline'
 import {
   newTitleClip,
@@ -205,6 +205,46 @@ export const BUILTIN_CAPTION_STYLES: readonly CaptionStyle[] = [
     emphasisColor: DEFAULT_EMPHASIS_COLOR,
     caseRule: 'spoken',
     appearance: { in: 'pop', durS: CAPTION_POP_DUR_S },
+    updatedAt: 0,
+  },
+  {
+    // His ask, 2026-10-19, with a frame of a Short: *"Look at this text ...
+    // completely copy the system ... Also add it as an option if I want to
+    // highlight my text too."* Three words at a time in white capitals with a dark
+    // outline, and a rounded box with a crimson border and a dark see-through fill
+    // round the word being said. The box is an overlay: it never moves a word.
+    // Measured off his frame, not guessed:
+    //   face     Oswald 700. The ink of the whole line and of each word, against
+    //            the height of its capitals, is within 4% of his; Montserrat, the
+    //            house face, is 58% too wide. The stems match as well (0.22 of the
+    //            cap height against his 0.21).
+    //   size     91 px at 1920: the caps come out 74 px tall, the house caption's
+    //            own cap height (105 px of Montserrat at 0.70), so the line fills
+    //            the frame the way the house caption does.
+    //   outline  13 px: 0.06 of his frame's em shows outside the letters (the
+    //            raster strokes under the fill, so half of widthPx shows), and
+    //            his frame's em is 25 px of caps over 0.694, which is 106 px here.
+    //   box      colours only here. The shape is fixed in em (titleRaster.ts).
+    id: 'builtin-word-box',
+    name: 'Word box',
+    builtin: true,
+    look: {
+      fontFamily: OSWALD_STACK,
+      fontSizePx: 91,
+      bold: true,
+      color: '#ffffff',
+      outline: { color: '#000000', widthPx: 13 },
+      shadow: null,
+      box: null,
+      textCase: 'upper',
+      vAlign: 'middle',
+      offsetYPx: 0,
+      lineHeight: 1.1,
+      wordBox: { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' },
+    },
+    refHeight: CAPTION_REF_HEIGHT,
+    shape: { length: 'fixed', maxWords: 3, charsPerLine: 20, lines: 1, minDurS: AUTO_SHAPE.minDurS, gapFrames: 0 },
+    emphasisColor: DEFAULT_EMPHASIS_COLOR,
     updatedAt: 0,
   },
 ]
@@ -589,6 +629,8 @@ const LOOK_FIELDS = [
   'offsetYPx',
   'lineHeight',
   'invertBackdrop',
+  // The box round the word being said: his colours only, the shape is fixed.
+  'wordBox',
 ] as const satisfies readonly (keyof TitleDef)[]
 
 /**

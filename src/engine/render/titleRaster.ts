@@ -228,6 +228,111 @@ export function colorRuns(
   })
 }
 
+/**
+ * The word box's measurements, in his frame's em: measured off his frame
+ * 2026-10-19 (a Short, 414 x 107, the cap 25 px at a 36 px size).
+ *   side     glyph edge to the box's outer edge, each side
+ *   top      the box's outer edge above the cap top
+ *   bottom   the box's outer edge below the baseline
+ *   border   thickness of the coloured border, inside the outer edge
+ *   radius   corner radius of the outer edge
+ *   edge     the thin dark line just outside the border
+ */
+export const WORD_BOX_EM = {
+  side: 0.19,
+  top: 0.29,
+  bottom: 0.18,
+  border: 0.11,
+  radius: 0.22,
+  edge: 0.05,
+} as const
+
+/**
+ * His frame's cap height in its own em (25 px of a 36 px size). The table above
+ * is in THAT em, so the box is sized from the cap height the face really has: a
+ * face whose caps are taller or shorter than 0.694 of its size gets the same
+ * box round its letters, which is what he sees, not the same box round its size.
+ */
+export const WORD_BOX_CAP_EM = 25 / 36
+
+/** The dark line outside the word box's border, as it shows over the picture. */
+const WORD_BOX_EDGE_COLOR = 'rgba(0,0,0,0.55)'
+
+/** The box round the word being said, in canvas px. */
+export interface WordBoxRect {
+  x: number
+  y: number
+  w: number
+  h: number
+  radius: number
+  border: number
+  edge: number
+}
+
+/**
+ * Where the word box goes: round the word `boxWord` names, or null when that
+ * word is no longer on screen (a retyped caption). The word is found the way a
+ * lit word is (nearest its `at`, letters and digits only), and sits where the
+ * whole line puts it, so the box is an overlay and never moves a word (CA-13).
+ *
+ * `inkOf` says where a word's ink starts and ends inside its own advance, so the
+ * margin is measured from the glyph edge the way it was off his frame; without
+ * it the advance box stands in. `capHeightPx` is the face's cap height at the
+ * title's size.
+ */
+export function wordBoxRect(
+  lines: readonly string[],
+  boxWord: NonNullable<TitleDef['boxWord']>,
+  measure: (s: string) => number,
+  anchorX: number,
+  align: TitleDef['align'],
+  firstBaselineY: number,
+  lineHeightPx: number,
+  capHeightPx: number,
+  inkOf?: (word: string) => { left: number; right: number },
+): WordBoxRect | null {
+  const want = bareWord(boxWord.word)
+  if (!want || !(capHeightPx > 0)) return null
+  const perLine = lines.map((l) => l.split(' ').filter((w) => w !== ''))
+  let line = -1
+  let col = -1
+  let bestGap = Infinity
+  let k = 0
+  perLine.forEach((words, li) => {
+    words.forEach((w, wi) => {
+      const gap = Math.abs(k - boxWord.at)
+      if (bareWord(w) === want && gap < bestGap) {
+        line = li
+        col = wi
+        bestGap = gap
+      }
+      k++
+    })
+  })
+  if (line < 0) return null
+  const words = perLine[line]!
+  const before = col > 0 ? `${words.slice(0, col).join(' ')} ` : ''
+  const x = textLeftOf(anchorX, measure(words.join(' ')), align) + (before ? measure(before) : 0)
+  const word = words[col]!
+  const ink = inkOf?.(word) ?? { left: 0, right: measure(word) }
+  const em = capHeightPx / WORD_BOX_CAP_EM
+  const baseline = firstBaselineY + line * lineHeightPx
+  const x0 = x + ink.left - WORD_BOX_EM.side * em
+  const x1 = x + ink.right + WORD_BOX_EM.side * em
+  const y0 = baseline - capHeightPx - WORD_BOX_EM.top * em
+  const y1 = baseline + WORD_BOX_EM.bottom * em
+  if (![x0, x1, y0, y1].every(Number.isFinite) || !(x1 > x0) || !(y1 > y0)) return null
+  return {
+    x: x0,
+    y: y0,
+    w: x1 - x0,
+    h: y1 - y0,
+    radius: WORD_BOX_EM.radius * em,
+    border: WORD_BOX_EM.border * em,
+    edge: WORD_BOX_EM.edge * em,
+  }
+}
+
 // One shared 1×1 canvas for measurement-only calls; its size never matters
 // because nothing is drawn into it.
 let measureCtx: OffscreenCanvasRenderingContext2D | null = null
@@ -290,6 +395,23 @@ export function titleInkBoxUV(
         L.blockTop + L.blockH + grow + def.shadow.dy + b,
       )
     }
+  }
+
+  // The word box can sit round any word, so the click target grows by its
+  // margins (and its dark edge) all round the text. The cap height here is the
+  // usual 0.70 em: this path has no canvas to measure the real one.
+  if (def.wordBox && L.hasText && !def.invertBackdrop) {
+    const cap = 0.7 * def.fontSizePx
+    const em = cap / WORD_BOX_CAP_EM
+    const left = textLeftOf(L.anchorX, L.textW, def.align)
+    const gx = (WORD_BOX_EM.side + WORD_BOX_EM.edge) * em
+    const lastBaselineY = L.firstBaselineY + (Math.max(L.lines.length, 1) - 1) * L.lineHeightPx
+    add(
+      left - gx,
+      L.firstBaselineY - cap - (WORD_BOX_EM.top + WORD_BOX_EM.edge) * em,
+      left + L.textW + gx,
+      lastBaselineY + (WORD_BOX_EM.bottom + WORD_BOX_EM.edge) * em,
+    )
   }
 
   if (def.box && !def.invertBackdrop) {
@@ -519,6 +641,60 @@ export function rasterizeTitle(
       roundRect(ctx, x0, y0, w, h, r)
       ctx.fillStyle = def.box.color
       ctx.fill()
+    }
+  }
+
+  // WORD BOX: the rounded box round the word being said, behind the letters. An
+  // overlay: it is drawn from where the line already put the word and never moves
+  // one. Suppressed with the rest of the decorations on an inverted title, and
+  // skipped (not thrown) when the stored colours are not strings.
+  if (
+    hasText &&
+    !def.invertBackdrop &&
+    def.wordBox &&
+    def.boxWord &&
+    typeof def.wordBox.color === 'string' &&
+    typeof def.wordBox.borderColor === 'string'
+  ) {
+    const cap = ctx.measureText('H').actualBoundingBoxAscent
+    ctx.textAlign = 'left'
+    const rect = wordBoxRect(
+      lines,
+      def.boxWord,
+      (str) => ctx.measureText(str).width,
+      anchorX,
+      def.align,
+      firstBaselineY,
+      lineHeightPx,
+      cap > 0 ? cap : 0.7 * def.fontSizePx,
+      (word) => {
+        const m = ctx.measureText(word)
+        return Number.isFinite(m.actualBoundingBoxLeft) && Number.isFinite(m.actualBoundingBoxRight)
+          ? { left: -m.actualBoundingBoxLeft, right: m.actualBoundingBoxRight }
+          : { left: 0, right: m.width }
+      },
+    )
+    ctx.textAlign = def.align
+    if (rect && rect.x < width && rect.x + rect.w > 0 && rect.y < height && rect.y + rect.h > 0) {
+      const { x, y, w, h, edge } = rect
+      const border = Math.min(rect.border, w / 2, h / 2)
+      const radius = Math.max(0, Math.min(rect.radius, w / 2, h / 2))
+      ctx.beginPath()
+      roundRect(ctx, x, y, w, h, radius)
+      ctx.fillStyle = def.wordBox.color
+      ctx.fill()
+      // The border sits INSIDE the outer edge: a stroke centred half its width in.
+      ctx.beginPath()
+      roundRect(ctx, x + border / 2, y + border / 2, w - border, h - border, Math.max(0, radius - border / 2))
+      ctx.strokeStyle = def.wordBox.borderColor
+      ctx.lineWidth = border
+      ctx.stroke()
+      // The thin dark line just OUTSIDE the border, centred half its width out.
+      ctx.beginPath()
+      roundRect(ctx, x - edge / 2, y - edge / 2, w + edge, h + edge, radius + edge / 2)
+      ctx.strokeStyle = WORD_BOX_EDGE_COLOR
+      ctx.lineWidth = edge
+      ctx.stroke()
     }
   }
 
