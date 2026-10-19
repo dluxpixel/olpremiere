@@ -1,6 +1,6 @@
 // Shared release helpers.
 import { execFileSync, spawn } from 'node:child_process'
-import { copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -806,17 +806,20 @@ export function flakyTests(output) {
 }
 
 /**
- * Keep the names of a release gate's flaky tests in `<root>/<stamp>/flaky.txt`, the same
- * gate-evidence folder a red gate keeps its traces in. Returns the file, or null. Never throws:
- * keeping a note must not be the thing that stops a release.
+ * Add the names of a release gate's flaky tests to one `<root>/flaky.txt`, newest last. Returns
+ * the file, or null. Never throws: keeping a note must not be the thing that stops a release.
+ *
+ * ⛔ ONE FILE AT THE ROOT, NEVER A STAMPED FOLDER. keepEvidence keeps only the newest three run
+ * folders, so a folder per flaky green ship would push an older red gate's traces out, and a pass
+ * would destroy the record of a failure. keepEvidence counts folders only, so this file is never
+ * counted and never pruned.
  */
 export function recordFlaky({ count, names }, { root = EVIDENCE_DIR, now = new Date() } = {}) {
   try {
-    const dest = join(root, now.toISOString().replace(/[:.]/g, '-'))
-    mkdirSync(dest, { recursive: true })
-    const file = join(dest, 'flaky.txt')
+    mkdirSync(root, { recursive: true })
+    const file = join(root, 'flaky.txt')
     const lines = [`${count} flaky in the release gate, ${now.toISOString()}: each failed once and passed on its retry.`, ...names]
-    writeFileSync(file, `${lines.join('\n')}\n`)
+    appendFileSync(file, `${lines.join('\n')}\n`)
     return file
   } catch {
     return null

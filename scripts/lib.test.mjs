@@ -1212,14 +1212,21 @@ describe('a flaky pass in the release gate', () => {
     expect(flakyTests('  1 flaky\n  3 passed (1.0m)\n')).toEqual({ count: 1, names: [] })
   })
 
-  it('keeps the names in a gate-evidence run folder, and never throws', () => {
+  it('adds the names to one file at the gate-evidence root, and never throws', () => {
     const root = scratchDir('olp-flaky-')
     const now = new Date('2026-10-19T12:34:56.789Z')
     const file = recordFlaky(flakyTests(PLAYWRIGHT_FLAKY), { root, now })
-    expect(file).toBe(join(root, '2026-10-19T12-34-56-789Z', 'flaky.txt'))
+    expect(file).toBe(join(root, 'flaky.txt'))
     const lines = readFileSync(file, 'utf8').trim().split('\n')
     expect(lines[0]).toMatch(/^2 flaky in the release gate, 2026-10-19T12:34:56\.789Z/)
     expect(lines.slice(1)).toEqual(NAMES)
+    // A second flaky ship adds to the same file and makes no run folder, so it can never push an
+    // older red gate's traces out of keepEvidence's newest three.
+    recordFlaky({ count: 1, names: ['[release] later'] }, { root, now: new Date('2026-10-20T00:00:00.000Z') })
+    const all = readFileSync(file, 'utf8').trim().split('\n')
+    expect(all.slice(0, lines.length)).toEqual(lines)
+    expect(all.slice(lines.length)).toEqual([expect.stringMatching(/^1 flaky in the release gate, 2026-10-20/), '[release] later'])
+    expect(readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory())).toEqual([])
     // A root that cannot be made (a file is in the way) is a null, not a thrown error.
     const blocked = join(root, 'a-file')
     writeFileSync(blocked, '')
