@@ -18,9 +18,23 @@
 // caption door, as captions-tab.spec.ts does. Everything else is the real tab,
 // the real store and the real renderer.
 //
-// ⚠️ THE PICTURE IS READ BACK FROM THE PNG IT SAVES, not from the canvas, so the
-// file left on disk is exactly what was judged. Where the PNGs land can be set
-// with WORDBOX_SHOTS; it defaults to a folder under the system temp directory.
+// ⚠️ TWO READERS, AND THEY DO NOT READ THE SAME THING.
+//   read, readBox  photograph the monitor and judge the PNG that was saved, so the
+//                  file left on disk is exactly what was judged. The monitor is a
+//                  fifth of the sequence: it shows where the box is, not how thin
+//                  a line is.
+//   readFullBox    never touches a PNG. It resolves the same frame (resolveFrame)
+//                  and draws its caption with rasterizeTitle at the sequence size,
+//                  in this browser with the real Oswald, and reads those pixels. It
+//                  is the one that sees an outline touch the border, and it names
+//                  which word the box is round.
+// Where the PNGs land can be set with WORDBOX_SHOTS; it defaults to a folder under
+// the system temp directory.
+//
+// The crimson window below is a pixel test, not the colour. This file cannot import
+// DEFAULT_WORD_BOX (captionStyle.ts pulls in the font files, which only Vite can
+// load), so one test asks the running app for that colour and checks it is inside
+// the window. If the border colour is ever changed, that test fails first.
 
 import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -208,6 +222,18 @@ type FullBox = {
   inkBottom: number
   outlineTop: number
   outlineBottom: number
+  /** The word the resolved frame says the box is round, and its place in the caption (0 is the first). */
+  boxWord: { at: number; word: string }
+  /**
+   * Which word, counted from the left, the crimson box is centred on. Judged from
+   * the caption drawn again with no box: its white letters fall into one cluster
+   * per word, split at the widest gaps, and the box centre is matched to the nearest.
+   */
+  boxedIndex: number
+  /** The title's font stack, and the state of every face registered as Oswald when it was drawn. */
+  fontFamily: string
+  oswaldFaces: string[]
+  oswaldUsable: boolean
 }
 
 /**
@@ -223,16 +249,22 @@ type FullBox = {
  * still be crimson, so no letter, no accent and no black outline crosses them.
  * The band's outermost and innermost rows are left out (they are blended with
  * the edge and the fill) and so are the columns round the corners.
+ *
+ * It also reports WHICH word the box is round, from the pixels: the same caption is
+ * drawn again with no box, its white letters are grouped into `words` clusters
+ * (split at the widest gaps in the columns), and the box is matched to the cluster
+ * whose centre is nearest its own. And it reports the state of the Oswald faces at
+ * the moment it drew, since a box measured with the fallback font would prove nothing.
  */
-async function readFullBox(page: Page, t: number): Promise<FullBox | null> {
+async function readFullBox(page: Page, t: number, words = 3): Promise<FullBox | null> {
   return page.evaluate(
-    async ({ t, crimson }) => {
+    async ({ t, crimson, words }) => {
       const storeMod = '/src/state/store.ts'
       const typesMod = '/src/engine/types.ts'
       const resolveMod = '/src/engine/render/resolve.ts'
       const rasterMod = '/src/engine/render/titleRaster.ts'
       const fontsMod = '/src/engine/render/titleFonts.ts'
-      type Title = { fontFamily: string; boxWord?: unknown }
+      type Title = { fontFamily: string; boxWord?: { at: number; word: string }; wordBox?: unknown; popWord?: unknown }
       type Op = { type: string; layer?: { title?: Title } }
       const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { project: unknown } } }
       const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as { activeSequence: (p: unknown) => unknown }
@@ -249,6 +281,13 @@ async function readFullBox(page: Page, t: number): Promise<FullBox | null> {
       const title = frame.ops.map((op) => (op.type === 'layer' ? op.layer?.title : undefined)).find((x) => x?.boxWord)
       if (!title) return null
       await ensureTitleFont(document.fonts, title.fontFamily)
+      // ensureTitleFont comes back at once when the face is already loading, so wait
+      // for every face registered as Oswald here, and report what state each is in.
+      const oswald: FontFace[] = []
+      document.fonts.forEach((f) => {
+        if (f.family.replace(/^["']|["']$/g, '') === 'Oswald') oswald.push(f)
+      })
+      await Promise.all(oswald.map((f) => f.load().catch(() => null)))
       const W = frame.width
       const H = frame.height
       const canvas = rasterizeTitle(title, W, H)
@@ -289,9 +328,55 @@ async function readFullBox(page: Page, t: number): Promise<FullBox | null> {
       const mid = Math.round((y0 + y1) / 2)
       let border = 0
       for (let x = x0; x <= x1 && isCrimson(x, mid); x++) border += 1
+
+      // Which word is the box round? Draw the caption again with no box and group
+      // the columns that hold a white letter: the widest gaps are the spaces.
+      const bare = rasterizeTitle({ ...title, wordBox: undefined, boxWord: undefined, popWord: undefined }, W, H)
+      const bd = bare.getContext('2d')!.getImageData(0, 0, W, H).data
+      const lit: boolean[] = new Array<boolean>(W).fill(false)
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4
+          if (bd[i + 3]! > 240 && bd[i]! > 200 && bd[i + 1]! > 200 && bd[i + 2]! > 200) lit[x] = true
+        }
+      }
+      const runs: { a: number; b: number }[] = []
+      for (let x = 0; x < W; x++) {
+        if (!lit[x]) continue
+        const last = runs[runs.length - 1]
+        if (last && last.b === x - 1) last.b = x
+        else runs.push({ a: x, b: x })
+      }
+      let boxedIndex = -1
+      if (runs.length >= words) {
+        const gaps = runs.slice(1).map((r, i) => ({ before: i + 1, width: r.a - runs[i]!.b - 1 }))
+        const cuts = gaps
+          .sort((p, q) => q.width - p.width)
+          .slice(0, words - 1)
+          .map((g) => g.before)
+          .sort((p, q) => p - q)
+        const bounds = [0, ...cuts, runs.length]
+        const boxCentre = (x0 + x1) / 2
+        let best = Infinity
+        for (let k = 0; k < words; k++) {
+          const first = runs[bounds[k]!]!
+          const last = runs[bounds[k + 1]! - 1]!
+          const away = Math.abs((first.a + last.b) / 2 - boxCentre)
+          if (away < best) {
+            best = away
+            boxedIndex = k
+          }
+        }
+      }
+
       const out = {
         W, H, x0, x1, y0, y1, border,
         dirtyTop: 0, dirtyBottom: 0, inkTop: -1, inkBottom: -1, outlineTop: -1, outlineBottom: -1,
+        boxWord: { at: title.boxWord!.at, word: title.boxWord!.word },
+        boxedIndex,
+        fontFamily: title.fontFamily,
+        oswaldFaces: oswald.map((f) => f.status),
+        oswaldUsable: document.fonts.check('700 40px Oswald'),
       }
       // The corner radius is twice the border (WORD_BOX_EM), so three borders in clears it.
       const c0 = x0 + 3 * border
@@ -314,7 +399,7 @@ async function readFullBox(page: Page, t: number): Promise<FullBox | null> {
       }
       return out
     },
-    { t, crimson: CRIMSON },
+    { t, crimson: CRIMSON, words },
   )
 }
 
@@ -334,6 +419,25 @@ function expectClearOfBorder(box: FullBox, word: string): void {
   // border's core rows, so the bands above were read where the outline would be.
   expect(box.outlineTop, `${word}: the outline starts above the top border's core`).toBeGreaterThanOrEqual(box.y0 + box.border - 1)
   expect(box.outlineBottom, `${word}: the outline ends below the bottom border's core`).toBeLessThanOrEqual(box.y1 - box.border + 1)
+}
+
+/**
+ * The full size reading was taken on the real Oswald, and the box is round the word
+ * that was asked for. Without the first, a box measured on the fallback font would
+ * pass; without the second, a box on the wrong word would pass every border check.
+ */
+function expectBoxRound(box: FullBox, index: number, word: string): void {
+  console.log(
+    `[word box] ${word}: frame says word ${box.boxWord.at} "${box.boxWord.word}", pixels say word ${box.boxedIndex}, ` +
+      `font ${box.fontFamily}, Oswald faces ${box.oswaldFaces.join(',') || 'none'}`,
+  )
+  expect(box.fontFamily, 'the Word box look is not set in Oswald').toContain('Oswald')
+  expect(box.oswaldFaces.length, 'no face is registered as Oswald, so this was measured on the fallback font').toBeGreaterThan(0)
+  expect(box.oswaldFaces, 'an Oswald face had not finished loading').toEqual(box.oswaldFaces.map(() => 'loaded'))
+  expect(box.oswaldUsable, 'the browser does not offer bold Oswald').toBe(true)
+  expect(box.boxWord.at, `the frame boxes word ${box.boxWord.at}, not ${index} (${word})`).toBe(index)
+  expect(box.boxWord.word.toLowerCase(), 'the frame boxes a different word').toBe(word.toLowerCase())
+  expect(box.boxedIndex, `the box is drawn round word ${box.boxedIndex}, not ${index} (${word})`).toBe(index)
 }
 
 /** Open the Captions tab with the style editor unfolded, the way he does. */
@@ -384,6 +488,30 @@ test('the Word box style walks a crimson box along the words as they are said', 
   for (const r of seen) expect(r.bright, 'the letters are missing from a frame').toBeGreaterThan(20)
   expect(seen[1]!.cx).toBeGreaterThan(seen[0]!.cx + MIN_STEP)
   expect(seen[2]!.cx).toBeGreaterThan(seen[1]!.cx + MIN_STEP)
+
+  // And it is round the RIGHT word each time, not just further right: the first,
+  // then the second, then the third, read at full size on the real font.
+  for (const [i, word] of ['awake', "doesn't", 'really'].entries()) {
+    const full = await readFullBox(page, times[i]!)
+    expect(full, `no boxed caption on the resolved frame at ${times[i]} s`).not.toBeNull()
+    expectBoxRound(full!, i, word)
+  }
+})
+
+// The pixel window above has to be the colour the app ships. The spec cannot import
+// DEFAULT_WORD_BOX itself (see the header), so it asks the running app for it.
+test('the crimson window finds the border colour the app ships', async ({ page }) => {
+  await page.goto('/')
+  const colour = await page.evaluate(async () => {
+    const mod = '/src/engine/captions/captionStyle.ts'
+    const { DEFAULT_WORD_BOX } = (await import(/* @vite-ignore */ mod)) as { DEFAULT_WORD_BOX: { borderColor: string } }
+    return DEFAULT_WORD_BOX.borderColor
+  })
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(colour)
+  expect(m, `the border colour ${colour} is not written #rrggbb`).not.toBeNull()
+  const [r, g, b] = [1, 2, 3].map((k) => parseInt(m![k]!, 16)) as [number, number, number]
+  const inside = r > CRIMSON.rMin && g < CRIMSON.gMax && b > CRIMSON.bMin && b < CRIMSON.bMax && r - g > CRIMSON.rOverG
+  expect(inside, `${colour} is outside the crimson window, so the box would not be found`).toBe(true)
 })
 
 // The box's bottom edge was once a fixed margin under the baseline, so the tail of
@@ -441,6 +569,7 @@ test('the Word box goes round the tail of a lowercase g, not through it', async 
   const full = await readFullBox(page, 1.0)
   expect(full, 'no boxed caption on the resolved frame').not.toBeNull()
   expectClearOfBorder(full!, 'going')
+  expectBoxRound(full!, 2, 'going')
 })
 
 // Czech is one of his caption languages, and the Word box style writes in capitals,
@@ -492,6 +621,7 @@ test('the Word box goes over the accents of Czech capitals, not through them', a
   const full = await readFullBox(page, 1.0)
   expect(full, 'no boxed caption on the resolved frame').not.toBeNull()
   expectClearOfBorder(full!, 'ČESKÝ')
+  expectBoxRound(full!, 2, 'český')
 })
 
 test('the Word box switch puts the box on the house style, and off by default', async ({ page }) => {
