@@ -257,11 +257,34 @@ describe('the word box', () => {
     expect(deep.y).toBe(plain.y)
   })
 
+  it('measures the top margin from the ink of a letter taller than the caps, so a Czech accent stays inside', () => {
+    const at = (ascent?: number) =>
+      wordBoxRect(['one ČESKÝ'], { at: 1, word: 'český' }, m, 0, 'left', 100, 80, CAP, () => ({
+        left: 0,
+        right: 50,
+        ...(ascent === undefined ? {} : { ascent }),
+      }))!
+    const plain = at()
+    // At or under the cap height: the box is exactly what it was, the top margin above the cap top.
+    expect(plain.y).toBeCloseTo(100 - CAP - 0.29 * 36, 9)
+    expect(at(CAP)).toEqual(plain)
+    expect(at(CAP - 10)).toEqual(plain)
+    expect(at(0)).toEqual(plain)
+    // Taller than the caps: the top rises by exactly the excess, and the bottom stays put.
+    const tall = at(CAP + 8)
+    expect(plain.y - tall.y).toBeCloseTo(8, 9)
+    expect(tall.h - plain.h).toBeCloseTo(8, 9)
+    expect(tall.y + tall.h).toBeCloseTo(plain.y + plain.h, 9)
+  })
+
   it('counts words across a non breaking space the way wordPop.ts does', () => {
     // wordPop.ts splits on any white space, so "one", "two", "three" are words 0, 1, 2.
-    const lines = ['one two three']
+    const lines = ['one\u00A0two three']
     expect(rect(lines, { at: 1, word: 'two' }, 0, 'left')!.x).toBeCloseTo(40 - 0.19 * 36, 9)
     expect(rect(lines, { at: 2, word: 'three' }, 0, 'left')!.x).toBeCloseTo(80 - 0.19 * 36, 9)
+    // A lit colour counts the same way, so it lands on the word the box goes round.
+    const runs = colorRuns(lines, [{ at: 1, word: 'two', color: '#f00' }], '#fff', m, 0, 'left')!
+    expect(runs[0]!.map((r) => r.color)).toEqual(['#fff', '#f00', '#fff'])
   })
 
   it('grows with the cap height and with nothing else', () => {

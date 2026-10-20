@@ -207,7 +207,7 @@ export function colorRuns(
   align: TitleDef['align'],
 ): ColorRun[][] | null {
   if (!wordColors?.length) return null
-  const perLine = lines.map((l) => l.split(' ').filter((w) => w !== ''))
+  const perLine = lines.map((l) => l.split(/\s+/).filter((w) => w !== ''))
   const colors = wordColorsOn(perLine.flat(), wordColors)
   if (colors.every((c) => c === null)) return null
   let k = 0
@@ -232,7 +232,8 @@ export function colorRuns(
  * The word box's measurements, in his frame's em: measured off his frame
  * 2026-10-19 (a Short, 414 x 107, the cap 25 px at a 36 px size).
  *   side     glyph edge to the box's outer edge, each side
- *   top      the box's outer edge above the cap top
+ *   top      the box's outer edge above the cap top, or above the ink of a
+ *            letter taller than the caps (the accent on a Czech Š or Á)
  *   bottom   the box's outer edge below the baseline, or below the ink of a
  *            letter that hangs under it (g, y, p)
  *   border   thickness of the coloured border, inside the outer edge
@@ -277,9 +278,10 @@ export interface WordBoxRect {
  * whole line puts it, so the box is an overlay and never moves a word (CA-13).
  *
  * `inkOf` says where a word's ink starts and ends inside its own advance, and how
- * far its ink hangs under the baseline, so the side and bottom margins are
- * measured from the glyph edge the way they were off his frame (a g or a y gets
- * its tail inside the box); without it the advance box and the baseline stand in.
+ * far its ink reaches above and below the baseline, so every margin is measured
+ * from the glyph edge the way it was off his frame (a g gets its tail inside the
+ * box, a Czech Š its accent); without it the advance box, the cap top and the
+ * baseline stand in.
  * `capHeightPx` is the face's cap height at the title's size. Words are split on
  * any run of white space, the way wordPop.ts counts them, so `at` names the same word.
  */
@@ -292,7 +294,7 @@ export function wordBoxRect(
   firstBaselineY: number,
   lineHeightPx: number,
   capHeightPx: number,
-  inkOf?: (word: string) => { left: number; right: number; descent?: number },
+  inkOf?: (word: string) => { left: number; right: number; ascent?: number; descent?: number },
 ): WordBoxRect | null {
   const want = bareWord(boxWord.word)
   if (!want || !(capHeightPx > 0)) return null
@@ -317,12 +319,12 @@ export function wordBoxRect(
   const before = col > 0 ? `${words.slice(0, col).join(' ')} ` : ''
   const x = textLeftOf(anchorX, measure(words.join(' ')), align) + (before ? measure(before) : 0)
   const word = words[col]!
-  const ink: { left: number; right: number; descent?: number } = inkOf?.(word) ?? { left: 0, right: measure(word) }
+  const ink: { left: number; right: number; ascent?: number; descent?: number } = inkOf?.(word) ?? { left: 0, right: measure(word) }
   const em = capHeightPx / WORD_BOX_CAP_EM
   const baseline = firstBaselineY + line * lineHeightPx
   const x0 = x + ink.left - WORD_BOX_EM.side * em
   const x1 = x + ink.right + WORD_BOX_EM.side * em
-  const y0 = baseline - capHeightPx - WORD_BOX_EM.top * em
+  const y0 = baseline - Math.max(capHeightPx, ink.ascent ?? 0) - WORD_BOX_EM.top * em
   const y1 = baseline + Math.max(0, ink.descent ?? 0) + WORD_BOX_EM.bottom * em
   if (![x0, x1, y0, y1].every(Number.isFinite) || !(x1 > x0) || !(y1 > y0)) return null
   return {
@@ -676,6 +678,7 @@ export function rasterizeTitle(
           ? {
               left: -m.actualBoundingBoxLeft,
               right: m.actualBoundingBoxRight,
+              ...(Number.isFinite(m.actualBoundingBoxAscent) ? { ascent: m.actualBoundingBoxAscent } : {}),
               ...(Number.isFinite(m.actualBoundingBoxDescent) ? { descent: m.actualBoundingBoxDescent } : {}),
             }
           : { left: 0, right: m.width }

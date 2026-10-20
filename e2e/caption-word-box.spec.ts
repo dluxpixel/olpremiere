@@ -189,6 +189,153 @@ async function readBox(page: Page, file: string): Promise<BoxReading> {
   )
 }
 
+type FullBox = {
+  /** The raster's size: the sequence's, so one pixel is one sequence pixel. */
+  W: number
+  H: number
+  /** The crimson border's bounds, inclusive. */
+  x0: number
+  x1: number
+  y0: number
+  y1: number
+  /** How thick the left border is, counted along the box's middle row. */
+  border: number
+  /** Border band pixels in the word's columns that are not crimson: a letter or its outline drawn over the border. */
+  dirtyTop: number
+  dirtyBottom: number
+  /** Rows the white letters and their black outline reach inside the box's columns, or -1 when there are none. */
+  inkTop: number
+  inkBottom: number
+  outlineTop: number
+  outlineBottom: number
+}
+
+/**
+ * Draw the frame's boxed caption at full size and measure it.
+ *
+ * The monitor is a fifth of the sequence, so its border is two pixels and the
+ * letters' black outline barely one: a screenshot cannot tell an outline that
+ * touches the border from one that stays clear. So this resolves the very frame
+ * the monitor shows (resolveFrame, the one source of truth for preview and
+ * export) and draws its caption with the very rasterizer the export uses, at the
+ * sequence size, in this browser with the real font. Then it reads the border's
+ * top and bottom bands across the word's columns: every core pixel of them must
+ * still be crimson, so no letter, no accent and no black outline crosses them.
+ * The band's outermost and innermost rows are left out (they are blended with
+ * the edge and the fill) and so are the columns round the corners.
+ */
+async function readFullBox(page: Page, t: number): Promise<FullBox | null> {
+  return page.evaluate(
+    async ({ t, crimson }) => {
+      const storeMod = '/src/state/store.ts'
+      const typesMod = '/src/engine/types.ts'
+      const resolveMod = '/src/engine/render/resolve.ts'
+      const rasterMod = '/src/engine/render/titleRaster.ts'
+      const fontsMod = '/src/engine/render/titleFonts.ts'
+      type Title = { fontFamily: string; boxWord?: unknown }
+      type Op = { type: string; layer?: { title?: Title } }
+      const { useStore } = (await import(/* @vite-ignore */ storeMod)) as { useStore: { getState: () => { project: unknown } } }
+      const { activeSequence } = (await import(/* @vite-ignore */ typesMod)) as { activeSequence: (p: unknown) => unknown }
+      const { resolveFrame } = (await import(/* @vite-ignore */ resolveMod)) as {
+        resolveFrame: (seq: unknown, t: number) => { width: number; height: number; ops: Op[] }
+      }
+      const { rasterizeTitle } = (await import(/* @vite-ignore */ rasterMod)) as {
+        rasterizeTitle: (title: Title, w: number, h: number) => OffscreenCanvas
+      }
+      const { ensureTitleFont } = (await import(/* @vite-ignore */ fontsMod)) as {
+        ensureTitleFont: (fs: FontFaceSet, stack: string) => Promise<void>
+      }
+      const frame = resolveFrame(activeSequence(useStore.getState().project), t)
+      const title = frame.ops.map((op) => (op.type === 'layer' ? op.layer?.title : undefined)).find((x) => x?.boxWord)
+      if (!title) return null
+      await ensureTitleFont(document.fonts, title.fontFamily)
+      const W = frame.width
+      const H = frame.height
+      const canvas = rasterizeTitle(title, W, H)
+      const d = canvas.getContext('2d')!.getImageData(0, 0, W, H).data
+      const isCrimson = (x: number, y: number): boolean => {
+        const i = (y * W + x) * 4
+        const r = d[i]!
+        const g = d[i + 1]!
+        const b = d[i + 2]!
+        return (
+          d[i + 3]! > 240 && r > crimson.rMin && g < crimson.gMax && b > crimson.bMin && b < crimson.bMax && r - g > crimson.rOverG
+        )
+      }
+      // Opaque white is a letter; opaque near black is its outline. The box's
+      // own fill is see-through (0.8), so it is neither.
+      const isWhite = (x: number, y: number): boolean => {
+        const i = (y * W + x) * 4
+        return d[i + 3]! > 240 && d[i]! > 200 && d[i + 1]! > 200 && d[i + 2]! > 200
+      }
+      const isOutline = (x: number, y: number): boolean => {
+        const i = (y * W + x) * 4
+        return d[i + 3]! > 240 && d[i]! < 60 && d[i + 1]! < 60 && d[i + 2]! < 60
+      }
+      let x0 = W
+      let x1 = -1
+      let y0 = H
+      let y1 = -1
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          if (!isCrimson(x, y)) continue
+          if (x < x0) x0 = x
+          if (x > x1) x1 = x
+          if (y < y0) y0 = y
+          if (y > y1) y1 = y
+        }
+      }
+      if (x1 < 0) return null
+      const mid = Math.round((y0 + y1) / 2)
+      let border = 0
+      for (let x = x0; x <= x1 && isCrimson(x, mid); x++) border += 1
+      const out = {
+        W, H, x0, x1, y0, y1, border,
+        dirtyTop: 0, dirtyBottom: 0, inkTop: -1, inkBottom: -1, outlineTop: -1, outlineBottom: -1,
+      }
+      // The corner radius is twice the border (WORD_BOX_EM), so three borders in clears it.
+      const c0 = x0 + 3 * border
+      const c1 = x1 - 3 * border
+      for (let x = c0; x <= c1; x++) {
+        for (let y = y0 + 1; y <= y0 + border - 2; y++) if (!isCrimson(x, y)) out.dirtyTop += 1
+        for (let y = y1 - border + 2; y <= y1 - 1; y++) if (!isCrimson(x, y)) out.dirtyBottom += 1
+      }
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0 + border; x <= x1 - border; x++) {
+          if (isWhite(x, y)) {
+            if (out.inkTop < 0) out.inkTop = y
+            out.inkBottom = y
+          }
+          if (isOutline(x, y)) {
+            if (out.outlineTop < 0) out.outlineTop = y
+            out.outlineBottom = y
+          }
+        }
+      }
+      return out
+    },
+    { t, crimson: CRIMSON },
+  )
+}
+
+/** The full size box holds its word clear of the border, top and bottom, outline and all. */
+function expectClearOfBorder(box: FullBox, word: string): void {
+  console.log(
+    `[word box] ${word} at full size: box rows ${box.y0} to ${box.y1}, border ${box.border}, ` +
+      `white rows ${box.inkTop} to ${box.inkBottom}, outline rows ${box.outlineTop} to ${box.outlineBottom}, ` +
+      `non crimson border pixels top ${box.dirtyTop} bottom ${box.dirtyBottom}`,
+  )
+  expect(box.border, 'no border found on the full size box').toBeGreaterThanOrEqual(4)
+  expect(box.inkTop, `no letters found in the box round ${word}`).toBeGreaterThan(-1)
+  expect(box.outlineTop, `no outline found in the box round ${word}`).toBeGreaterThan(-1)
+  expect(box.dirtyTop, `${word}: a letter or its outline runs through the top border`).toBe(0)
+  expect(box.dirtyBottom, `${word}: a letter or its outline runs through the bottom border`).toBe(0)
+  // And the outline's first and last rows are inside the box, under and over the
+  // border's core rows, so the bands above were read where the outline would be.
+  expect(box.outlineTop, `${word}: the outline starts above the top border's core`).toBeGreaterThanOrEqual(box.y0 + box.border - 1)
+  expect(box.outlineBottom, `${word}: the outline ends below the bottom border's core`).toBeLessThanOrEqual(box.y1 - box.border + 1)
+}
+
 /** Open the Captions tab with the style editor unfolded, the way he does. */
 async function openStyleEditor(page: Page): Promise<void> {
   await page.getByTestId('tab-captions').click()
@@ -289,6 +436,62 @@ test('the Word box goes round the tail of a lowercase g, not through it', async 
   expect(box.inkBottom, 'the tail of the g hangs out of the box').toBeLessThanOrEqual(box.y1)
   // And it stays off the crimson border: the letters sit inside it, as the caps do.
   expect(box.inkBottom, 'the tail of the g sits on the crimson border').toBeLessThan(box.y1 - box.border)
+
+  // The monitor is too small to see the black outline, so the same frame is read at full size.
+  const full = await readFullBox(page, 1.0)
+  expect(full, 'no boxed caption on the resolved frame').not.toBeNull()
+  expectClearOfBorder(full!, 'going')
+})
+
+// Czech is one of his caption languages, and the Word box style writes in capitals,
+// so a boxed word can carry a caron (Č, Š, Ž) or an acute (Á, Ý) above the cap line.
+// The box's top was once a fixed margin over the cap top, so those accents and their
+// outline ran through the top border.
+test('the Word box goes over the accents of Czech capitals, not through them', async ({ page }) => {
+  mkdirSync(SHOTS, { recursive: true })
+  await page.goto('/')
+  await parkModules(page, ['/src/state/captionActions.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
+    const { addCaptionsFromWords } = mods['/src/state/captionActions.ts'] as { addCaptionsFromWords: (w: unknown[]) => void }
+    addCaptionsFromWords([
+      { text: 'to', startS: 0, endS: 0.4 },
+      { text: 'je', startS: 0.4, endS: 0.8 },
+      { text: 'český', startS: 0.8, endS: 1.2 },
+    ])
+  })
+  // Inside "český".
+  await setUI(page, { playheadS: 1.0, selection: [] })
+
+  await openStyleEditor(page)
+  await page.getByTestId('caption-style-select').selectOption('builtin-word-box')
+  await page.getByTestId('caption-style-apply-all').click()
+  await expect
+    .poll(async () => (await captionTexts(page)).map((t) => t.toLowerCase()), { timeout: 15_000 })
+    .toEqual(['to je český'])
+
+  // The box is on the monitor, round the word, and holds still.
+  const shot = join(SHOTS, 'wordbox-accent.png')
+  let last = null as BoxReading | null
+  let r = null as BoxReading | null
+  await expect
+    .poll(
+      async () => {
+        last = r
+        r = await readBox(page, shot)
+        return r.crimson >= MIN_CRIMSON && r.bright > 20 && JSON.stringify(r) === JSON.stringify(last)
+      },
+      { timeout: 20_000, message: 'no steady frame with a crimson box round "ČESKÝ"' },
+    )
+    .toBe(true)
+  const box = r!
+  console.log(`[word box] ČESKÝ: box rows ${box.y0} to ${box.y1}, border ${box.border}, ink rows ${box.inkTop} to ${box.inkBottom}`)
+  expect(box.border, 'no border found on the box').toBeGreaterThan(0)
+  expect(box.inkTop, 'an accent sticks out of the top of the box').toBeGreaterThanOrEqual(box.y0)
+
+  const full = await readFullBox(page, 1.0)
+  expect(full, 'no boxed caption on the resolved frame').not.toBeNull()
+  expectClearOfBorder(full!, 'ČESKÝ')
 })
 
 test('the Word box switch puts the box on the house style, and off by default', async ({ page }) => {
