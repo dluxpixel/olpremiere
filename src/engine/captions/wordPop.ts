@@ -1,10 +1,11 @@
-// Word pop: each word of a caption lights up as it is said and pops a little.
+// Word pop: each word of a caption lights up in colour as it is said.
 //
 // His ask, 2026-10-08: captions where "each word lights up as said, colour and
 // a small pop". The look is stored on the caption as `title.wordPop` (just the
-// colour). Which word is lit, and how big it is right now, depends on the TIME,
-// so it is worked out at resolve time and handed to the rasterizer as the two
-// fields a title already understands (`wordColors`) or now does (`wordScales`).
+// colour). Which word is lit depends on the TIME, so it is worked out at resolve
+// time and handed to the rasterizer as a field a title already understands
+// (`wordColors`). The word being said is lit in colour and, with the Word box,
+// boxed. A size pop is not drawn yet.
 //
 // The word box (his ask, 2026-10-19, off a frame of a Short) rides on the same
 // clock: `title.wordBox` is stored, and the word it goes round right now is
@@ -13,15 +14,11 @@
 // ⛔ DECIDED IN ONE PLACE. `layerFor` in render/resolve.ts is the only caller of
 // wordPopTitle, and the monitor and the export worker both draw layer.title, so
 // what he sees in the preview is what the file gets. Nothing else may call
-// activeWordAt or popScaleAt (a test reads the source to hold that line).
+// activeWordAt (a test reads the source to hold that line).
 
 import type { Clip, TitleDef } from '../types'
 import { spreadWords } from './captions'
 
-/** How much bigger the word being said is drawn, at the top of its pop. */
-export const WORD_POP_SCALE = 1.12
-/** How long the pop takes to reach full size, timeline seconds. */
-export const WORD_POP_RISE_S = 0.09
 /** The lit colour a new Word pop style starts with: lime, not white and not the yellow punch. */
 export const WORD_POP_COLOR = '#A3FF12'
 /** A first word this close after the caption's start is said "at the start": the start went onto a frame. */
@@ -58,19 +55,6 @@ export function activeWordAt(words: readonly { startS: number; endS: number }[],
     }
   }
   return best
-}
-
-/**
- * How big the word is `sinceStartS` after it started: eases out from 1 to
- * WORD_POP_SCALE over WORD_POP_RISE_S, then holds. Before the word (negative or
- * not a number) it is 1. Rounded to 3 decimals so two frames that look the same
- * share one raster.
- */
-export function popScaleAt(sinceStartS: number): number {
-  if (!(sinceStartS > 0)) return 1
-  const p = Math.min(1, sinceStartS / WORD_POP_RISE_S)
-  const eased = 1 - (1 - p) * (1 - p) * (1 - p)
-  return Math.round((1 + (WORD_POP_SCALE - 1) * eased) * 1000) / 1000
 }
 
 interface WordsMemo {
@@ -113,7 +97,7 @@ export function popWordsFor(clip: Clip): PopWord[] {
   return words
 }
 
-// One derived title per (title, lit word, scale), so two frames in the same state
+// One derived title per (title, lit word), so two frames in the same state
 // hand the rasterizer the SAME object and it never draws the same word twice.
 // Bounded: a paused or scrubbed preview asks for arbitrary times.
 const derived = new WeakMap<TitleDef, Map<string, TitleDef>>()
@@ -124,7 +108,7 @@ const DERIVED_CAP = 48
  * object when the clip has neither a word pop nor a word box, is not a title, or
  * no word is being said yet (every other caption draws exactly as it always
  * did). Otherwise a copy that marks the word being said:
- *   wordPop   that word in the pop colour and, while it rises, its scale
+ *   wordPop   that word in the pop colour
  *   wordBox   `boxWord`, the word the rounded box is drawn around (the raster
  *             draws it behind the letters and never moves a word)
  * The two work alone or together.
@@ -141,10 +125,8 @@ export function wordPopTitle(clip: Clip, sourceTimeS: number): TitleDef | undefi
   if (at < 0) return title
   const word = words[at]!
   const pop = title.wordPop
-  const rate = Math.abs(clip.speed || 1)
-  // The box does not pop, so a box on its own has one state per word, not one per frame.
-  const scale = pop ? popScaleAt((sourceTimeS - word.startS) / rate) : 1
-  const key = `${at}|${word.text}|${scale}`
+  // One state per word, not one per frame, so every frame of a word hits the same raster.
+  const key = `${at}|${word.text}`
   let byState = derived.get(title)
   const known = byState?.get(key)
   if (known) return known
@@ -160,7 +142,6 @@ export function wordPopTitle(clip: Clip, sourceTimeS: number): TitleDef | undefi
       ? {
           // Last, so the word being said wears the pop colour over any highlight it had.
           wordColors: [...(title.wordColors ?? []), { at, word: word.text, color: pop.color || WORD_POP_COLOR }],
-          ...(scale !== 1 ? { wordScales: [{ at, word: word.text, scale }] } : {}),
         }
       : {}),
     ...(title.wordBox ? { boxWord: { at, word: word.text } } : {}),

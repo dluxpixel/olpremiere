@@ -40,6 +40,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { ENTRANCE_PRESETS, EXIT_PRESETS } from '../engine/anim/appearance'
 import {
   BUILTIN_CAPTION_STYLES,
+  DEFAULT_WORD_BOX,
   SHAPE_LIMITS,
   captionDefFor,
   cleanShape,
@@ -996,7 +997,7 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
               data-testid="caption-style-word-box"
               checked={!!look.wordBox}
               onChange={(e) =>
-                setLook({ wordBox: e.target.checked ? { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' } : null })
+                setLook({ wordBox: e.target.checked ? { ...DEFAULT_WORD_BOX } : null })
               }
               className="shrink-0 accent-accent"
             />

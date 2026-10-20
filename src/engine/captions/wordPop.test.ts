@@ -1,21 +1,13 @@
-// Word pop, the pure half: which word is lit at a moment, how big it is while it
-// rises, where the word times come from, and that the title handed on is the same
-// object whenever nothing about it changed.
+// Word pop, the pure half: which word is lit at a moment, where the word times
+// come from, and that the title handed on is the same object whenever nothing
+// about it changed.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { defaultTitleDef, newTitleClip, type Clip, type TitleDef } from '../types'
-import {
-  WORD_POP_COLOR,
-  WORD_POP_RISE_S,
-  WORD_POP_SCALE,
-  activeWordAt,
-  popScaleAt,
-  popWordsFor,
-  wordPopTitle,
-} from './wordPop'
+import { WORD_POP_COLOR, activeWordAt, popWordsFor, wordPopTitle } from './wordPop'
 
 const w = (startS: number, endS: number, text = 'x') => ({ text, startS, endS })
 
@@ -82,40 +74,6 @@ describe('activeWordAt', () => {
   it('is -1 for no words and for a time that is not a number', () => {
     expect(activeWordAt([], 1)).toBe(-1)
     expect(activeWordAt(words, Number.NaN)).toBe(-1)
-  })
-})
-
-describe('popScaleAt', () => {
-  it('is 1 before the word, at its start, and for a time that is not a number', () => {
-    expect(popScaleAt(-0.5)).toBe(1)
-    expect(popScaleAt(0)).toBe(1)
-    expect(popScaleAt(Number.NaN)).toBe(1)
-  })
-
-  it('rises to the full pop over the rise and then holds', () => {
-    expect(popScaleAt(WORD_POP_RISE_S)).toBe(WORD_POP_SCALE)
-    expect(popScaleAt(WORD_POP_RISE_S * 4)).toBe(WORD_POP_SCALE)
-    expect(popScaleAt(1000)).toBe(WORD_POP_SCALE)
-    expect(popScaleAt(Number.POSITIVE_INFINITY)).toBe(WORD_POP_SCALE)
-  })
-
-  it('eases out: more than half the pop is done by half the rise, and it never goes down', () => {
-    const half = popScaleAt(WORD_POP_RISE_S / 2)
-    expect(half - 1).toBeGreaterThan((WORD_POP_SCALE - 1) / 2)
-    expect(half).toBeLessThan(WORD_POP_SCALE)
-    let last = 1
-    for (let i = 0; i <= 40; i++) {
-      const s = popScaleAt((i / 40) * WORD_POP_RISE_S * 1.2)
-      expect(s).toBeGreaterThanOrEqual(last)
-      last = s
-    }
-  })
-
-  it('is rounded to 3 decimals, so near frames share one raster', () => {
-    for (const t of [0.001, 0.013, 0.0271, 0.05, 0.0777]) {
-      const s = popScaleAt(t)
-      expect(Math.round(s * 1000) / 1000).toBe(s)
-    }
   })
 })
 
@@ -206,32 +164,25 @@ describe('wordPopTitle', () => {
     expect(wordPopTitle(bare, 0.7)).toBeUndefined()
   })
 
-  it('lights only the word being said, in the pop colour, with its scale while it rises', () => {
+  it('lights only the word being said, in the pop colour', () => {
     const clip = caption()
-    const mid = wordPopTitle(clip, 0.6 + WORD_POP_RISE_S / 2)!
+    const mid = wordPopTitle(clip, 0.7)!
     expect(mid.wordColors).toEqual([{ at: 1, word: 'two', color: '#A3FF12' }])
-    expect(mid.wordScales).toHaveLength(1)
-    expect(mid.wordScales![0]).toMatchObject({ at: 1, word: 'two' })
-    expect(mid.wordScales![0]!.scale).toBeGreaterThan(1)
-    expect(mid.wordScales![0]!.scale).toBeLessThan(WORD_POP_SCALE)
     // The text and the look are untouched.
     expect(mid.text).toBe('one two three')
     expect(mid.color).toBe(clip.title!.color)
   })
 
-  it('has no scale at the instant the word starts, only the colour', () => {
+  it('lights the word from the instant it starts', () => {
     const at = wordPopTitle(caption(), 0.2)!
     expect(at.wordColors).toEqual([{ at: 0, word: 'one', color: '#A3FF12' }])
-    expect(at.wordScales).toBeUndefined()
   })
 
-  it('holds the full size after the rise and goes back to normal when the next word starts', () => {
+  it('keeps the word lit to the end and goes back to normal when the next word starts', () => {
     const clip = caption()
-    expect(wordPopTitle(clip, 0.3)!.wordScales![0]!.scale).toBe(WORD_POP_SCALE)
     expect(wordPopTitle(clip, 0.5999)!.wordColors).toEqual([{ at: 0, word: 'one', color: '#A3FF12' }])
     const next = wordPopTitle(clip, 0.6)!
     expect(next.wordColors).toEqual([{ at: 1, word: 'two', color: '#A3FF12' }])
-    expect(next.wordScales).toBeUndefined()
   })
 
   it('gives the word being said the pop colour even when it is a highlighted word', () => {
@@ -241,13 +192,6 @@ describe('wordPopTitle', () => {
     expect(t.wordColors![t.wordColors!.length - 1]).toEqual({ at: 1, word: 'two', color: '#A3FF12' })
     // The word he leaned on that is not being said keeps its own colour.
     expect(t.wordColors).toContainEqual({ at: 2, word: 'three', color: '#3B7DFF' })
-  })
-
-  it('reads the clip time through its speed: a faster clip pops in less timeline time', () => {
-    const fast = caption({ speed: 2 })
-    // 0.045 content seconds in is 0.0225 timeline seconds at 2x: a quarter of the rise.
-    const s = wordPopTitle(fast, 0.6 + 0.045)!.wordScales![0]!.scale
-    expect(s).toBe(popScaleAt(0.045 / 2))
   })
 
   it('uses the colour on the title, and the default one if it is blank', () => {
@@ -260,9 +204,10 @@ describe('wordPopTitle', () => {
     expect(wordPopTitle(clip, 0.7)).toBe(wordPopTitle(clip, 0.71))
     expect(wordPopTitle(clip, 0.7)).not.toBe(wordPopTitle(clip, 1.1))
     expect(wordPopTitle(clip, 0.62)).toBe(wordPopTitle(clip, 0.62))
+    // A whole word is one state, from its first frame to its last, so the raster cache hits.
+    expect(wordPopTitle(clip, 0.6)).toBe(wordPopTitle(clip, 0.94))
     // The title on the clip is never written to.
     expect(clip.title!.wordColors).toBeUndefined()
-    expect(clip.title!.wordScales).toBeUndefined()
   })
 
   it('keeps the field order stable, so the raster cache key does not wander', () => {
@@ -270,12 +215,12 @@ describe('wordPopTitle', () => {
     const a = Object.keys(wordPopTitle(clip, 0.62)!)
     const b = Object.keys(wordPopTitle(clip, 1.05)!)
     expect(a).toEqual(b)
-    expect(a.slice(-2)).toEqual(['wordColors', 'wordScales'])
+    expect(a.slice(-1)).toEqual(['wordColors'])
   })
 
   it('does not grow without bound when the preview is scrubbed over one word', () => {
     const clip = caption()
-    for (let i = 0; i < 500; i++) wordPopTitle(clip, 0.6 + (i / 500) * WORD_POP_RISE_S)
+    for (let i = 0; i < 500; i++) wordPopTitle(clip, 0.6 + (i / 500) * 0.35)
     // Still answers, and still the right word.
     expect(wordPopTitle(clip, 0.7)!.wordColors![0]!.word).toBe('two')
   })
@@ -283,7 +228,7 @@ describe('wordPopTitle', () => {
 
 describe('wordPopTitle with a word box', () => {
   const BOX = { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' }
-  /** The box alone: no pop colour, no pop scale. */
+  /** The box alone: no pop colour. */
   const boxOnly = (over: Partial<Clip> = {}, title: Partial<TitleDef> = {}): Clip =>
     caption(over, { wordPop: undefined, wordBox: BOX, ...title })
 
@@ -291,7 +236,6 @@ describe('wordPopTitle with a word box', () => {
     const t = wordPopTitle(boxOnly(), 0.7)!
     expect(t.boxWord).toEqual({ at: 1, word: 'two' })
     expect(t.wordColors).toBeUndefined()
-    expect(t.wordScales).toBeUndefined()
     // The stored look rides along untouched.
     expect(t.wordBox).toEqual(BOX)
     expect(t.text).toBe('one two three')
@@ -313,7 +257,7 @@ describe('wordPopTitle with a word box', () => {
 
   it('gives the very same object for the same word, a different one for the next word', () => {
     const clip = boxOnly()
-    // The box does not pop, so a whole word is one state however many frames it lasts.
+    // A whole word is one state however many frames it lasts.
     expect(wordPopTitle(clip, 0.61)).toBe(wordPopTitle(clip, 0.9))
     expect(wordPopTitle(clip, 0.61)).not.toBe(wordPopTitle(clip, 1.1))
     // The title on the clip is never written to.
@@ -330,21 +274,19 @@ describe('wordPopTitle with a word box', () => {
     expect(wordPopTitle(clip, 0.7)).toBe(clip.title)
   })
 
-  it('works together with the pop: the lit word, its scale and its box are the same word', () => {
+  it('works together with the pop: the lit word and its box are the same word', () => {
     const clip = caption({}, { wordBox: BOX })
-    const t = wordPopTitle(clip, 0.6 + WORD_POP_RISE_S / 2)!
+    const t = wordPopTitle(clip, 0.7)!
     expect(t.wordColors).toEqual([{ at: 1, word: 'two', color: '#A3FF12' }])
-    expect(t.wordScales![0]).toMatchObject({ at: 1, word: 'two' })
     expect(t.boxWord).toEqual({ at: 1, word: 'two' })
   })
 
   it('keeps the field order stable with both on, boxWord last', () => {
     const clip = caption({}, { wordBox: BOX })
     const a = Object.keys(wordPopTitle(clip, 0.62)!)
-    // The instant a word starts it has not grown yet, so it has no scale.
-    const b = Object.keys(wordPopTitle(clip, 0.6)!)
-    expect(a.slice(-3)).toEqual(['wordColors', 'wordScales', 'boxWord'])
-    expect(b.slice(-2)).toEqual(['wordColors', 'boxWord'])
+    const b = Object.keys(wordPopTitle(clip, 1.05)!)
+    expect(a).toEqual(b)
+    expect(a.slice(-2)).toEqual(['wordColors', 'boxWord'])
   })
 
   it('reads the words he said, and falls back to spread words after a retype', () => {
@@ -359,7 +301,7 @@ describe('wordPopTitle with a word box', () => {
 // ⛔ DECIDED IN ONE PLACE (the header of wordPop.ts). The monitor and the export worker
 // both draw layer.title, so the lit word and the box agree between the preview and the
 // file only while layerFor in render/resolve.ts is the one place that works them out.
-// A second caller of wordPopTitle, or a direct call to activeWordAt or popScaleAt, is a
+// A second caller of wordPopTitle, or a direct call to activeWordAt, is a
 // second answer to "which word is it", and this reads the source to catch one.
 const SRC = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -403,8 +345,7 @@ describe('wordPopTitle has exactly one caller', () => {
     expect(layerFor).toContain('title: wordPopTitle(clip, sourceTimeS)')
   })
 
-  it('leaves activeWordAt and popScaleAt to wordPop.ts alone', () => {
+  it('leaves activeWordAt to wordPop.ts alone', () => {
     expect(callersOf('activeWordAt')).toEqual([])
-    expect(callersOf('popScaleAt')).toEqual([])
   })
 })

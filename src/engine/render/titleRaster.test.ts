@@ -237,6 +237,33 @@ describe('the word box', () => {
     expect(r.w).toBeCloseTo(26 + 2 * 0.19 * 36, 9)
   })
 
+  it('measures the bottom margin from the glyph edge, so a g or a y stays inside the box', () => {
+    const plain = wordBoxRect(['one going'], { at: 1, word: 'going' }, m, 0, 'left', 100, 80, CAP, () => ({ left: 0, right: 50 }))!
+    const none = wordBoxRect(['one going'], { at: 1, word: 'going' }, m, 0, 'left', 100, 80, CAP, () => ({
+      left: 0,
+      right: 50,
+      descent: 0,
+    }))!
+    const deep = wordBoxRect(['one going'], { at: 1, word: 'going' }, m, 0, 'left', 100, 80, CAP, () => ({
+      left: 0,
+      right: 50,
+      descent: 19,
+    }))!
+    // No descent: the box is exactly what it was, the bottom margin under the baseline.
+    expect(plain.h).toBeCloseTo(CAP + (0.29 + 0.18) * 36, 9)
+    expect(none).toEqual(plain)
+    // A descent: the box grows down by exactly that much, and the top stays put.
+    expect(deep.h - plain.h).toBeCloseTo(19, 9)
+    expect(deep.y).toBe(plain.y)
+  })
+
+  it('counts words across a non breaking space the way wordPop.ts does', () => {
+    // wordPop.ts splits on any white space, so "one", "two", "three" are words 0, 1, 2.
+    const lines = ['one two three']
+    expect(rect(lines, { at: 1, word: 'two' }, 0, 'left')!.x).toBeCloseTo(40 - 0.19 * 36, 9)
+    expect(rect(lines, { at: 2, word: 'three' }, 0, 'left')!.x).toBeCloseTo(80 - 0.19 * 36, 9)
+  })
+
   it('grows with the cap height and with nothing else', () => {
     const a = rect(['one two three'], { at: 1, word: 'two' }, 0, 'left', 25)!
     const b = rect(['one two three'], { at: 1, word: 'two' }, 0, 'left', 50)!

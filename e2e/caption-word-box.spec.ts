@@ -111,6 +111,84 @@ async function read(page: Page, file: string): Promise<Reading> {
   )
 }
 
+type BoxReading = {
+  /** Pixels that are the box border's crimson. */
+  crimson: number
+  /** The crimson box's bounds in the saved picture, inclusive. */
+  x0: number
+  x1: number
+  y0: number
+  y1: number
+  /** How thick the left border is, counted along the box's middle row. */
+  border: number
+  /** Near white pixels in the columns inside the border: the boxed word's letters. */
+  bright: number
+  /** The top and bottom row of those letters, or -1 when there are none. */
+  inkTop: number
+  inkBottom: number
+}
+
+/** Photograph the program monitor to `file`, then find the box and the boxed word's letters in that very picture. */
+async function readBox(page: Page, file: string): Promise<BoxReading> {
+  const png = await page.getByTestId('program-canvas').screenshot({ path: file })
+  return page.evaluate(
+    async ({ b64, crimson }) => {
+      const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }))
+      const scratch = new OffscreenCanvas(bitmap.width, bitmap.height)
+      const ctx = scratch.getContext('2d')!
+      ctx.drawImage(bitmap, 0, 0)
+      const W = bitmap.width
+      const H = bitmap.height
+      const d = ctx.getImageData(0, 0, W, H).data
+      const isCrimson = (x: number, y: number): boolean => {
+        const i = (y * W + x) * 4
+        const r = d[i]!
+        const g = d[i + 1]!
+        const b = d[i + 2]!
+        return r > crimson.rMin && g < crimson.gMax && b > crimson.bMin && b < crimson.bMax && r - g > crimson.rOverG
+      }
+      const isBright = (x: number, y: number): boolean => {
+        const i = (y * W + x) * 4
+        return d[i]! > 200 && d[i + 1]! > 200 && d[i + 2]! > 200
+      }
+      let count = 0
+      let x0 = W
+      let x1 = -1
+      let y0 = H
+      let y1 = -1
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          if (!isCrimson(x, y)) continue
+          count += 1
+          if (x < x0) x0 = x
+          if (x > x1) x1 = x
+          if (y < y0) y0 = y
+          if (y > y1) y1 = y
+        }
+      }
+      const out = { crimson: count, x0, x1, y0, y1, border: 0, bright: 0, inkTop: -1, inkBottom: -1 }
+      if (count === 0) return out
+      const mid = Math.round((y0 + y1) / 2)
+      let border = 0
+      for (let x = x0; x <= x1 && isCrimson(x, mid); x++) border += 1
+      out.border = border
+      // The columns inside the border, so a neighbouring word's ink is never counted.
+      // Every row of the frame is read, so a letter that hangs out of the box is found.
+      for (let y = 0; y < H; y++) {
+        for (let x = x0 + border; x <= x1 - border; x++) {
+          if (!isBright(x, y)) continue
+          out.bright += 1
+          if (out.inkTop < 0) out.inkTop = y
+          out.inkBottom = y
+        }
+      }
+      return out
+    },
+    { b64: png.toString('base64'), crimson: CRIMSON },
+  )
+}
+
 /** Open the Captions tab with the style editor unfolded, the way he does. */
 async function openStyleEditor(page: Page): Promise<void> {
   await page.getByTestId('tab-captions').click()
@@ -159,6 +237,58 @@ test('the Word box style walks a crimson box along the words as they are said', 
   for (const r of seen) expect(r.bright, 'the letters are missing from a frame').toBeGreaterThan(20)
   expect(seen[1]!.cx).toBeGreaterThan(seen[0]!.cx + MIN_STEP)
   expect(seen[2]!.cx).toBeGreaterThan(seen[1]!.cx + MIN_STEP)
+})
+
+// The box's bottom edge was once a fixed margin under the baseline, so the tail of
+// a g, y or p reached the box's outer edge and its outline stuck out past it. Only
+// a lowercase word shows that, so this frame turns the Word box style's capitals off.
+test('the Word box goes round the tail of a lowercase g, not through it', async ({ page }) => {
+  mkdirSync(SHOTS, { recursive: true })
+  await page.goto('/')
+  await parkModules(page, ['/src/state/captionActions.ts'])
+  await page.evaluate(() => {
+    const mods = (window as unknown as ParkedWindow).__e2eMods
+    const { addCaptionsFromWords } = mods['/src/state/captionActions.ts'] as { addCaptionsFromWords: (w: unknown[]) => void }
+    addCaptionsFromWords([
+      { text: 'we', startS: 0, endS: 0.4 },
+      { text: 'are', startS: 0.4, endS: 0.8 },
+      { text: 'going', startS: 0.8, endS: 1.2 },
+    ])
+  })
+  // Inside "going".
+  await setUI(page, { playheadS: 1.0, selection: [] })
+
+  await openStyleEditor(page)
+  await page.getByTestId('caption-style-select').selectOption('builtin-word-box')
+  await page.getByTestId('caption-style-case-lower').click()
+  await page.getByTestId('caption-style-apply-all').click()
+  await expect.poll(async () => captionTexts(page), { timeout: 15_000 }).toEqual(['we are going'])
+
+  // Wait for a frame with the box and its word on it that holds still (the font may swap in late).
+  const shot = join(SHOTS, 'wordbox-descender.png')
+  let last = null as BoxReading | null
+  let r = null as BoxReading | null
+  await expect
+    .poll(
+      async () => {
+        last = r
+        r = await readBox(page, shot)
+        return r.crimson >= MIN_CRIMSON && r.bright > 20 && JSON.stringify(r) === JSON.stringify(last)
+      },
+      { timeout: 20_000, message: 'no steady frame with a crimson box round "going"' },
+    )
+    .toBe(true)
+  const box = r!
+  console.log(
+    `[word box] going: box rows ${box.y0} to ${box.y1}, border ${box.border}, ink rows ${box.inkTop} to ${box.inkBottom}`,
+  )
+
+  expect(box.border, 'no border found on the box').toBeGreaterThan(0)
+  // Every white pixel of the word is inside the box's rows, the tail of the g too.
+  expect(box.inkTop).toBeGreaterThanOrEqual(box.y0)
+  expect(box.inkBottom, 'the tail of the g hangs out of the box').toBeLessThanOrEqual(box.y1)
+  // And it stays off the crimson border: the letters sit inside it, as the caps do.
+  expect(box.inkBottom, 'the tail of the g sits on the crimson border').toBeLessThan(box.y1 - box.border)
 })
 
 test('the Word box switch puts the box on the house style, and off by default', async ({ page }) => {

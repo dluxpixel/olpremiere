@@ -94,6 +94,9 @@ export const CAPTION_REF_HEIGHT = 1920
 
 export const DEFAULT_EMPHASIS_COLOR = CAPTION_EMPHASIS_COLORS[0]
 
+/** The Word box colours off his frame: a dark see-through fill and a crimson border. */
+export const DEFAULT_WORD_BOX: NonNullable<TitleDef['wordBox']> = { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' }
+
 /** The measured auto cut, with fixed length settings ready for when he switches. */
 export const AUTO_SHAPE: CaptionShape = {
   length: 'auto',
@@ -240,7 +243,7 @@ export const BUILTIN_CAPTION_STYLES: readonly CaptionStyle[] = [
       vAlign: 'middle',
       offsetYPx: 0,
       lineHeight: 1.1,
-      wordBox: { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' },
+      wordBox: { ...DEFAULT_WORD_BOX },
     },
     refHeight: CAPTION_REF_HEIGHT,
     shape: { length: 'fixed', maxWords: 3, charsPerLine: 20, lines: 1, minDurS: AUTO_SHAPE.minDurS, gapFrames: 0 },
