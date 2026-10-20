@@ -1,49 +1,143 @@
-// Caption width, from each font's own advance table (captionFit.ts). A font with no
-// table of its own is measured with Montserrat's, which reads a condensed face far
-// too wide: Oswald, the Word box style's face, lost its third word that way.
+// Caption width (captionFit.ts): each caption font is measured with its own advances and
+// kerning (captionFontMetrics.ts), so the fitter reads a line as wide as the canvas draws it.
+// A font with no metrics of its own is an estimate, Montserrat's 700 advances with no kerning.
 
 import { describe, expect, it } from 'vitest'
 import { jettismCaptionDef } from './captions'
 import { captionFitter, captionLineWidthPx, captionTextWidthPx, fitWordsToFrame } from './captionFit'
-import { COMIC_STACK, OSWALD_STACK } from '../render/titleFonts'
+import { CAPTION_FONT_STACK, COMIC_STACK, OSWALD_STACK } from '../render/titleFonts'
 
-// "AWAKE" at 100 px, the widths per 1000 em added up: Montserrat 4106, Lilita One 3376, Oswald 2813.
-const MONTSERRAT_AWAKE = 410.6
-const LILITA_AWAKE = 337.6
-const OSWALD_AWAKE = 281.3
+// What ctx.measureText said in Chromium for these strings at 100 px, with each bundled font
+// loaded the way titleFonts.ts registers it and the font string the rasterizer builds (bold for
+// Montserrat and Oswald, regular for Lilita One). Read off the browser, not worked out by us.
+const CHROMIUM_AT_100: ReadonlyArray<{ font: string; stack: string; widths: ReadonlyArray<readonly [string, number]> }> = [
+  {
+    font: 'Oswald',
+    stack: OSWALD_STACK,
+    widths: [
+      ['AWAKE', 277.3],
+      ["AWAKE DOESN'T REALLY", 948.7],
+      ['WAVE YOU', 407.3],
+      ['MMMM WWWW', 586.0],
+      ['ŠČŘÁ ŽÝ', 341.0],
+      ['It’s “quoted”', 504.9],
+      ["don't", 196.8],
+      ['office waffle', 485.2],
+      ['first flow', 359.6],
+      ['Everybody', 410.9],
+      ['EXTRAORDINARY', 680.0],
+      ['LT AVA', 263.5],
+    ],
+  },
+  {
+    font: 'Lilita One',
+    stack: COMIC_STACK,
+    widths: [
+      ['AWAKE', 330.6],
+      ["AWAKE DOESN'T REALLY", 1065.7],
+      ['WAVE YOU', 481.4],
+      ['MMMM WWWW', 762.8],
+      // Lilita's file has no S, C and R with a caron: the browser draws those in Arial Black.
+      ['ŠČŘÁ ŽÝ', 411.266],
+      ['It’s “quoted”', 583.0],
+      ["don't", 229.8],
+      ['office waffle', 541.1],
+      ['first flow', 396.2],
+      ['Everybody', 456.8],
+      ['EXTRAORDINARY', 776.2],
+      ['LT AVA', 298.1],
+    ],
+  },
+  {
+    font: 'Montserrat',
+    stack: CAPTION_FONT_STACK,
+    widths: [
+      ['AWAKE', 410.186],
+      ["AWAKE DOESN'T REALLY", 1341.452],
+      ['WAVE YOU', 590.086],
+      ['MMMM WWWW', 884.3],
+      ['ŠČŘÁ ŽÝ', 456.6],
+      ['It’s “quoted”', 679.514],
+      ["don't", 274.9],
+      ['office waffle', 665.814],
+      ['first flow', 478.0],
+      ['Everybody', 565.852],
+      ['EXTRAORDINARY', 929.107],
+      ['LT AVA', 372.086],
+    ],
+  },
+]
 
-describe('which width table a font stack is measured with', () => {
+describe('the widths agree with what the canvas measures', () => {
+  for (const { font, stack, widths } of CHROMIUM_AT_100) {
+    it(`${font}: kerning pairs, ligatures, wide letters, Czech capitals, apostrophes and curly quotes`, () => {
+      for (const [text, chromium] of widths) {
+        expect(captionTextWidthPx(text, 100, stack), `${font} ${JSON.stringify(text)}`).toBeCloseTo(chromium, 2)
+      }
+    })
+  }
+
+  it('is linear in the font size, as the browser is', () => {
+    for (const { stack } of CHROMIUM_AT_100) {
+      const at100 = captionTextWidthPx("AWAKE DOESN'T REALLY", 100, stack)
+      expect(captionTextWidthPx("AWAKE DOESN'T REALLY", 91, stack)).toBeCloseTo(at100 * 0.91, 6)
+      expect(captionTextWidthPx("AWAKE DOESN'T REALLY", 190, stack)).toBeCloseTo(at100 * 1.9, 6)
+    }
+  })
+
+  it('counts a letter typed as a base plus a loose accent as one letter', () => {
+    const composed = 'Č'
+    const loose = 'Č'
+    expect(captionTextWidthPx(loose, 100, OSWALD_STACK)).toBeCloseTo(captionTextWidthPx(composed, 100, OSWALD_STACK), 6)
+  })
+
+  it('pulls A-W, W-A and L-Y together in Oswald, which is what made the Word box line fit', () => {
+    // Advances alone add up to 961.1 px here; the canvas draws 948.7 px, 1.3 px inside a 950 px line.
+    const width = captionTextWidthPx("AWAKE DOESN'T REALLY", 100, OSWALD_STACK)
+    expect(width).toBeGreaterThan(948)
+    expect(width).toBeLessThan(950)
+  })
+})
+
+describe('which metrics a font stack is measured with', () => {
   const awake = (family?: string): number => captionTextWidthPx('AWAKE', 100, family)
+  // The estimate: Montserrat's 700 advances added up, no kerning.
+  const ESTIMATE_AWAKE = 410.6
 
-  it('uses Montserrat for no font and for a font with no table of its own', () => {
-    expect(awake()).toBeCloseTo(MONTSERRAT_AWAKE, 6)
-    expect(awake("'Montserrat', sans-serif")).toBeCloseTo(MONTSERRAT_AWAKE, 6)
-    expect(awake('Arial')).toBeCloseTo(MONTSERRAT_AWAKE, 6)
+  it('estimates for no font and for a font with no metrics of its own', () => {
+    expect(awake()).toBeCloseTo(ESTIMATE_AWAKE, 6)
+    expect(awake('Arial')).toBeCloseTo(ESTIMATE_AWAKE, 6)
+    expect(awake("'Luckiest Guy', 'Arial Black', sans-serif")).toBeCloseTo(ESTIMATE_AWAKE, 6)
+  })
+
+  it("measures Montserrat at the weight 800 the app pins it to, not the estimate's 700", () => {
+    expect(awake("'Montserrat', sans-serif")).toBeCloseTo(410.186, 2)
+    expect(awake(CAPTION_FONT_STACK)).toBeCloseTo(410.186, 2)
   })
 
   it("uses Lilita One's own when the stack leads with it", () => {
-    expect(awake(COMIC_STACK)).toBeCloseTo(LILITA_AWAKE, 6)
+    expect(awake(COMIC_STACK)).toBeCloseTo(330.6, 2)
   })
 
   it("uses Oswald's own when the stack leads with it", () => {
-    expect(awake(OSWALD_STACK)).toBeCloseTo(OSWALD_AWAKE, 6)
+    expect(awake(OSWALD_STACK)).toBeCloseTo(277.3, 2)
   })
 
   it('finds Oswald with single quotes, double quotes, none, a leading space or other letter case', () => {
     for (const stack of ["'Oswald', sans-serif", '"Oswald", sans-serif', 'Oswald, sans-serif', "  'Oswald'", "'OSWALD'"]) {
-      expect(awake(stack), stack).toBeCloseTo(OSWALD_AWAKE, 6)
+      expect(awake(stack), stack).toBeCloseTo(277.3, 2)
     }
   })
 
   it('does not take a stack that only lists Oswald after another font, or a longer name that starts the same', () => {
-    expect(awake("'Arial Black', 'Oswald', sans-serif")).toBeCloseTo(MONTSERRAT_AWAKE, 6)
-    expect(awake("'Oswaldo', sans-serif")).toBeCloseTo(MONTSERRAT_AWAKE, 6)
-    expect(awake("'Lilita One', 'Oswald', sans-serif")).toBeCloseTo(LILITA_AWAKE, 6)
+    expect(awake("'Arial Black', 'Oswald', sans-serif")).toBeCloseTo(ESTIMATE_AWAKE, 6)
+    expect(awake("'Oswaldo', sans-serif")).toBeCloseTo(ESTIMATE_AWAKE, 6)
+    expect(awake("'Lilita One', 'Oswald', sans-serif")).toBeCloseTo(330.6, 2)
   })
 
   it('reads Oswald about a quarter narrower than Montserrat at the same size', () => {
     const caps = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    const ratio = captionTextWidthPx(caps, 100, OSWALD_STACK) / captionTextWidthPx(caps, 100)
+    const ratio = captionTextWidthPx(caps, 100, OSWALD_STACK) / captionTextWidthPx(caps, 100, CAPTION_FONT_STACK)
     expect(ratio).toBeGreaterThan(0.65)
     expect(ratio).toBeLessThan(0.8)
   })
@@ -57,13 +151,20 @@ describe('the Word box line in Oswald', () => {
     expect(line).toBe(950)
   })
 
-  it("fits three words of speech on one line at the 1080x1920 size, where Montserrat's widths said 1216 px", () => {
+  it('fits three words of speech on one line at the 1080x1920 size, where the estimate said 1216 px', () => {
     const oswald = captionFitter({ ...WORD_BOX_LOOK, fontFamily: OSWALD_STACK }, 1080, 1)
-    const montserrat = captionFitter(WORD_BOX_LOOK, 1080, 1)
+    const estimated = captionFitter(WORD_BOX_LOOK, 1080, 1)
     expect(captionTextWidthPx("AWAKE DOESN'T REALLY", 91, OSWALD_STACK)).toBeLessThan(line)
     expect(captionTextWidthPx("AWAKE DOESN'T REALLY", 91)).toBeGreaterThan(line)
     expect(oswald("awake doesn't really")).toBe(true)
-    expect(montserrat("awake doesn't really")).toBe(false)
+    expect(estimated("awake doesn't really")).toBe(false)
+  })
+
+  it('fits them on the 1080x2112 phone frame too, 948.7 px against the 950 px line', () => {
+    const oswald = captionFitter({ fontSizePx: 100, textCase: 'upper', fontFamily: OSWALD_STACK }, 1080, 1)
+    expect(oswald("awake doesn't really")).toBe(true)
+    // One pixel bigger and it really is too wide, so the fit is not a loose one.
+    expect(captionFitter({ fontSizePx: 101, textCase: 'upper', fontFamily: OSWALD_STACK }, 1080, 1)("awake doesn't really")).toBe(false)
   })
 
   it('still refuses a run that is too wide for one line in Oswald too', () => {
@@ -71,9 +172,28 @@ describe('the Word box line in Oswald', () => {
     expect(oswald('something else entirely')).toBe(false)
   })
 
-  it("keeps a word at full size that Montserrat's widths would have shrunk", () => {
+  it("keeps a word at full size that the estimate would have shrunk", () => {
     const def = { ...jettismCaptionDef('everybody', 1920), fontSizePx: 190, textCase: 'upper' as const }
     expect(fitWordsToFrame({ ...def, fontFamily: OSWALD_STACK }, 1080).fontSizePx).toBe(190)
     expect(fitWordsToFrame({ ...def, fontFamily: "'Montserrat', sans-serif" }, 1080).fontSizePx).toBeLessThan(190)
+  })
+})
+
+describe('a hard line break in the text', () => {
+  const def = { fontSizePx: 100, textCase: undefined, fontFamily: OSWALD_STACK }
+
+  it('wraps each side on its own, as the rasterizer does', () => {
+    // The two halves are each inside the 950 px line.
+    const fits = captionFitter(def, 1080, 2)
+    expect(fits('MMMM WWWW\nMMMM')).toBe(true)
+    // The same words flowed as one paragraph fit in two lines. With the break after the fourth they
+    // are drawn on three, because the first side is too wide for one line by itself.
+    expect(fits('MMMM WWWW MMMM WWWW I')).toBe(true)
+    expect(fits('MMMM WWWW MMMM WWWW\nI')).toBe(false)
+  })
+
+  it('counts the lines it is drawn on, so a break plus a wrap is three', () => {
+    expect(captionFitter(def, 1080, 2)('MMMM WWWW MMMM WWWW\nIII')).toBe(false)
+    expect(captionFitter(def, 1080, 3)('MMMM WWWW MMMM WWWW\nIII')).toBe(true)
   })
 })
