@@ -7,6 +7,7 @@ import { newTitleClip, type Clip, type TitleDef } from '../types'
 import {
   AUTO_CAPTION_OPTIONS,
   CAPTION_POP_DUR_S,
+  captionCase,
   captionClips,
   captionHouseCase,
   chunkWords,
@@ -32,6 +33,7 @@ import {
   type CaptionStyle,
 } from './captionStyle'
 import { captionLineWidthPx, captionTextWidthPx } from './captionFit'
+import { titleLayout } from '../render/titleRaster'
 import { COMIC_STACK, OSWALD_STACK } from '../render/titleFonts'
 
 const HOUSE = BUILTIN_CAPTION_STYLES[0]!
@@ -404,6 +406,34 @@ describe('the Word box style', () => {
       expect(cut('so i went to the store and then home', PHONE)).toEqual(['so i went', 'to the store', 'and then home'])
     })
 
+    // 2026-10-20: on the Phone frame "AWAKE DOESN'T REALLY" was cut into "awake doesn't" and
+    // "really", the 2 plus 1 he saw. The fitter added up plain letter widths (961 px) and the
+    // canvas, which kerns A-W, W-A and L-Y, draws it as 948.7 px inside the 950 px line.
+    it("draws \"AWAKE DOESN'T REALLY\" as one caption on one line on the Phone frame", () => {
+      const run = "awake doesn't really"
+      expect(cut(run, PHONE)).toEqual([run])
+      const def = captionDefFor(WORD_BOX, run, PHONE.height)
+      expect(def.fontSizePx).toBe(100)
+      // Chromium measured that line at 948.7 px at a size of 100.
+      expect(948.7).toBeLessThanOrEqual(captionLineWidthPx(PHONE.width))
+
+      const words = said("awake doesn't really mean what you think about it", 0, 0.3)
+      const chunks = chunkWords(words, chunkOptionsFor(WORD_BOX.shape, PHONE.fps, captionFitterFor(WORD_BOX, PHONE, captionHouseCase)))
+      expect(chunks[0]!.text).toBe(run)
+      for (const chunk of chunks) {
+        const clip = newTitleClip(jettismCaptionDef(captionHouseCase(chunk.text), PHONE.height), 0, 1)
+        const drawn = dressCaption(clip, WORD_BOX, PHONE.width, PHONE.height).title!
+        const measure = (s: string): number => captionTextWidthPx(s, drawn.fontSizePx, drawn.fontFamily)
+        expect(titleLayout(drawn, PHONE.width, PHONE.height, measure).lines, chunk.text).toHaveLength(1)
+      }
+    })
+
+    it('still cuts the run when the frame is a little narrower than the line needs', () => {
+      // 1.3 px of room is all the 1080 wide frame has; 1060 wide has a 932 px line, so 948.7 px does not fit.
+      const narrow = { width: 1060, height: 2112, fps: 30 }
+      expect(cut("awake doesn't really", narrow)).toEqual(["awake doesn't", 'really'])
+    })
+
     it('still cuts a run that is really too wide for the line', () => {
       // 987 px at the Short size and 1085 px on the Phone frame, against 950.
       expect(cut('something else entirely')).toEqual(['something else', 'entirely'])
@@ -466,5 +496,102 @@ describe('the word box in a saved look', () => {
 
   it('a style that says nothing about the box leaves the house caption without one', () => {
     expect(captionDefFor(style({ look: { color: '#00ff00' } }), 'x', 1920).wordBox).toBeUndefined()
+  })
+})
+
+// What the fitter lets into a caption is what the rasterizer draws on one pass: the same
+// line width, case, hard break and font size, so a caption that was accepted never wraps
+// into more lines than its style allows. Every step here is the one a caption run takes
+// (captionActions.ts): chunk with the fitter, make the clips, break two line captions, dress
+// them. The width is measured by captionTextWidthPx on both sides, so this test is about
+// where the line breaks; the widths themselves are pinned to Chromium in captionFit.test.ts.
+describe('what the fitter accepts is what is drawn', () => {
+  const FRAMES = [
+    { width: 1920, height: 1080, fps: 30 },
+    { width: 1080, height: 1920, fps: 30 },
+    { width: 1080, height: 2112, fps: 30 },
+    { width: 1080, height: 1350, fps: 30 },
+  ]
+  // Wide letters (W, M), apostrophes straight and curly, Czech capitals and lowercase, a few long words.
+  const POOL = [
+    'awake', "doesn't", 'really', 'WAVE', 'WOW', 'MAMA', 'MMMM', 'WWW', 'Wiktor', 'women', 'mummy', 'Wayward', 'Yellow',
+    'Šárka', 'Čeněk', 'Řehoř', 'Ámos', 'Příliš', 'žluťoučký',
+    'kůň', 'úpěl', 'ďábelské', 'ódy', "it's", 'it’s', "don't", 'everybody', 'knows',
+    'that', 'something', 'else', 'entirely', 'extraordinary', 'awesome', 'moment', 'diamonds', 'now', 'they', "didn't",
+    'believe', 'most', 'people', 'never', 'realize', 'so', 'i', 'went', 'to', 'the', 'store', 'and', 'then', 'home',
+    'official', 'different', 'office', 'Tavern', 'AWAY', 'WARM', 'MAYOR',
+  ]
+  // The same words for every style and frame, from a fixed seed.
+  const speech = (count: number): CaptionWord[] => {
+    let seed = 20261020
+    const next = (): number => {
+      seed = (seed * 1664525 + 1013904223) >>> 0
+      return seed / 2 ** 32
+    }
+    return Array.from({ length: count }, (_, i) => ({
+      text: POOL[Math.floor(next() * POOL.length)]!,
+      startS: i * 0.25,
+      endS: (i + 1) * 0.25,
+    }))
+  }
+
+  /** The captions a run makes in this style on this frame, as the title each is drawn from. */
+  const drawnTitles = (s: CaptionStyle, seq: { width: number; height: number; fps: number }, words: CaptionWord[]): TitleDef[] => {
+    const caseRule = s.caseRule ?? 'house'
+    const chunks = chunkWords(words, chunkOptionsFor(s.shape, seq.fps, captionFitterFor(s, seq, (t) => captionCase(t, caseRule))))
+    return captionClips(chunks, { seqWidth: seq.width, seqHeight: seq.height, caseRule }).map((c) => {
+      const lined = breakLines(c.title!.text, s.shape)
+      const withLines = lined === c.title!.text ? c : { ...c, title: { ...c.title!, text: lined } }
+      return dressCaption(withLines, s, seq.width, seq.height).title!
+    })
+  }
+
+  for (const s of BUILTIN_CAPTION_STYLES) {
+    for (const seq of FRAMES) {
+      it(`${s.name} on ${seq.width}x${seq.height} never draws a caption on more lines than it allows, or past the line`, () => {
+        const allowed = s.shape.length === 'fixed' ? s.shape.lines : 1
+        const maxW = captionLineWidthPx(seq.width)
+        const titles = drawnTitles(s, seq, speech(300))
+        expect(titles.length).toBeGreaterThan(20)
+        for (const def of titles) {
+          const measure = (str: string): number => captionTextWidthPx(str, def.fontSizePx, def.fontFamily)
+          const layout = titleLayout(def, seq.width, seq.height, measure)
+          expect(layout.lines.length, JSON.stringify(def.text)).toBeLessThanOrEqual(allowed)
+          for (const line of layout.lines) expect(measure(line), JSON.stringify(line)).toBeLessThanOrEqual(maxW + 1e-6)
+        }
+      })
+    }
+  }
+
+  it('puts more than one word in a caption wherever the style allows it, so the test above is not empty', () => {
+    for (const s of BUILTIN_CAPTION_STYLES) {
+      if (s.shape.length === 'fixed' && s.shape.maxWords === 1) continue
+      const titles = drawnTitles(s, FRAMES[1]!, speech(300))
+      expect(titles.some((t) => t.text.trim().split(/\s+/).length > 1), s.name).toBe(true)
+    }
+  })
+
+  describe('a two line caption', () => {
+    const SUBTITLES = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
+    const SHORT = { width: 1080, height: 1920, fps: 30 }
+    // Flowed as one paragraph these eight words fit two lines, but the balanced break puts
+    // "ody home WWW ody doesn't" (733 px and 252 px) on one side, which wraps when drawn.
+    const RUN = "diamonds MAMA office ódy home WWW ódy doesn't"
+
+    it('is judged on the two halves that are drawn, not on the words flowed together', () => {
+      expect(SUBTITLES.shape).toMatchObject({ length: 'fixed', lines: 2 })
+      const lined = breakLines(RUN, SUBTITLES.shape)
+      expect(lined).toBe("diamonds MAMA office\nódy home WWW ódy doesn't")
+      const def = captionDefFor(SUBTITLES, lined, SHORT.height)
+      const measure = (str: string): number => captionTextWidthPx(str, def.fontSizePx, def.fontFamily)
+      expect(titleLayout(def, SHORT.width, SHORT.height, measure).lines).toHaveLength(3)
+      expect(captionFitterFor(SUBTITLES, SHORT)(RUN)).toBe(false)
+    })
+
+    it('is cut shorter by the chunker when its halves do not fit, instead of drawn on three lines', () => {
+      const chunks = chunkWords(said(RUN, 0, 0.25), chunkOptionsFor(SUBTITLES.shape, SHORT.fps, captionFitterFor(SUBTITLES, SHORT)))
+      expect(chunks.length).toBeGreaterThan(1)
+      expect(wordsIn(chunks)).toEqual(RUN.split(' '))
+    })
   })
 })

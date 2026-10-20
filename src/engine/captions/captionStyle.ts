@@ -324,7 +324,9 @@ export function chunkOptionsFor(
 /**
  * Does a group of words fit one caption of this style in this frame: its lines
  * (one for auto), its size scaled to the frame, its case. `prepare` is what
- * the run does to the words before they are shown (the house case).
+ * the run does to the words before they are shown (the house case). A two line
+ * style then breaks them (breakLines) as the run does, so the fitter measures
+ * the two paragraphs that are drawn and not the words flowed as one.
  */
 export function captionFitterFor(
   style: Pick<CaptionStyle, 'look' | 'refHeight' | 'emphasisColor' | 'shape'>,
@@ -332,7 +334,8 @@ export function captionFitterFor(
   prepare?: (text: string) => string,
 ): (text: string) => boolean {
   const lines = style.shape.length === 'fixed' ? style.shape.lines : 1
-  return captionFitter(captionDefFor(style, '', seq.height), seq.width, lines, prepare)
+  const shown = (text: string): string => breakLines(prepare ? prepare(text) : text, style.shape)
+  return captionFitter(captionDefFor(style, '', seq.height), seq.width, lines, shown)
 }
 
 /**
