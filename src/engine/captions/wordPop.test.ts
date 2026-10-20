@@ -7,7 +7,10 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { defaultTitleDef, newTitleClip, type Clip, type TitleDef } from '../types'
-import { WORD_POP_COLOR, activeWordAt, popWordsFor, wordPopTitle } from './wordPop'
+import { resolveFrame } from '../render/resolve'
+import type { RenderLayer } from '../render/types'
+import type { Sequence, Track } from '../types'
+import { DERIVED_CAP, WORD_POP_COLOR, WORD_POP_SIZE, activeWordAt, popScaleAt, popWordsFor, wordPopTitle } from './wordPop'
 
 const w = (startS: number, endS: number, text = 'x') => ({ text, startS, endS })
 
@@ -218,11 +221,38 @@ describe('wordPopTitle', () => {
     expect(a.slice(-1)).toEqual(['wordColors'])
   })
 
-  it('does not grow without bound when the preview is scrubbed over one word', () => {
+  it('keeps answering the right word when the preview is scrubbed over one word', () => {
     const clip = caption()
     for (let i = 0; i < 500; i++) wordPopTitle(clip, 0.6 + (i / 500) * 0.35)
     // Still answers, and still the right word.
     expect(wordPopTitle(clip, 0.7)!.wordColors![0]!.word).toBe('two')
+  })
+
+  it('stays bounded past the cap: the right title still comes back and the same state is the same object', () => {
+    // More distinct states than the cap holds: one lit word each, on a long caption.
+    const n = DERIVED_CAP * 2 + 10
+    const names = Array.from({ length: n }, (_, i) => `w${i}`)
+    const said = names.map((text, i) => ({ text, startS: i * 0.5, endS: i * 0.5 + 0.4 }))
+    const clip = newTitleClip({ ...defaultTitleDef(names.join(' ')), wordPop: { color: '#A3FF12' } }, 0, n * 0.5)
+    const long: Clip = { ...clip, captionWords: said }
+    const first = wordPopTitle(long, 0.01)!
+    expect(first.wordColors![0]!.word).toBe('w0')
+    const seen: TitleDef[] = []
+    for (let i = 0; i < n; i++) {
+      const t = wordPopTitle(long, i * 0.5 + 0.01)!
+      // The right word, every time, whether or not the cap was passed on the way.
+      expect(t.wordColors).toEqual([{ at: i, word: `w${i}`, color: '#A3FF12' }])
+      // The same state asked again at once is the very same object.
+      expect(wordPopTitle(long, i * 0.5 + 0.2)).toBe(t)
+      seen.push(t)
+    }
+    // The newest states are still held (a map that kept growing would hold them all).
+    expect(wordPopTitle(long, (n - 1) * 0.5 + 0.01)).toBe(seen[n - 1])
+    // The oldest were let go when the cap was passed: asked again they are rebuilt, equal but new.
+    const again = wordPopTitle(long, 0.01)!
+    expect(again).not.toBe(first)
+    expect(again).toEqual(first)
+    expect(again.wordColors![0]!.word).toBe('w0')
   })
 })
 
@@ -295,6 +325,314 @@ describe('wordPopTitle with a word box', () => {
     expect(t.boxWord).toEqual({ at: 0, word: 'one' })
     const late = wordPopTitle(retyped, retyped.outS - 0.01)!
     expect(late.boxWord).toEqual({ at: 3, word: 'four' })
+  })
+})
+
+describe('popScaleAt', () => {
+  const PEAK = 1.15
+
+  it('is 1 before the word starts and at the very start', () => {
+    expect(popScaleAt(-0.5, PEAK)).toBe(1)
+    expect(popScaleAt(-1e-9, PEAK)).toBe(1)
+    expect(popScaleAt(0, PEAK)).toBe(1)
+  })
+
+  it('reaches exactly the peak a tenth of a second in', () => {
+    expect(popScaleAt(0.1, PEAK)).toBe(PEAK)
+    expect(popScaleAt(0.1, 1.4)).toBe(1.4)
+  })
+
+  it('is exactly 1 from a fifth of a second on, however long the word lasts', () => {
+    expect(popScaleAt(0.2, PEAK)).toBe(1)
+    expect(popScaleAt(0.2000001, PEAK)).toBe(1)
+    expect(popScaleAt(3, PEAK)).toBe(1)
+    expect(popScaleAt(1e6, PEAK)).toBe(1)
+  })
+
+  it('only grows on the way up and only shrinks on the way down', () => {
+    let prev = popScaleAt(0, PEAK)
+    for (let i = 1; i <= 100; i++) {
+      const v = popScaleAt((i / 100) * 0.1, PEAK)
+      expect(v).toBeGreaterThanOrEqual(prev)
+      prev = v
+    }
+    expect(prev).toBe(PEAK)
+    for (let i = 1; i <= 100; i++) {
+      const v = popScaleAt(0.1 + (i / 100) * 0.1, PEAK)
+      expect(v).toBeLessThanOrEqual(prev)
+      prev = v
+    }
+    expect(prev).toBe(1)
+  })
+
+  it('never leaves the range from 1 to the peak', () => {
+    for (let i = -20; i <= 400; i++) {
+      const v = popScaleAt(i / 1000, PEAK)
+      expect(v).toBeGreaterThanOrEqual(1)
+      expect(v).toBeLessThanOrEqual(PEAK)
+    }
+  })
+
+  it('jumps first and eases in: most of the swell by the middle of the rise, and slow to start settling', () => {
+    // Ease out: most of the swell is done by the middle of the rise.
+    expect(popScaleAt(0.05, PEAK)).toBeGreaterThan(1 + (PEAK - 1) * 0.8)
+    // Ease in and out on the way back: still near the top a quarter of the way down...
+    expect(popScaleAt(0.125, PEAK)).toBeGreaterThan(1 + (PEAK - 1) * 0.8)
+    // ...and exactly in the middle half way down.
+    expect(popScaleAt(0.15, PEAK)).toBeCloseTo(1 + (PEAK - 1) / 2, 12)
+  })
+
+  it('pops a word he leaned on a third further: 1 + (peak - 1) * 4/3', () => {
+    expect(popScaleAt(0.1, PEAK, true)).toBeCloseTo(1 + (PEAK - 1) * (4 / 3), 12)
+    expect(popScaleAt(0.1, PEAK, true)).toBeCloseTo(1.2, 12)
+    expect(popScaleAt(0.1, 1.3, true)).toBeCloseTo(1.4, 12)
+    // The emphasised pop starts and ends at 1 like any other.
+    expect(popScaleAt(0, PEAK, true)).toBe(1)
+    expect(popScaleAt(0.2, PEAK, true)).toBe(1)
+    // And is bigger than the plain one all the way through.
+    for (const dt of [0.02, 0.05, 0.1, 0.13, 0.17]) {
+      expect(popScaleAt(dt, PEAK, true)).toBeGreaterThan(popScaleAt(dt, PEAK, false))
+    }
+  })
+
+  it('is no pop for a peak of 1 or less, or one that is not a number', () => {
+    for (const peak of [1, 0.9, 0, -2, NaN, Infinity, -Infinity]) {
+      expect(popScaleAt(0.1, peak)).toBe(1)
+      expect(popScaleAt(0.1, peak, true)).toBe(1)
+    }
+  })
+
+  it('is 1 for a time that is not a number', () => {
+    expect(popScaleAt(NaN, PEAK)).toBe(1)
+  })
+
+  it('starts a new size pop at 15 percent', () => {
+    expect(WORD_POP_SIZE).toBe(1.15)
+  })
+})
+
+describe('wordPopTitle with a size pop', () => {
+  /** The size pop alone: no colour, no box. */
+  const sizeOnly = (over: Partial<Clip> = {}, title: Partial<TitleDef> = {}): Clip =>
+    caption(over, { wordPop: undefined, wordPopSize: WORD_POP_SIZE, ...title })
+
+  it('hands back the plain title at the start of a word, where the pop has not begun', () => {
+    const clip = sizeOnly()
+    expect(wordPopTitle(clip, 0.6)).toBe(clip.title)
+  })
+
+  it('marks the word being said with its size, a tenth of a second in', () => {
+    const t = wordPopTitle(sizeOnly(), 0.7)!
+    expect(t.popWord).toEqual({ at: 1, word: 'two', scale: 1.15 })
+    // Nothing else is marked: the colour and the box are their own switches.
+    expect(t.wordColors).toBeUndefined()
+    expect(t.boxWord).toBeUndefined()
+    // The stored look rides along untouched.
+    expect(t.wordPopSize).toBe(1.15)
+    expect(t.text).toBe('one two three')
+  })
+
+  it('swells on the way up and shrinks on the way back, word by word', () => {
+    const clip = sizeOnly()
+    const scaleAt = (t: number): number => wordPopTitle(clip, t)!.popWord?.scale ?? 1
+    expect(scaleAt(0.62)).toBeGreaterThan(1)
+    expect(scaleAt(0.66)).toBeGreaterThan(scaleAt(0.62))
+    expect(scaleAt(0.7)).toBe(1.15)
+    expect(scaleAt(0.75)).toBeLessThan(scaleAt(0.7))
+    // The next word starts its own pop from the beginning.
+    expect(scaleAt(1.0)).toBe(1)
+    expect(wordPopTitle(clip, 1.1)!.popWord).toEqual({ at: 2, word: 'three', scale: 1.15 })
+  })
+
+  it('is the plain title again once the pop has settled, until the next word starts', () => {
+    const clip = sizeOnly()
+    expect(wordPopTitle(clip, 0.8)).toBe(clip.title)
+    expect(wordPopTitle(clip, 0.99)).toBe(clip.title)
+    expect(wordPopTitle(clip, 0.8)!.popWord).toBeUndefined()
+  })
+
+  it('is the plain title before the first word is said', () => {
+    const clip = sizeOnly()
+    expect(wordPopTitle(clip, 0.1)).toBe(clip.title)
+  })
+
+  it('pops a word he leaned on further', () => {
+    const clip = sizeOnly({
+      captionWords: [
+        { text: 'one', startS: 0.2, endS: 0.55 },
+        { text: 'two', startS: 0.6, endS: 0.95, emphasis: true },
+        { text: 'three', startS: 1.0, endS: 1.4 },
+      ],
+    })
+    expect(wordPopTitle(clip, 0.7)!.popWord!.scale).toBeCloseTo(1.2, 3)
+    // The words next to it pop the usual amount.
+    expect(wordPopTitle(clip, 0.3)!.popWord!.scale).toBe(1.15)
+    expect(wordPopTitle(clip, 1.1)!.popWord!.scale).toBe(1.15)
+  })
+
+  it('does not pop for null, 1 or less, or a size that is not a number', () => {
+    for (const size of [null, 1, 0.8, 0, NaN, Infinity]) {
+      const clip = sizeOnly({}, { wordPopSize: size })
+      expect(wordPopTitle(clip, 0.7)).toBe(clip.title)
+    }
+  })
+
+  it('hands back the same title for an inverted backdrop title', () => {
+    const clip = sizeOnly({}, { invertBackdrop: true })
+    expect(wordPopTitle(clip, 0.7)).toBe(clip.title)
+  })
+
+  it('draws the size in steps of half a percent, so frames that look alike share one raster', () => {
+    const clip = sizeOnly()
+    const seen = new Set<TitleDef>()
+    for (let i = 0; i < 400; i++) {
+      const t = wordPopTitle(clip, 0.6 + (i / 400) * 0.4)!
+      if (t.popWord) {
+        seen.add(t)
+        expect(Math.round(t.popWord.scale * 1000) % 5).toBe(0)
+        expect(t.popWord.scale).toBeGreaterThan(1)
+        expect(t.popWord.scale).toBeLessThanOrEqual(1.2)
+      }
+    }
+    // A peak of 1.15 is 30 steps above 1, and a step on the way up is the same state as on the way back.
+    expect(seen.size).toBeGreaterThan(10)
+    expect(seen.size).toBeLessThanOrEqual(30)
+  })
+
+  it('returns the same object for the same state, a different one for a different state', () => {
+    const clip = sizeOnly()
+    expect(wordPopTitle(clip, 0.7)).toBe(wordPopTitle(clip, 0.7))
+    // Just either side of the top the size is the same step.
+    expect(wordPopTitle(clip, 0.7)).toBe(wordPopTitle(clip, 0.7 + 1 / 240))
+    expect(wordPopTitle(clip, 0.64)).not.toBe(wordPopTitle(clip, 0.7))
+    // The title on the clip is never written to.
+    expect(clip.title!.popWord).toBeUndefined()
+  })
+
+  it('works with the colour and the box: the same word, popWord last', () => {
+    const BOX = { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' }
+    const clip = caption({}, { wordBox: BOX, wordPopSize: WORD_POP_SIZE })
+    const t = wordPopTitle(clip, 0.7)!
+    expect(t.wordColors).toEqual([{ at: 1, word: 'two', color: '#A3FF12' }])
+    expect(t.boxWord).toEqual({ at: 1, word: 'two' })
+    expect(t.popWord).toEqual({ at: 1, word: 'two', scale: 1.15 })
+    expect(Object.keys(t).slice(-3)).toEqual(['wordColors', 'boxWord', 'popWord'])
+    // Settled: the colour and the box stay, the pop is gone.
+    const settled = wordPopTitle(clip, 0.9)!
+    expect(settled.boxWord).toEqual({ at: 1, word: 'two' })
+    expect(settled.popWord).toBeUndefined()
+    expect(Object.keys(settled).slice(-2)).toEqual(['wordColors', 'boxWord'])
+  })
+
+  it('keeps the field order stable across pop states, so the raster cache key does not wander', () => {
+    const clip = caption({}, { wordPopSize: WORD_POP_SIZE })
+    const a = Object.keys(wordPopTitle(clip, 0.62)!)
+    const b = Object.keys(wordPopTitle(clip, 0.7)!)
+    const c = Object.keys(wordPopTitle(clip, 1.05)!)
+    expect(a).toEqual(b)
+    expect(b).toEqual(c)
+    expect(a.slice(-2)).toEqual(['wordColors', 'popWord'])
+  })
+
+  it('spreads the words after a retype, and the pop follows the spread word', () => {
+    const retyped = sizeOnly({}, { text: 'one two three four' })
+    const first = wordPopTitle(retyped, retyped.inS + 0.01)!
+    expect(first.popWord!.word).toBe('one')
+    expect(first.popWord!.at).toBe(0)
+  })
+
+  it('copies the lean on a word into the words it pops', () => {
+    const clip = sizeOnly({
+      captionWords: [
+        { text: 'one', startS: 0.2, endS: 0.55, emphasis: true },
+        { text: 'two', startS: 0.6, endS: 0.95 },
+        { text: 'three', startS: 1.0, endS: 1.4 },
+      ],
+    })
+    expect(popWordsFor(clip).map((x) => x.emphasis === true)).toEqual([true, false, false])
+  })
+})
+
+// The size is worked out where the frame is: once per layer, at the frame's own
+// time. The motion blur takes a second look at the TRANSFORM half a frame later
+// and never re-resolves the title, so a popping word cannot smear into two sizes
+// or cost a second raster.
+describe('the size pop at resolve time', () => {
+  const FPS = 30
+  const poppingTrack = (over: Partial<Clip> = {}): Track => ({
+    id: 'pop-track',
+    kind: 'video',
+    name: 'V1',
+    height: 64,
+    muted: false,
+    solo: false,
+    locked: false,
+    volumeDb: 0,
+    pan: 0,
+    clips: [
+      {
+        ...caption({}, { wordPop: undefined, wordPopSize: WORD_POP_SIZE }),
+        startS: 5,
+        assetId: '',
+        // A title that travels, so the resolver hands out a second transform sample.
+        keyframes: {
+          posX: [
+            { t: 0, value: -500, ease: 'linear' },
+            { t: 1, value: 0, ease: 'linear' },
+          ],
+        },
+        ...over,
+      },
+    ],
+  })
+  const seqOf = (tracks: Track[], over: Partial<Sequence> = {}): Sequence =>
+    ({
+      id: 'pop-seq',
+      name: 'Seq',
+      fps: FPS,
+      width: 1920,
+      height: 1080,
+      sampleRate: 48000,
+      durationS: 0,
+      tracks,
+      markers: [],
+      ...over,
+    }) as Sequence
+  const layerAt = (seq: Sequence, t: number): RenderLayer => {
+    const op = resolveFrame(seq, t).ops[0]
+    if (op?.type !== 'layer') throw new Error('expected a layer op')
+    return op.layer
+  }
+
+  it('hands the renderer the size at the frame time', () => {
+    const seq = seqOf([poppingTrack()])
+    // Clip content time 0.7 is inside the word "two", a tenth in: the top of the pop.
+    expect(layerAt(seq, 5.7).title?.popWord).toEqual({ at: 1, word: 'two', scale: 1.15 })
+    // A frame earlier and later are not.
+    expect(layerAt(seq, 5.7 - 1 / FPS).title?.popWord?.scale).toBeLessThan(1.15)
+    expect(layerAt(seq, 5.7 + 1 / FPS).title?.popWord?.scale).toBeLessThan(1.15)
+    // Settled.
+    expect(layerAt(seq, 5.9).title?.popWord).toBeUndefined()
+  })
+
+  it('resolves the title once for the frame, so the shutter sample carries no second size', () => {
+    const seq = seqOf([poppingTrack()], { shutterAngle: 360 })
+    const l = layerAt(seq, 5.7)
+    // The blur really is on for this layer...
+    expect(l.transformAtShutter).toBeDefined()
+    // ...and the title is one object with the frame's own size, however wide the shutter.
+    expect(l.title?.popWord?.scale).toBe(1.15)
+    // A frame later in the same pop is a different, smaller size: the frame decides, not the shutter.
+    expect(layerAt(seq, 5.7 + 1 / FPS).title?.popWord?.scale).toBeLessThan(l.title!.popWord!.scale)
+  })
+
+  it('gives every frame in the same pop state the very same title, so the raster is drawn once', () => {
+    const t = poppingTrack()
+    const seq = seqOf([t])
+    expect(layerAt(seq, 5.7).title).toBe(layerAt(seq, 5.7).title)
+    // Shutter on or off makes no difference to the title.
+    const blurred = seqOf([t], { shutterAngle: 360 })
+    expect(layerAt(blurred, 5.7).title).toBe(layerAt(seq, 5.7).title)
   })
 })
 

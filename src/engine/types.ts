@@ -711,10 +711,21 @@ export interface TitleDef {
    * Word pop (his ask, 2026-10-08): each word lights up in `color` as it is said.
    * STORED, and just the colour: which word is lit depends on the time, so the
    * resolver works that out per frame (see captions/wordPop.ts) and hands the
-   * rasterizer `wordColors`. A size pop is not drawn yet. Absent on every title
-   * made before this, which draw exactly as they always did.
+   * rasterizer `wordColors`. The size pop is the separate `wordPopSize` below, so
+   * the colour and the size can each be on alone. Absent on every title made
+   * before this, which draw exactly as they always did.
    */
   wordPop?: { color: string }
+  /**
+   * Size pop (his ask, 2026-10-08: *"each word lights up as said, colour and a
+   * small pop"*): the word being said swells to this size and settles back, in
+   * a fifth of a second from the moment it starts. STORED, and just the peak:
+   * 1.15 means 15 percent bigger at the top of the pop. Null or missing means no
+   * pop. Which instant of the pop a frame is in depends on the time, so the
+   * resolver works that out per frame (see captions/wordPop.ts) and hands the
+   * rasterizer `popWord`. Works with or without `wordPop` and `wordBox`.
+   */
+  wordPopSize?: number | null
   /**
    * Word box (his ask, 2026-10-19, from a frame of a Short): *"Look at this text
    * ... completely copy the system ... Also add it as an option if I want to
@@ -734,6 +745,24 @@ export interface TitleDef {
    * itself, so a retyped caption cannot box the wrong one).
    */
   boxWord?: { at: number; word: string }
+  /**
+   * RESOLVE TIME ONLY, never stored: the word that is mid pop right now and how
+   * big it is drawn (`scale` is above 1, 1.15 means 15 percent bigger). Named
+   * like `boxWord`. The raster draws that word, and its box, scaled about their
+   * own centre on top of the others; layout and every other word stay put.
+   */
+  popWord?: { at: number; word: string; scale: number }
+}
+
+/**
+ * Split caption text into its words: on any white space, empties dropped. ONE
+ * function, because the word pop, the word box and the colour runs must all
+ * agree on what "the third word" is, or the box lands on one word and the
+ * colour on its neighbour. Here, and not in a caption or raster file, so both
+ * can import it without a cycle.
+ */
+export function splitWords(text: string): string[] {
+  return text.split(/\s+/).filter((w) => w !== '')
 }
 
 /**

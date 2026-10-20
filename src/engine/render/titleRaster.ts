@@ -3,7 +3,7 @@
 // document/window. Preview and export call rasterizeTitle with identical def +
 // dims and hit the SAME cache, so the pixels are byte-for-byte identical.
 
-import { scaleTitleDef, type TitleDef } from '../types'
+import { scaleTitleDef, splitWords, type TitleDef } from '../types'
 import { appleEmojiFor, EMOJI_STACK } from './emojiFont'
 
 // ---------------------------------------------------------------------------
@@ -207,7 +207,7 @@ export function colorRuns(
   align: TitleDef['align'],
 ): ColorRun[][] | null {
   if (!wordColors?.length) return null
-  const perLine = lines.map((l) => l.split(/\s+/).filter((w) => w !== ''))
+  const perLine = lines.map(splitWords)
   const colors = wordColorsOn(perLine.flat(), wordColors)
   if (colors.every((c) => c === null)) return null
   let k = 0
@@ -226,6 +226,104 @@ export function colorRuns(
     k += words.length
     return runs
   })
+}
+
+/** Where one word of the shown lines sits: its line, its place in that line, and its place in the whole text. */
+export interface WordPlace {
+  line: number
+  col: number
+  index: number
+}
+
+/**
+ * The word `target` names, or null when it is no longer on screen (a retyped
+ * caption). Found the way a lit word is: the same word (letters and digits only,
+ * any case) nearest its `at`, the first of two equally near. One search for the
+ * lit word, the box and the pop, so they can never land on different words.
+ */
+export function locateWord(lines: readonly string[], target: { at: number; word: string }): WordPlace | null {
+  const want = bareWord(target.word)
+  if (!want) return null
+  let best: WordPlace | null = null
+  let bestGap = Infinity
+  let k = 0
+  lines.forEach((l, line) => {
+    splitWords(l).forEach((w, col) => {
+      const gap = Math.abs(k - target.at)
+      if (bareWord(w) === want && gap < bestGap) {
+        best = { line, col, index: k }
+        bestGap = gap
+      }
+      k++
+    })
+  })
+  return best
+}
+
+/** One shown word and where the whole line puts it: `x` is its left edge, `baseline` its baseline. */
+export interface WordSlot extends WordPlace {
+  text: string
+  x: number
+  baseline: number
+}
+
+/**
+ * Every shown word with the place its line puts it, left aligned from `x`: the
+ * line's left edge plus the width of the words before it and their spaces. The
+ * same sum the colour runs and the word box use, so a word drawn on its own lands
+ * exactly where the whole line would have put it.
+ */
+export function wordSlots(
+  lines: readonly string[],
+  measure: (s: string) => number,
+  anchorX: number,
+  align: TitleDef['align'],
+  firstBaselineY: number,
+  lineHeightPx: number,
+): WordSlot[] {
+  const out: WordSlot[] = []
+  let index = 0
+  lines.forEach((l, line) => {
+    const words = splitWords(l)
+    const left = textLeftOf(anchorX, measure(words.join(' ')), align)
+    words.forEach((text, col) => {
+      const before = col > 0 ? `${words.slice(0, col).join(' ')} ` : ''
+      out.push({ line, col, index: index++, text, x: left + (before ? measure(before) : 0), baseline: firstBaselineY + line * lineHeightPx })
+    })
+  })
+  return out
+}
+
+/**
+ * The biggest scale, from `want` down to 1, at which `ext` scaled about (cx, cy)
+ * still lies inside the canvas. A popped word on the top or bottom line, or at a
+ * side, would otherwise grow off the edge and be cut. Never below 1: a word that
+ * already reaches the edge stays as it was drawn, it is not shrunk.
+ */
+export function fitScaleAbout(
+  cx: number,
+  cy: number,
+  ext: { x0: number; y0: number; x1: number; y1: number },
+  width: number,
+  height: number,
+  want: number,
+): number {
+  if (![cx, cy, ext.x0, ext.y0, ext.x1, ext.y1, width, height, want].every(Number.isFinite)) return 1
+  let s = want
+  // How far each side of the extent is from the centre, and how far the canvas lets it go.
+  if (ext.x1 > cx) s = Math.min(s, (width - cx) / (ext.x1 - cx))
+  if (ext.x0 < cx) s = Math.min(s, cx / (cx - ext.x0))
+  if (ext.y1 > cy) s = Math.min(s, (height - cy) / (ext.y1 - cy))
+  if (ext.y0 < cy) s = Math.min(s, cy / (cy - ext.y0))
+  return Math.max(1, s)
+}
+
+/** Where a word's ink starts and ends inside its own advance, and how far it reaches above and below the baseline. */
+export interface WordInk {
+  left: number
+  right: number
+  ascent?: number
+  descent?: number
 }
 
 /**
@@ -282,8 +380,8 @@ export interface WordBoxRect {
  * from the glyph edge the way it was off his frame (a g gets its tail inside the
  * box, a Czech Š its accent); without it the advance box, the cap top and the
  * baseline stand in.
- * `capHeightPx` is the face's cap height at the title's size. Words are split on
- * any run of white space, the way wordPop.ts counts them, so `at` names the same word.
+ * `capHeightPx` is the face's cap height at the title's size. Words are split by
+ * `splitWords`, the way wordPop.ts counts them, so `at` names the same word.
  */
 export function wordBoxRect(
   lines: readonly string[],
@@ -294,32 +392,17 @@ export function wordBoxRect(
   firstBaselineY: number,
   lineHeightPx: number,
   capHeightPx: number,
-  inkOf?: (word: string) => { left: number; right: number; ascent?: number; descent?: number },
+  inkOf?: (word: string) => WordInk,
 ): WordBoxRect | null {
-  const want = bareWord(boxWord.word)
-  if (!want || !(capHeightPx > 0)) return null
-  const perLine = lines.map((l) => l.split(/\s+/).filter((w) => w !== ''))
-  let line = -1
-  let col = -1
-  let bestGap = Infinity
-  let k = 0
-  perLine.forEach((words, li) => {
-    words.forEach((w, wi) => {
-      const gap = Math.abs(k - boxWord.at)
-      if (bareWord(w) === want && gap < bestGap) {
-        line = li
-        col = wi
-        bestGap = gap
-      }
-      k++
-    })
-  })
-  if (line < 0) return null
-  const words = perLine[line]!
+  if (!(capHeightPx > 0)) return null
+  const place = locateWord(lines, boxWord)
+  if (!place) return null
+  const { line, col } = place
+  const words = splitWords(lines[line]!)
   const before = col > 0 ? `${words.slice(0, col).join(' ')} ` : ''
   const x = textLeftOf(anchorX, measure(words.join(' ')), align) + (before ? measure(before) : 0)
   const word = words[col]!
-  const ink: { left: number; right: number; ascent?: number; descent?: number } = inkOf?.(word) ?? { left: 0, right: measure(word) }
+  const ink: WordInk = inkOf?.(word) ?? { left: 0, right: measure(word) }
   const em = capHeightPx / WORD_BOX_CAP_EM
   const baseline = firstBaselineY + line * lineHeightPx
   const x0 = x + ink.left - WORD_BOX_EM.side * em
@@ -353,6 +436,45 @@ function canvasMeasurer(def: TitleDef): ((s: string) => number) | null {
 }
 
 /**
+ * Where a word's ink sits, measured on `ctx` (its font already set, textAlign
+ * 'left'): from the glyph edges, so a g gets its tail and a Czech Š its accent.
+ * Without ink metrics the word's advance stands in.
+ */
+function inkOfIn(ctx: OffscreenCanvasRenderingContext2D, word: string): WordInk {
+  const m = ctx.measureText(word)
+  return Number.isFinite(m.actualBoundingBoxLeft) && Number.isFinite(m.actualBoundingBoxRight)
+    ? {
+        left: -m.actualBoundingBoxLeft,
+        right: m.actualBoundingBoxRight,
+        ...(Number.isFinite(m.actualBoundingBoxAscent) ? { ascent: m.actualBoundingBoxAscent } : {}),
+        ...(Number.isFinite(m.actualBoundingBoxDescent) ? { descent: m.actualBoundingBoxDescent } : {}),
+      }
+    : { left: 0, right: m.width }
+}
+
+/** The face's cap height at the title's size, measured on `ctx`; the usual 0.70 em where it cannot be. */
+function capHeightIn(ctx: OffscreenCanvasRenderingContext2D, def: TitleDef): number {
+  const cap = ctx.measureText('H').actualBoundingBoxAscent
+  return cap > 0 ? cap : 0.7 * def.fontSizePx
+}
+
+/** What a canvas can say about `def`'s ink: its cap height and where a word's ink sits. Null in node. */
+interface InkMeter {
+  capPx: number
+  inkOf: (word: string) => WordInk
+}
+
+function canvasInkMeter(def: TitleDef): InkMeter | null {
+  if (typeof OffscreenCanvas === 'undefined') return null
+  if (!measureCtx) measureCtx = new OffscreenCanvas(1, 1).getContext('2d')
+  const ctx = measureCtx
+  if (!ctx) return null
+  ctx.font = fontString(def)
+  ctx.textAlign = 'left'
+  return { capPx: capHeightIn(ctx, def), inkOf: (word) => inkOfIn(ctx, word) }
+}
+
+/**
  * The rectangle a title's INK actually occupies inside its frame, as fractions
  * of the frame (0..1), including its box, outline and shadow.
  *
@@ -367,6 +489,8 @@ export function titleInkBoxUV(
   width: number,
   height: number,
   measure: ((s: string) => number) | null = canvasMeasurer(def),
+  /** The ink measures of the box round a word; the default reads the canvas, where there is one. */
+  ink: InkMeter | null = canvasInkMeter(def),
 ): { u0: number; v0: number; u1: number; v1: number } | null {
   if (width <= 0 || height <= 0 || !measure) return null
   const L = titleLayout(def, width, height, measure)
@@ -403,19 +527,30 @@ export function titleInkBoxUV(
   }
 
   // The word box can sit round any word, so the click target grows by its
-  // margins (and its dark edge) all round the text. The cap height here is the
-  // usual 0.70 em: this path has no canvas to measure the real one.
+  // margins (and its dark edge) all round the text, measured the way the box is:
+  // from the cap top, or from the ink of a letter taller than the caps (a Czech Š),
+  // down to the baseline, or to the ink of a letter that hangs under it (a g). The
+  // cap height is the usual 0.70 em where there is no canvas to measure the real one.
   if (def.wordBox && L.hasText && !def.invertBackdrop) {
-    const cap = 0.7 * def.fontSizePx
+    const cap = ink && ink.capPx > 0 ? ink.capPx : 0.7 * def.fontSizePx
+    let reachUp = cap
+    let reachDown = 0
+    if (ink) {
+      for (const word of L.lines.flatMap(splitWords)) {
+        const w = ink.inkOf(word)
+        reachUp = Math.max(reachUp, w.ascent ?? 0)
+        reachDown = Math.max(reachDown, w.descent ?? 0)
+      }
+    }
     const em = cap / WORD_BOX_CAP_EM
     const left = textLeftOf(L.anchorX, L.textW, def.align)
     const gx = (WORD_BOX_EM.side + WORD_BOX_EM.edge) * em
     const lastBaselineY = L.firstBaselineY + (Math.max(L.lines.length, 1) - 1) * L.lineHeightPx
     add(
       left - gx,
-      L.firstBaselineY - cap - (WORD_BOX_EM.top + WORD_BOX_EM.edge) * em,
+      L.firstBaselineY - reachUp - (WORD_BOX_EM.top + WORD_BOX_EM.edge) * em,
       left + L.textW + gx,
-      lastBaselineY + (WORD_BOX_EM.bottom + WORD_BOX_EM.edge) * em,
+      lastBaselineY + reachDown + (WORD_BOX_EM.bottom + WORD_BOX_EM.edge) * em,
     )
   }
 
@@ -649,10 +784,29 @@ export function rasterizeTitle(
     }
   }
 
+  // SIZE POP: a title with a pop size draws its words one at a time, on EVERY
+  // frame and not only the popped ones. Each word goes exactly where the whole
+  // line would put it (wordSlots), so a frame mid pop and a frame after it differ
+  // in the popped word alone and every other word is the same pixels in both.
+  // Not on an inverted title, which is a stencil and takes no decoration.
+  const popsWords =
+    hasText &&
+    !def.invertBackdrop &&
+    typeof def.wordPopSize === 'number' &&
+    Number.isFinite(def.wordPopSize) &&
+    def.wordPopSize > 1
+  // The word being popped right now: null between pops, and when the caption was
+  // retyped so the word is gone.
+  const popPlace =
+    popsWords && def.popWord && def.popWord.scale > 1 && Number.isFinite(def.popWord.scale)
+      ? locateWord(lines, def.popWord)
+      : null
+
   // WORD BOX: the rounded box round the word being said, behind the letters. An
   // overlay: it is drawn from where the line already put the word and never moves
   // one. Suppressed with the rest of the decorations on an inverted title, and
   // skipped (not thrown) when the stored colours are not strings.
+  let focusBox: WordBoxRect | null = null
   if (
     hasText &&
     !def.invertBackdrop &&
@@ -661,7 +815,7 @@ export function rasterizeTitle(
     typeof def.wordBox.color === 'string' &&
     typeof def.wordBox.borderColor === 'string'
   ) {
-    const cap = ctx.measureText('H').actualBoundingBoxAscent
+    const cap = capHeightIn(ctx, def)
     ctx.textAlign = 'left'
     const rect = wordBoxRect(
       lines,
@@ -671,40 +825,15 @@ export function rasterizeTitle(
       def.align,
       firstBaselineY,
       lineHeightPx,
-      cap > 0 ? cap : 0.7 * def.fontSizePx,
-      (word) => {
-        const m = ctx.measureText(word)
-        return Number.isFinite(m.actualBoundingBoxLeft) && Number.isFinite(m.actualBoundingBoxRight)
-          ? {
-              left: -m.actualBoundingBoxLeft,
-              right: m.actualBoundingBoxRight,
-              ...(Number.isFinite(m.actualBoundingBoxAscent) ? { ascent: m.actualBoundingBoxAscent } : {}),
-              ...(Number.isFinite(m.actualBoundingBoxDescent) ? { descent: m.actualBoundingBoxDescent } : {}),
-            }
-          : { left: 0, right: m.width }
-      },
+      cap,
+      (word) => inkOfIn(ctx, word),
     )
     ctx.textAlign = def.align
     if (rect && rect.x < width && rect.x + rect.w > 0 && rect.y < height && rect.y + rect.h > 0) {
-      const { x, y, w, h, edge } = rect
-      const border = Math.min(rect.border, w / 2, h / 2)
-      const radius = Math.max(0, Math.min(rect.radius, w / 2, h / 2))
-      ctx.beginPath()
-      roundRect(ctx, x, y, w, h, radius)
-      ctx.fillStyle = def.wordBox.color
-      ctx.fill()
-      // The border sits INSIDE the outer edge: a stroke centred half its width in.
-      ctx.beginPath()
-      roundRect(ctx, x + border / 2, y + border / 2, w - border, h - border, Math.max(0, radius - border / 2))
-      ctx.strokeStyle = def.wordBox.borderColor
-      ctx.lineWidth = border
-      ctx.stroke()
-      // The thin dark line just OUTSIDE the border, centred half its width out.
-      ctx.beginPath()
-      roundRect(ctx, x - edge / 2, y - edge / 2, w + edge, h + edge, radius + edge / 2)
-      ctx.strokeStyle = WORD_BOX_EDGE_COLOR
-      ctx.lineWidth = edge
-      ctx.stroke()
+      // The box of the word that is popping pops with it, and is drawn with it
+      // after the other words; any other box stays behind the text as it was.
+      if (popPlace && locateWord(lines, def.boxWord)?.index === popPlace.index) focusBox = rect
+      else drawWordBox(ctx, rect, def.wordBox)
     }
   }
 
@@ -731,6 +860,19 @@ export function rasterizeTitle(
       if (line !== "") ctx.fillText(line, anchorX, y)
       y += lineHeightPx
     }
+  } else if (popsWords) {
+    drawWordsOneByOne(
+      ctx,
+      def,
+      width,
+      height,
+      lines,
+      anchorX,
+      firstBaselineY,
+      lineHeightPx,
+      popPlace && def.popWord ? { place: popPlace, scale: def.popWord.scale } : null,
+      focusBox,
+    )
   } else if (hasText) {
     const hasOutline = !!def.outline && def.outline.widthPx > 0
     const clearShadow = (): void => {
@@ -805,6 +947,146 @@ export function rasterizeTitle(
   }
   identityCache.set(defIn, { w: width, h: height, entry })
   return canvas
+}
+
+/** The word box: fill, the coloured border just inside its edge, and the thin dark line just outside. */
+function drawWordBox(
+  ctx: OffscreenCanvasRenderingContext2D,
+  rect: WordBoxRect,
+  wordBox: NonNullable<TitleDef['wordBox']>,
+): void {
+  const { x, y, w, h, edge } = rect
+  const border = Math.min(rect.border, w / 2, h / 2)
+  const radius = Math.max(0, Math.min(rect.radius, w / 2, h / 2))
+  ctx.beginPath()
+  roundRect(ctx, x, y, w, h, radius)
+  ctx.fillStyle = wordBox.color
+  ctx.fill()
+  // The border sits INSIDE the outer edge: a stroke centred half its width in.
+  ctx.beginPath()
+  roundRect(ctx, x + border / 2, y + border / 2, w - border, h - border, Math.max(0, radius - border / 2))
+  ctx.strokeStyle = wordBox.borderColor
+  ctx.lineWidth = border
+  ctx.stroke()
+  // The thin dark line just OUTSIDE the border, centred half its width out.
+  ctx.beginPath()
+  roundRect(ctx, x - edge / 2, y - edge / 2, w + edge, h + edge, radius + edge / 2)
+  ctx.strokeStyle = WORD_BOX_EDGE_COLOR
+  ctx.lineWidth = edge
+  ctx.stroke()
+}
+
+/**
+ * The text of a title that pops its words, one word at a time. Every word is
+ * drawn at the place the whole line gives it, in the order the whole line is
+ * drawn (outlines, then fills), so the words that are not popping are the same
+ * pixels on every frame. The popping word, and its box, are drawn last, grown
+ * about their own centre by `focus.scale` (less where it would leave the canvas).
+ * Fill, outline and shadow grow with it; the shadow is scaled by hand because
+ * a canvas shadow ignores the transform.
+ */
+function drawWordsOneByOne(
+  ctx: OffscreenCanvasRenderingContext2D,
+  def: TitleDef,
+  width: number,
+  height: number,
+  lines: readonly string[],
+  anchorX: number,
+  firstBaselineY: number,
+  lineHeightPx: number,
+  focus: { place: WordPlace; scale: number } | null,
+  focusBox: WordBoxRect | null,
+): void {
+  const slots = wordSlots(lines, (s) => ctx.measureText(s).width, anchorX, def.align, firstBaselineY, lineHeightPx)
+  const colors = wordColorsOn(
+    slots.map((s) => s.text),
+    def.wordColors,
+  )
+  const hasOutline = !!def.outline && def.outline.widthPx > 0
+  const setShadow = (k: number): void => {
+    if (!def.shadow) return
+    ctx.shadowColor = def.shadow.color
+    ctx.shadowBlur = def.shadow.blurPx * k
+    ctx.shadowOffsetX = def.shadow.dx * k
+    ctx.shadowOffsetY = def.shadow.dy * k
+  }
+  const clearShadow = (): void => {
+    ctx.shadowColor = 'transparent'
+    ctx.shadowBlur = 0
+    ctx.shadowOffsetX = 0
+    ctx.shadowOffsetY = 0
+  }
+  const setStroke = (): void => {
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.strokeStyle = def.outline!.color
+    ctx.lineWidth = def.outline!.widthPx
+  }
+  const popped = focus ? (slots[focus.place.index] ?? null) : null
+
+  ctx.textAlign = 'left'
+
+  // The other words: the outline is the bottom layer and casts the shadow, the
+  // fills land on top of it, as they do when the line is drawn whole.
+  const others = slots.filter((s) => s !== popped)
+  setShadow(1)
+  if (hasOutline) {
+    setStroke()
+    for (const s of others) ctx.strokeText(s.text, s.x, s.baseline)
+    clearShadow()
+  }
+  for (const s of others) {
+    ctx.fillStyle = colors[s.index] ?? def.color
+    ctx.fillText(s.text, s.x, s.baseline)
+  }
+  clearShadow()
+
+  if (focus && popped) {
+    const ink = inkOfIn(ctx, popped.text)
+    const cap = capHeightIn(ctx, def)
+    const ascent = ink.ascent ?? cap
+    const descent = ink.descent ?? 0
+    // Grow about the middle of the word: across its ink, and up and down its box
+    // when it has one, else its ink.
+    const cx = popped.x + (ink.left + ink.right) / 2
+    const cy = focusBox ? focusBox.y + focusBox.h / 2 : popped.baseline - (ascent - descent) / 2
+    // Everything that grows with it must stay inside the canvas: the ink, half
+    // the outline, the shadow's reach, the box and its thin edge.
+    const ow = hasOutline ? def.outline!.widthPx / 2 : 0
+    const sh = def.shadow
+    const blur = sh ? Math.max(0, sh.blurPx) : 0
+    const ext = {
+      x0: popped.x + ink.left - ow - (sh ? Math.max(0, blur - sh.dx) : 0),
+      x1: popped.x + ink.right + ow + (sh ? Math.max(0, blur + sh.dx) : 0),
+      y0: popped.baseline - ascent - ow - (sh ? Math.max(0, blur - sh.dy) : 0),
+      y1: popped.baseline + descent + ow + (sh ? Math.max(0, blur + sh.dy) : 0),
+    }
+    if (focusBox) {
+      ext.x0 = Math.min(ext.x0, focusBox.x - focusBox.edge)
+      ext.x1 = Math.max(ext.x1, focusBox.x + focusBox.w + focusBox.edge)
+      ext.y0 = Math.min(ext.y0, focusBox.y - focusBox.edge)
+      ext.y1 = Math.max(ext.y1, focusBox.y + focusBox.h + focusBox.edge)
+    }
+    const k = fitScaleAbout(cx, cy, ext, width, height, focus.scale)
+
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.scale(k, k)
+    ctx.translate(-cx, -cy)
+    if (focusBox && def.wordBox) drawWordBox(ctx, focusBox, def.wordBox)
+    setShadow(k)
+    if (hasOutline) {
+      setStroke()
+      ctx.strokeText(popped.text, popped.x, popped.baseline)
+      clearShadow()
+    }
+    ctx.fillStyle = colors[popped.index] ?? def.color
+    ctx.fillText(popped.text, popped.x, popped.baseline)
+    clearShadow()
+    ctx.restore()
+  }
+
+  ctx.textAlign = def.align
 }
 
 /** Rounded-rect path; roundRect() isn't in every OffscreenCanvas ctx yet. */
