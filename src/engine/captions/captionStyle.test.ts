@@ -33,6 +33,7 @@ import {
 } from './captionStyle'
 import { captionLineWidthPx, captionTextWidthPx } from './captionFit'
 import { COMIC_STACK, OSWALD_STACK } from '../render/titleFonts'
+import { WORD_POP_COLOR, WORD_POP_SIZE, wordPopTitle } from './wordPop'
 
 const HOUSE = BUILTIN_CAPTION_STYLES[0]!
 
@@ -466,5 +467,101 @@ describe('the word box in a saved look', () => {
 
   it('a style that says nothing about the box leaves the house caption without one', () => {
     expect(captionDefFor(style({ look: { color: '#00ff00' } }), 'x', 1920).wordBox).toBeUndefined()
+  })
+})
+
+describe('the word pop in a saved look', () => {
+  const POP = { color: '#A3FF12' }
+
+  it('lighting and the size pop round trip through lookOfTitle, a save and cleanStyle', () => {
+    const def: TitleDef = { ...jettismCaptionDef('x', 1920), wordPop: POP, wordPopSize: 1.2 }
+    const look = lookOfTitle(def)
+    expect(look.wordPop).toEqual(POP)
+    // A copy, not the title's own object.
+    expect(look.wordPop).not.toBe(POP)
+    expect(look.wordPopSize).toBe(1.2)
+    const saved = JSON.parse(JSON.stringify(style({ look, refHeight: 1920 }))) as CaptionStyle
+    expect(captionDefFor(cleanStyle(saved)!, 'x', 1920)).toEqual(def)
+  })
+
+  it('writes a title with neither as null, so both stay off after a save', () => {
+    const def: TitleDef = { ...jettismCaptionDef('x', 1920) }
+    const look = lookOfTitle(def)
+    expect(look.wordPop).toBeNull()
+    expect(look.wordPopSize).toBeNull()
+    const saved = JSON.parse(JSON.stringify(style({ look, refHeight: 1920 }))) as CaptionStyle
+    const back = captionDefFor(cleanStyle(saved)!, 'x', 1920)
+    expect('wordPop' in back).toBe(false)
+    expect('wordPopSize' in back).toBe(false)
+  })
+
+  it('takes both away from a caption that had them, when the style says none', () => {
+    const lit = dressCaption(
+      newTitleClip({ ...jettismCaptionDef('x', 1920), wordPop: POP, wordPopSize: 1.2 }, 0, 1),
+      style({ look: { wordPop: POP, wordPopSize: 1.2 } }),
+      1080,
+      1920,
+    )
+    expect(lit.title!.wordPop).toEqual(POP)
+    expect(lit.title!.wordPopSize).toBe(1.2)
+    const off = dressCaption(lit, style({ look: { wordPop: null, wordPopSize: null } }), 1080, 1920)
+    expect('wordPop' in off.title!).toBe(false)
+    expect('wordPopSize' in off.title!).toBe(false)
+  })
+
+  it('a style that says nothing about them leaves the house caption plain', () => {
+    const def = captionDefFor(style({ look: { color: '#00ff00' } }), 'x', 1920)
+    expect(def.wordPop).toBeUndefined()
+    expect(def.wordPopSize).toBeUndefined()
+  })
+
+  it('only the Word box style pops, and its letters stay white', () => {
+    for (const s of BUILTIN_CAPTION_STYLES) {
+      if (s.id === 'builtin-word-box') continue
+      expect(s.look.wordPop ?? null, s.id).toBeNull()
+      expect(s.look.wordPopSize ?? null, s.id).toBeNull()
+    }
+    const box = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-word-box')!
+    expect(box.look.wordPopSize).toBe(WORD_POP_SIZE)
+    expect(box.look.wordPop ?? null).toBeNull()
+    const def = captionDefFor(box, 'awake now', 1920)
+    expect(def.wordPopSize).toBe(WORD_POP_SIZE)
+    expect(def.color).toBe('#ffffff')
+  })
+
+  it('a Word box caption swells on the word being said and is back to size after', () => {
+    const box = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-word-box')!
+    const words = [
+      { text: 'awake', startS: 0, endS: 0.5 },
+      { text: 'now', startS: 0.5, endS: 1 },
+    ]
+    const title = captionDefFor(box, 'awake now', 1920)
+    const clip: Clip = { ...newTitleClip(title, 0, 1), captionWords: words, inS: 0, outS: 1 }
+    const at = (t: number): TitleDef => wordPopTitle(clip, t)!
+    // 0.1 s into "now" is the top of its swell.
+    const peak = at(0.6)
+    expect(peak.popWord).toEqual({ at: 1, word: 'now', scale: WORD_POP_SIZE })
+    expect(peak.boxWord).toEqual({ at: 1, word: 'now' })
+    // The letters are not lit: only the size pop and the box.
+    expect(peak.wordColors).toBeUndefined()
+    // A third of a second on it has settled, and only the box follows the word.
+    expect(at(0.8).popWord).toBeUndefined()
+    expect(at(0.8).boxWord).toEqual({ at: 1, word: 'now' })
+  })
+
+  it('lighting the word in a colour and popping it can be set together', () => {
+    const title: TitleDef = { ...jettismCaptionDef('awake now', 1920), wordPop: { color: WORD_POP_COLOR }, wordPopSize: WORD_POP_SIZE }
+    const clip: Clip = {
+      ...newTitleClip(title, 0, 1),
+      captionWords: [
+        { text: 'awake', startS: 0, endS: 0.5 },
+        { text: 'now', startS: 0.5, endS: 1 },
+      ],
+      inS: 0,
+      outS: 1,
+    }
+    const peak = wordPopTitle(clip, 0.6)!
+    expect(peak.wordColors).toEqual([{ at: 1, word: 'now', color: WORD_POP_COLOR }])
+    expect(peak.popWord?.scale).toBe(WORD_POP_SIZE)
   })
 })

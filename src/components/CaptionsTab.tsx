@@ -49,6 +49,7 @@ import {
   type CaptionShape,
   type CaptionStyle,
 } from '../engine/captions/captionStyle'
+import { WORD_POP_COLOR, WORD_POP_SIZE } from '../engine/captions/wordPop'
 import {
   CAPTION_LANGUAGES,
   getCaptionEmphasis,
@@ -747,6 +748,8 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
   const shape = draft.shape
   const box = look.box ? splitColour(look.box.color) : null
   const wordBox = look.wordBox ? splitColour(look.wordBox.color) : null
+  // The size pop: on when the look holds a number above 1, off for null, missing or junk.
+  const popSize = typeof look.wordPopSize === 'number' && look.wordPopSize > 1 ? look.wordPopSize : null
 
   return (
     <div className="flex flex-col gap-2">
@@ -1025,6 +1028,57 @@ function StyleEditor({ style, seqHeight, onPick }: { style: CaptionStyle; seqHei
                 testId="caption-style-word-box-border"
               />
             </>
+          )}
+        </Row>
+        <Row
+          label="Light the word"
+          labelFor="caption-style-word-pop"
+          labelTitle="Colour the word being said"
+          lead={
+            <input
+              id="caption-style-word-pop"
+              type="checkbox"
+              aria-label="Light the word"
+              data-testid="caption-style-word-pop"
+              checked={!!look.wordPop}
+              onChange={(e) => setLook({ wordPop: e.target.checked ? { color: WORD_POP_COLOR } : null })}
+              className="shrink-0 accent-accent"
+            />
+          }
+        >
+          {look.wordPop && (
+            <ColourWell
+              value={look.wordPop.color || WORD_POP_COLOR}
+              onChange={(hex) => setLook({ wordPop: { color: hex } })}
+              label="Lit word colour"
+              testId="caption-style-word-pop-color"
+            />
+          )}
+        </Row>
+        <Row
+          label="Pop the word"
+          labelFor="caption-style-word-pop-size"
+          labelTitle="The word being said gets a little bigger, then settles"
+          lead={
+            <input
+              id="caption-style-word-pop-size"
+              type="checkbox"
+              aria-label="Pop the word"
+              data-testid="caption-style-word-pop-size"
+              checked={popSize !== null}
+              onChange={(e) => setLook({ wordPopSize: e.target.checked ? WORD_POP_SIZE : null })}
+              className="shrink-0 accent-accent"
+            />
+          }
+        >
+          {popSize !== null && (
+            <ScrubField
+              value={popSize}
+              spec={{ min: 1.05, max: 1.4, step: 0.01, sens: 0.0025 }}
+              testId="caption-style-word-pop-size-value"
+              ariaLabel="Word pop size, 1.15 is 15 percent bigger"
+              onCommit={(v) => setLook({ wordPopSize: Math.round(v * 100) / 100 })}
+            />
           )}
         </Row>
         <Row label="Position">

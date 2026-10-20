@@ -46,6 +46,7 @@ import {
   type ChunkOptions,
 } from './captions'
 import { captionFitter, fitWordsToFrame } from './captionFit'
+import { WORD_POP_SIZE } from './wordPop'
 
 export type { CaptionShape } from '../types'
 
@@ -244,6 +245,8 @@ export const BUILTIN_CAPTION_STYLES: readonly CaptionStyle[] = [
       offsetYPx: 0,
       lineHeight: 1.1,
       wordBox: { ...DEFAULT_WORD_BOX },
+      // The box swells with the word being said: a small pop, the letters stay white.
+      wordPopSize: WORD_POP_SIZE,
     },
     refHeight: CAPTION_REF_HEIGHT,
     shape: { length: 'fixed', maxWords: 3, charsPerLine: 20, lines: 1, minDurS: AUTO_SHAPE.minDurS, gapFrames: 0 },
@@ -634,6 +637,9 @@ const LOOK_FIELDS = [
   'invertBackdrop',
   // The box round the word being said: his colours only, the shape is fixed.
   'wordBox',
+  // The word being said, lit in a colour of its own, and swelling a little as it is said.
+  'wordPop',
+  'wordPopSize',
 ] as const satisfies readonly (keyof TitleDef)[]
 
 /**
