@@ -3,7 +3,7 @@
 // document/window. Preview and export call rasterizeTitle with identical def +
 // dims and hit the SAME cache, so the pixels are byte-for-byte identical.
 
-import { scaleTitleDef, splitWords, type TitleDef } from '../types'
+import { POP_EMPHASIS_BOOST, scaleTitleDef, splitWords, type TitleDef } from '../types'
 import { appleEmojiFor, EMOJI_STACK } from './emojiFont'
 
 // ---------------------------------------------------------------------------
@@ -162,8 +162,13 @@ function textLeftOf(anchorX: number, textW: number, align: TitleDef['align']): n
   return anchorX - textW / 2
 }
 
-/** Letters and digits only, any case: how a coloured word is matched to the word on screen. */
-const bareWord = (w: string): string => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+/**
+ * Letters and digits only, any case: how a coloured word is matched to the word on
+ * screen. A word with none (an emoji, "!!") is matched as itself, lowercased and
+ * trimmed, so it still gets its box, its pop and its colour. Empty only when the
+ * word itself is empty, and an empty word is skipped.
+ */
+const bareWord = (w: string): string => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '') || w.toLowerCase().trim()
 
 /**
  * The colour each shown word wears, or null for the title's own. Each entry
@@ -324,6 +329,44 @@ export interface WordInk {
   right: number
   ascent?: number
   descent?: number
+}
+
+/**
+ * The centre a popped word grows about, and everything that grows with it before
+ * it is scaled: the ink, half the outline, the shadow's reach, and the box with
+ * its thin edge when it has one. One sum for the draw (which fits the scale to the
+ * canvas with it) and for the click target (which scales it by the biggest pop).
+ * `cap` stands in for the ascent of a word with no ink metrics.
+ */
+function popFootprint(
+  def: TitleDef,
+  slot: { x: number; baseline: number },
+  ink: WordInk,
+  cap: number,
+  box: WordBoxRect | null,
+): { cx: number; cy: number; ext: { x0: number; y0: number; x1: number; y1: number } } {
+  const ascent = ink.ascent ?? cap
+  const descent = ink.descent ?? 0
+  // Grow about the middle of the word: across its ink, and up and down its box
+  // when it has one, else its ink.
+  const cx = slot.x + (ink.left + ink.right) / 2
+  const cy = box ? box.y + box.h / 2 : slot.baseline - (ascent - descent) / 2
+  const ow = def.outline && def.outline.widthPx > 0 ? def.outline.widthPx / 2 : 0
+  const sh = def.shadow
+  const blur = sh ? Math.max(0, sh.blurPx) : 0
+  const ext = {
+    x0: slot.x + ink.left - ow - (sh ? Math.max(0, blur - sh.dx) : 0),
+    x1: slot.x + ink.right + ow + (sh ? Math.max(0, blur + sh.dx) : 0),
+    y0: slot.baseline - ascent - ow - (sh ? Math.max(0, blur - sh.dy) : 0),
+    y1: slot.baseline + descent + ow + (sh ? Math.max(0, blur + sh.dy) : 0),
+  }
+  if (box) {
+    ext.x0 = Math.min(ext.x0, box.x - box.edge)
+    ext.x1 = Math.max(ext.x1, box.x + box.w + box.edge)
+    ext.y0 = Math.min(ext.y0, box.y - box.edge)
+    ext.y1 = Math.max(ext.y1, box.y + box.h + box.edge)
+  }
+  return { cx, cy, ext }
 }
 
 /**
@@ -552,6 +595,39 @@ export function titleInkBoxUV(
       left + L.textW + gx,
       lastBaselineY + reachDown + (WORD_BOX_EM.bottom + WORD_BOX_EM.edge) * em,
     )
+  }
+
+  // A size pop draws the word being said bigger, about its own centre, and it can
+  // reach outside everything above. Any word can be the one popping, so every word
+  // grows by the biggest pop there is (the emphasis peak), measured the way the
+  // draw measures it. The frame clip below still applies.
+  if (
+    L.hasText &&
+    !def.invertBackdrop &&
+    typeof def.wordPopSize === 'number' &&
+    Number.isFinite(def.wordPopSize) &&
+    def.wordPopSize > 1
+  ) {
+    const cap = ink && ink.capPx > 0 ? ink.capPx : 0.7 * def.fontSizePx
+    const top = 1 + (def.wordPopSize - 1) * POP_EMPHASIS_BOOST
+    for (const slot of wordSlots(L.lines, measure, L.anchorX, def.align, L.firstBaselineY, L.lineHeightPx)) {
+      const wordInk: WordInk = ink ? ink.inkOf(slot.text) : { left: 0, right: measure(slot.text) }
+      const rect = def.wordBox
+        ? wordBoxRect(
+            L.lines,
+            { at: slot.index, word: slot.text },
+            measure,
+            L.anchorX,
+            def.align,
+            L.firstBaselineY,
+            L.lineHeightPx,
+            cap,
+            ink?.inkOf,
+          )
+        : null
+      const { cx, cy, ext } = popFootprint(def, slot, wordInk, cap, rect)
+      add(cx + (ext.x0 - cx) * top, cy + (ext.y0 - cy) * top, cx + (ext.x1 - cx) * top, cy + (ext.y1 - cy) * top)
+    }
   }
 
   if (def.box && !def.invertBackdrop) {
@@ -1042,31 +1118,9 @@ function drawWordsOneByOne(
   clearShadow()
 
   if (focus && popped) {
-    const ink = inkOfIn(ctx, popped.text)
-    const cap = capHeightIn(ctx, def)
-    const ascent = ink.ascent ?? cap
-    const descent = ink.descent ?? 0
-    // Grow about the middle of the word: across its ink, and up and down its box
-    // when it has one, else its ink.
-    const cx = popped.x + (ink.left + ink.right) / 2
-    const cy = focusBox ? focusBox.y + focusBox.h / 2 : popped.baseline - (ascent - descent) / 2
-    // Everything that grows with it must stay inside the canvas: the ink, half
-    // the outline, the shadow's reach, the box and its thin edge.
-    const ow = hasOutline ? def.outline!.widthPx / 2 : 0
-    const sh = def.shadow
-    const blur = sh ? Math.max(0, sh.blurPx) : 0
-    const ext = {
-      x0: popped.x + ink.left - ow - (sh ? Math.max(0, blur - sh.dx) : 0),
-      x1: popped.x + ink.right + ow + (sh ? Math.max(0, blur + sh.dx) : 0),
-      y0: popped.baseline - ascent - ow - (sh ? Math.max(0, blur - sh.dy) : 0),
-      y1: popped.baseline + descent + ow + (sh ? Math.max(0, blur + sh.dy) : 0),
-    }
-    if (focusBox) {
-      ext.x0 = Math.min(ext.x0, focusBox.x - focusBox.edge)
-      ext.x1 = Math.max(ext.x1, focusBox.x + focusBox.w + focusBox.edge)
-      ext.y0 = Math.min(ext.y0, focusBox.y - focusBox.edge)
-      ext.y1 = Math.max(ext.y1, focusBox.y + focusBox.h + focusBox.edge)
-    }
+    // Everything that grows with it must stay inside the canvas, so the scale is
+    // fitted to the footprint: the ink, half the outline, the shadow's reach, the box and its thin edge.
+    const { cx, cy, ext } = popFootprint(def, popped, inkOfIn(ctx, popped.text), capHeightIn(ctx, def), focusBox)
     const k = fitScaleAbout(cx, cy, ext, width, height, focus.scale)
 
     ctx.save()

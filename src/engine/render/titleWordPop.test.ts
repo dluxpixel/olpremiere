@@ -60,6 +60,24 @@ describe('locateWord', () => {
     expect(locateWord(lines, { at: 0, word: 'gone' })).toBeNull()
     expect(locateWord(lines, { at: 0, word: '!!' })).toBeNull()
   })
+
+  it('finds a word of no letters or digits as itself', () => {
+    const marked = ['so fire \u{1F525} now', 'wow !! ok']
+    expect(locateWord(marked, { at: 2, word: '\u{1F525}' })).toEqual({ line: 0, col: 2, index: 2 })
+    expect(locateWord(marked, { at: 5, word: '!!' })).toEqual({ line: 1, col: 1, index: 5 })
+    // Only that exact mark: another one is not it.
+    expect(locateWord(marked, { at: 5, word: '??' })).toBeNull()
+  })
+
+  it('an empty word names nothing', () => {
+    expect(locateWord(lines, { at: 0, word: '' })).toBeNull()
+    expect(locateWord(lines, { at: 0, word: '   ' })).toBeNull()
+  })
+
+  it('still strips punctuation from a real word', () => {
+    expect(locateWord(['stay awake, now'], { at: 1, word: 'awake' })).toEqual({ line: 0, col: 1, index: 1 })
+    expect(locateWord(['stay awake now'], { at: 1, word: 'AWAKE,' })).toEqual({ line: 0, col: 1, index: 1 })
+  })
 })
 
 describe('wordSlots', () => {
