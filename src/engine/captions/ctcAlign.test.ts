@@ -3,15 +3,19 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  END_TAIL_S,
   FRAME_S,
+  ONSET_BIAS_S,
   STAR,
   alignWords,
   alignmentWindows,
+  extendAlignedEnds,
   forcedAlign,
   isSilentText,
   makeAlignVocab,
   vocabTokens,
   type AlignInput,
+  type AlignedWord,
   type RoughWord,
 } from './ctcAlign'
 
@@ -152,13 +156,20 @@ describe('alignWords', () => {
   const emissions = { logProbs: table(50, spikes), T: 50, V }
 
   it('times each word from its first and last letter', () => {
-    const r = alignWords([rough('abc', 100.3, 100.6), rough('def', 100.6, 100.9)], emissions, FRAME_S, 100, vocab)
+    const r = alignWords([rough('abc', 100.3, 100.6), rough('def', 100.6, 100.9)], emissions, FRAME_S, 100, vocab, { biasS: 0 })
     expect(r.words.map((w) => w.aligned)).toEqual([true, true])
     expect(r.words[0].startS).toBeCloseTo(100 + 10 * FRAME_S, 6)
     expect(r.words[0].endS).toBeCloseTo(100 + 19 * FRAME_S, 6)
     expect(r.words[1].startS).toBeCloseTo(100 + 26 * FRAME_S, 6)
     expect(r.words[1].endS).toBeCloseTo(100 + 35 * FRAME_S, 6)
     expect(r.meanLogProb).toBeGreaterThan(-0.2)
+  })
+
+  it('applies the measured onset bias unless told otherwise', () => {
+    const r = alignWords([rough('abc', 100.3, 100.6), rough('def', 100.6, 100.9)], emissions, FRAME_S, 100, vocab)
+    expect(ONSET_BIAS_S).toBeLessThan(0)
+    expect(r.words[0].startS).toBeCloseTo(100 + 10 * FRAME_S + ONSET_BIAS_S, 6)
+    expect(r.words[0].endS).toBeCloseTo(100 + 19 * FRAME_S + ONSET_BIAS_S, 6)
   })
 
   it('adds the onset bias it is given', () => {
@@ -170,7 +181,7 @@ describe('alignWords', () => {
     // abc, a number said aloud as e..f..e..f (frames 26 to 38), then def.
     const s = { 10: 1, 14: 2, 18: 3, 22: 7, 26: 5, 30: 6, 34: 5, 38: 6, 42: 7, 46: 4, 50: 5, 54: 6 }
     const e = { logProbs: table(64, s), T: 64, V }
-    const r = alignWords([rough('abc', 100.3, 100.6), rough('2026', 100.6, 101), rough('def', 101, 101.2)], e, FRAME_S, 100, vocab)
+    const r = alignWords([rough('abc', 100.3, 100.6), rough('2026', 100.6, 101), rough('def', 101, 101.2)], e, FRAME_S, 100, vocab, { biasS: 0 })
     expect(r.words.map((w) => w.aligned)).toEqual([true, true, true])
     expect(r.words[1].startS).toBeCloseTo(100 + 26 * FRAME_S, 6)
     expect(r.words[1].endS).toBeCloseTo(100 + 39 * FRAME_S, 6)
@@ -301,5 +312,36 @@ describe('alignmentWindows', () => {
     expect(frames * states).toBeLessThan(2_000_000)
     const biggest = Math.max(...wins.map((x) => x.end - x.first))
     expect(biggest).toBeLessThan(80)
+  })
+})
+
+describe('extendAlignedEnds', () => {
+  const w = (startS: number, endS: number, aligned = true): AlignedWord => ({ startS, endS, aligned })
+
+  it('lets an aligned end run on by the tail, to the next start at most', () => {
+    const out = extendAlignedEnds([w(1, 1.1), w(1.2, 1.3), w(2, 2.1)])
+    // 1.1 + tail would pass the next start at 1.2, so it stops there: the two words tile.
+    expect(out[0].endS).toBeCloseTo(1.2, 9)
+    // 1.3 + 0.16 is before the next start at 2: a real gap stays, shorter by nothing but the tail.
+    expect(out[1].endS).toBeCloseTo(1.3 + END_TAIL_S, 9)
+    // The last word has nothing after it, so it takes the whole tail.
+    expect(out[2].endS).toBeCloseTo(2.1 + END_TAIL_S, 9)
+  })
+
+  it('leaves starts, order and unaligned words alone, and never shortens an end', () => {
+    const input = [w(1, 1.5), w(1.2, 1.3, false), w(1.4, 1.45)]
+    const out = extendAlignedEnds(input)
+    expect(out.map((x) => x.startS)).toEqual([1, 1.2, 1.4])
+    // The word after starts inside this one: the end stays where it was.
+    expect(out[0].endS).toBe(1.5)
+    expect(out[1]).toEqual(input[1])
+    expect(input[0].endS).toBe(1.5)
+  })
+
+  it('keeps a pause a pause: a gap over tail plus 0.05 s still breaks captions', () => {
+    const out = extendAlignedEnds([w(1, 1.1), w(1.5, 1.6)])
+    expect(out[1].startS - out[0].endS).toBeGreaterThan(0.05)
+    const touching = extendAlignedEnds([w(1, 1.1), w(1.2, 1.3)])
+    expect(touching[1].startS - touching[0].endS).toBeLessThanOrEqual(0.05)
   })
 })

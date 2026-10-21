@@ -25,21 +25,49 @@ export const STAR = -1
 /** The lattice is T x S bytes; past this many cells the window is refused (about 64 MB). */
 const MAX_LATTICE_CELLS = 64_000_000
 
-// The numbers below are the ones MEASURED in _verify/aligner (see the figures
-// in transcribeConfig.ts), kept here so the test and the worker share them.
+// The numbers below were MEASURED against SAPI speech whose word onsets are
+// known (four recordings, 1156 words; _verify/aligner), with the xlsr model,
+// and the figures are in transcribeConfig.ts next to the pick.
 
-/** How far below the best any-letter score a star frame is scored (log prob). */
+/**
+ * How far below the best score of ANY token (blank included) a star frame is
+ * scored. Swept 0 to 4 on the number words: 0, 0.25, 0.5 and 1 all put them
+ * within 25 ms (median) of the truth, 2 gave 100 ms and 4 gave 240 ms. Letter
+ * words do not care (15 ms median at every value).
+ */
 export const STAR_PENALTY = 0.5
 /** A word that moves more than this from the recogniser's time is not trusted. */
 export const MAX_SHIFT_S = 1
-/** A window whose letters average below this log prob was not the audio it was given. */
+/**
+ * A window whose letters average below this log prob was not the audio it was
+ * given. On the 28 windows of the four recordings (xlsr) the right text scored
+ * -0.19 or better, the right text with 1 word in 10 swapped -1.81 or better,
+ * and another passage's words -5.27 or worse, so the floor sits in the empty
+ * space between.
+ */
 export const WINDOW_FLOOR = -3
 /**
- * Seconds added to every aligned time. The CTC spike for a letter sits a little
- * inside the letter, so onsets come out late by a constant; measured value in
- * the note above BIAS_S's use in alignWords.
+ * Seconds added to every aligned time. A CTC model puts a letter's spike a
+ * little INSIDE the letter, so raw onsets come out late: xlsr by +20 ms median
+ * over 1127 letter words (the base-960h model by +45). -15 ms leaves +5 ms (median absolute error 15 ms,
+ * 93 percent within 50 ms) and keeps phrase openings after a pause, where the
+ * truth is the sound itself (SAPI's event fires 5 to 10 ms before the energy
+ * does), at 98 percent within 50 ms; -20 ms zeroes the bias on letter words
+ * but moves those openings 10 ms early.
  */
-export const ONSET_BIAS_S = 0
+export const ONSET_BIAS_S = -0.015
+/**
+ * How far past its last letter's frame a word's sound runs. The last letter's
+ * spike lands inside the letter, so the aligned END comes out short: 178 ms
+ * median (90 to 255 for 9 in 10) before the sound's real end (energy 12 dB over
+ * the floor) on the 52 words before a pause. Left short, running speech would
+ * show gaps of 70 ms median between words, and the captions' hard break is a gap
+ * over 0.05 s (AUTO_CAPTION_OPTIONS.maxGapS), so nearly every word would become
+ * its own caption. At 0.16 s a gap left between two words is a real pause on
+ * 98 percent of 1095 word boundaries, with no false break and 19 pauses missed
+ * (a pause is 0.05 s of sound under -50 dB); at 0.10 s there are 26 false breaks.
+ */
+export const END_TAIL_S = 0.16
 
 /** A window is at most this long, padding included. */
 export const WINDOW_MAX_S = 20
@@ -138,10 +166,11 @@ export interface ForcedAlignment {
  * A STAR token stands for speech with no spelling. It is scored per frame as
  * the best ANY-token log prob minus `starPenalty`, so it is cheap wherever
  * something is being said or nothing is, and always a little worse than a real
- * letter that fits. Blank is in that maximum on purpose: with the best
- * NON-blank score instead a star was cheapest on a letter's spike, so the star
- * at a window's edge stole the first word's first letter out of silent padding
- * (measured, _verify/aligner), pushing that onset late.
+ * letter that fits. Blank is in that maximum on purpose. Scored by the best
+ * NON-blank column instead, a star is dear in the quiet stretches and cheap on
+ * a letter's spike, so a number word swallows frames of its neighbours: on 28
+ * number words the onset error went from 25 ms to 150 ms median (letter words
+ * did not change), measured in _verify/aligner.
  *
  * Returns null when there is no path (too few frames for the tokens) or the
  * table would be too big.
@@ -413,4 +442,22 @@ export function alignWords(
     }
   }
   return { words: out, meanLogProb }
+}
+
+/**
+ * Lets each aligned word's end run on by `tailS` (see END_TAIL_S), never past
+ * the start of the word after it. Run once over ALL the words in order, after
+ * every window is aligned, so the last word of one window is held back by the
+ * first of the next. Pure; the words keep their order, text and start.
+ *
+ * Only aligned words move: a word kept at the recogniser's time already carries
+ * the recogniser's own (padded) end.
+ */
+export function extendAlignedEnds(words: readonly AlignedWord[], tailS = END_TAIL_S): AlignedWord[] {
+  return words.map((w, i) => {
+    if (!w.aligned) return w
+    const next = words[i + 1]
+    const ceiling = next ? next.startS : Infinity
+    return { ...w, endS: Math.max(w.endS, Math.min(w.endS + tailS, ceiling)) }
+  })
 }
