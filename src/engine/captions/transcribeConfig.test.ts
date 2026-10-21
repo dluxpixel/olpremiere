@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  alignerFor,
   generationOptsFor,
   getCaptionLanguage,
   modelFor,
@@ -17,7 +18,7 @@ describe('caption language routing', () => {
     expect(modelFor('en')).toBe('onnx-community/whisper-large-v3-turbo_timestamped')
     expect(modelFor('cs')).toBe(modelFor('en'))
     expect(modelFor('auto')).toBe(modelFor('en'))
-    expect(modelsInUse()).toEqual([modelFor('en')])
+    expect(modelsInUse()).toEqual([modelFor('en'), alignerFor('en').id])
     // MUST stay a _timestamped export, because word timestamps need the
     // cross-attention outputs only those carry (the s14 constraint).
     expect(modelFor('en')).toMatch(/_timestamped$/)
@@ -35,6 +36,19 @@ describe('caption language routing', () => {
     expect(m.multilingual).toBe(true)
     expect(m.gpuDtype).toEqual({ encoder_model: 'fp16', decoder_model_merged: 'fp16' })
     expect(m.wasmDtype).toEqual({ encoder_model: 'q8', decoder_model_merged: 'q4' })
+  })
+
+  // The aligner pins Whisper's words to the sound (ctcAlign.ts). One download for
+  // every language, like Whisper, and its bias is the one fitted for ITS weights.
+  it('every language aligns on the one multilingual wav2vec2, in q4', () => {
+    const a = alignerFor('en')
+    expect(alignerFor('cs')).toBe(a)
+    expect(alignerFor('auto')).toBe(a)
+    expect(a.id).toBe('NewComer00/wav2vec2-xlsr-multilingual-56-ONNX')
+    expect(a.dtype).toBe('q4')
+    expect(a.blank).toBe('[PAD]')
+    // Late-running spikes pulled back; measured against SAPI word times.
+    expect(a.onsetBiasS).toBeCloseTo(-0.015, 6)
   })
 
   it('persistence survives a roundtrip and tolerates a missing localStorage', () => {
@@ -112,6 +126,17 @@ describe('staleModelKeys', () => {
 
   it('names only the Whisper files no language uses', () => {
     expect(staleModelKeys(keys, ['onnx-community/whisper-large-v3-turbo_timestamped'])).toEqual(keys.slice(0, 2))
+  })
+
+  it('never names an aligner file, the aligner being listed as in use or not', () => {
+    const files = ['config.json', 'vocab.json', 'preprocessor_config.json', 'onnx/model_q4.onnx', 'onnx/model_quantized.onnx']
+    const aligners = [alignerFor('en').id, 'Xenova/wav2vec2-base-960h']
+    const urls = aligners.flatMap((id) => files.map((f) => url(id, f)))
+    expect(staleModelKeys(urls, modelsInUse())).toEqual([])
+    expect(staleModelKeys(urls, [])).toEqual([])
+    // And the aligner is kept alongside the Whisper files it never competes with.
+    expect(modelsInUse()).toContain(alignerFor('en').id)
+    expect(staleModelKeys([...urls, ...keys], modelsInUse())).toEqual(keys.slice(0, 2))
   })
 
   it('keeps every model a language still runs on', () => {

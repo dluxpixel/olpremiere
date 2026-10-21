@@ -92,9 +92,82 @@ export function whisperModel(id: string): WhisperModel {
   return MODELS.find((m) => m.id === id) ?? TURBO
 }
 
-/** Every model a caption language can run on today. */
+// ---------------------------------------------------------------- the aligner
+
+/**
+ * A CTC forced aligner: a small wav2vec2 model that says which LETTER it hears at
+ * every 20 ms, so the words Whisper already wrote can be pinned to the sound
+ * (ctcAlign.ts). The text stays Whisper's; only the times come from here.
+ */
+export interface AlignerModel {
+  id: string
+  /** One weights file ("q4" is onnx/model_q4.onnx). These models ship as a single file. */
+  dtype: Weights
+  /** The vocabulary's blank token: "[PAD]" for the multilingual model, "<pad>" for base-960h. */
+  blank: string
+  /**
+   * Seconds added to every time this model gives (ctcAlign.ts ONSET_BIAS_S says
+   * why a CTC model runs late). FITTED PER MODEL: the same constant is wrong for
+   * another model by 30 ms, see the numbers below.
+   */
+  onsetBiasS: number
+}
+
+// ⛔ THE ALIGNER IS THE MULTILINGUAL wav2vec2 (56 LANGUAGES) IN q4, FOR EVERY
+// LANGUAGE, PICKED BY MEASUREMENT ON 2026-10-21.
+//
+// WHY ANY ALIGNER. Whisper's own word times (cross-attention) run about 0.19 s
+// late and wander, and correctWordLag only averages the lateness away. His
+// words, 2026-10-20: *"just make it as good as you can."* A CTC model reads the
+// letter off every 20 ms frame, which pins a word's start to within a frame or
+// two, so the aligned words skip the blanket lag correction.
+//
+// THE TRUTH. Windows SAPI voices (David and Zira, plus a fast David and a slow
+// Zira) read 1156 words into a 16 kHz recording and report each word's start as
+// they say it; that is a time known to a few ms, not a guess (_verify/aligner).
+// Word start against the truth, median absolute error, share within 50 ms:
+//
+//                                letter words      phrase starts    number words
+//   xlsr q4 (this)  bias -15 ms   15.0 ms  93.3%    20.0 ms  98.1%    25.0 ms  88.9%
+//   base-960h q8    bias -45 ms   15.0 ms  94.8%    15.2 ms  94.2%    24.4 ms  78.6%
+//   (raw, no bias: xlsr 21.7 ms, 87.0% / base-960h 45 ms, 60.9%)
+//
+// A tie on plain English words, so the pick is made on the rest. A "phrase
+// start" is a word after a pause, the moment a caption appears, and xlsr has
+// the fewer misses there and on the number words (which are aligned as "speech
+// with no spelling"). base-960h also has only capital letters and English: its
+// Czech windows fell under the floor on 4 of 23 FLEURS clips (xlsr 0 of 23), so
+// it could not serve Czech or auto-detect, and a second model for English alone
+// would be a second download (95 MB) and a second code path for no gain.
+//
+// Czech has no SAPI voice on this machine, so it is shown by proxies only (23
+// FLEURS clips): every clip kept its words, and xlsr and base-960h agree on a
+// word's start to a median 10 ms (81 percent within 50 ms; base-960h has no
+// accented letters, so it spells Czech with the plain ones). That is agreement,
+// not proof.
+//
+// COST. 247 MB once, in the same browser cache as Whisper, and it loads on the
+// same device (WebGPU, else wasm). base-960h (95 MB) was the English-only
+// alternative.
+const XLSR_ALIGNER: AlignerModel = {
+  id: 'NewComer00/wav2vec2-xlsr-multilingual-56-ONNX',
+  dtype: 'q4',
+  blank: '[PAD]',
+  onsetBiasS: -0.015,
+}
+
+/** The aligner each language runs on: the same one for all three, like Whisper. */
+const ALIGNER_BY_LANGUAGE: Record<CaptionLanguage, AlignerModel> = { en: XLSR_ALIGNER, cs: XLSR_ALIGNER, auto: XLSR_ALIGNER }
+
+/** The aligner a language runs on. */
+export function alignerFor(language: CaptionLanguage): AlignerModel {
+  return ALIGNER_BY_LANGUAGE[language]
+}
+
+/** Every model a caption language can run on today, speech and aligner alike. */
 export function modelsInUse(): string[] {
-  return [...new Set((['en', 'cs', 'auto'] as const).map(modelFor))]
+  const langs = ['en', 'cs', 'auto'] as const
+  return [...new Set([...langs.map(modelFor), ...langs.map((l) => alignerFor(l).id)])]
 }
 
 /**
@@ -106,6 +179,10 @@ export function modelsInUse(): string[] {
  * while the old Whisper files held 1.3 GB of it. Only Whisper files go, only
  * ones no language uses, and only after the current model has loaded, so a
  * failed download can never leave him with no model at all.
+ *
+ * ⛔ THE ALIGNER'S FILES ARE NEVER IN THIS LIST. They are not Whisper files (the
+ * pattern below is the Whisper export's path), so a cleanup can never delete the
+ * 247 MB aligner out from under a run, even though modelsInUse names it too.
  */
 export function staleModelKeys(keys: readonly string[], keep: readonly string[]): string[] {
   return keys.filter((k) => /\/onnx-community\/whisper-[^/]+\//.test(k) && !keep.some((id) => k.includes(`/${id}/`)))
