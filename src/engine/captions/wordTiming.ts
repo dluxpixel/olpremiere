@@ -41,6 +41,15 @@ import { VOICE_THRESHOLD, type VoiceTrack } from './voiceActivity'
  * before the audio began. The order and the length of each word are kept, and
  * a word that would be squeezed to nothing against the start of the clip keeps
  * a sliver of its own, so no word is ever lost here.
+ *
+ * ⛔ A WORD THE ALIGNER TIMED IS NEVER MOVED. Its time comes from the sound
+ * (ctcAlign.ts, `aligned`) and not from the recogniser's cross-attention, so it
+ * carries none of the lag this takes off: pulling it back by 0.18 s again would
+ * put it 0.18 s EARLY. Measured on SAPI speech with known word times, an aligned
+ * word starts within 15 ms (median) of the truth where the raw recogniser time is
+ * 0.19 s late. A word the aligner could not time (a window it did not trust, or
+ * one that moved too far) is still corrected like before, but never to before an
+ * aligned word's start that came ahead of it.
  */
 export function correctWordLag<T extends TranscribedWord>(words: readonly T[], lagS: number): T[] {
   const out: T[] = words.map((w) => ({ ...w }))
@@ -49,6 +58,10 @@ export function correctWordLag<T extends TranscribedWord>(words: readonly T[], l
   let floor = 0
   for (const i of order) {
     const w = out[i]!
+    if (w.aligned) {
+      floor = Math.max(floor, w.startS)
+      continue
+    }
     const len = Math.max(0, w.endS - w.startS)
     const startS = Math.max(floor, w.startS - lagS)
     w.startS = startS

@@ -18,11 +18,32 @@ export interface TranscribedWord {
   text: string
   startS: number
   endS: number
+  /**
+   * True when the time is the CTC aligner's (ctcAlign.ts), pinned to the sound, and
+   * not the recogniser's. correctWordLag leaves such a word alone, because the lag
+   * it takes off is the recogniser's and an aligned word carries none of it. Absent
+   * means the recogniser's time, exactly as before the aligner existed.
+   */
+  aligned?: boolean
 }
 
 export interface AsrChunk {
   text: string
   timestamp: [number, number | null]
+  /** The aligner timed this word (transcribeWorker.ts); absent when it did not. */
+  aligned?: boolean
+}
+
+/**
+ * A word made of several is the aligner's only if EVERY part was. A number cut in
+ * two ("30" and ",000") or a stretched loop mixes times from two sources, and
+ * calling the mix aligned would hide the recogniser's half from the lag correction.
+ * The key is left off rather than set false, so words the aligner never touched
+ * compare equal to what they were before it existed.
+ */
+function withAligned<T extends TranscribedWord>(word: T, parts: readonly TranscribedWord[]): T {
+  const { aligned: _drop, ...rest } = word
+  return parts.every((p) => p.aligned === true) ? ({ ...rest, aligned: true } as T) : (rest as unknown as T)
 }
 
 /**
@@ -38,7 +59,7 @@ export function wordsFromAsrChunks(chunks: readonly AsrChunk[]): TranscribedWord
     const startS = Math.max(0, c.timestamp[0] ?? 0)
     let endS = c.timestamp[1] ?? NaN
     if (!Number.isFinite(endS) || endS <= startS) endS = startS + Math.max(0.2, 0.05 * text.length)
-    words.push({ text, startS, endS })
+    words.push({ text, startS, endS, ...(c.aligned ? { aligned: true } : {}) })
   }
   return joinSplitNumbers(words)
 }
@@ -73,7 +94,7 @@ function joinSplitNumbers(words: TranscribedWord[]): TranscribedWord[] {
             ? prev.text + ',' + w.text
             : null
       if (text !== null) {
-        out[out.length - 1] = { ...prev, text, endS: Math.max(prev.endS, w.endS) }
+        out[out.length - 1] = withAligned({ ...prev, text, endS: Math.max(prev.endS, w.endS) }, [prev, w])
         continue
       }
     }
@@ -216,7 +237,10 @@ function collapsePhraseLoops(words: readonly TranscribedWord[]): TranscribedWord
     const run = words.slice(i, i + cycle)
     const endS = words[i + cycle * reps - 1].endS
     for (const w of run) out.push(w)
-    out[out.length - 1] = { ...run[run.length - 1], endS: Math.max(run[run.length - 1].endS, endS) }
+    out[out.length - 1] = withAligned(
+      { ...run[run.length - 1], endS: Math.max(run[run.length - 1].endS, endS) },
+      words.slice(i, i + cycle * reps),
+    )
     i += cycle * reps
   }
   return out
@@ -257,11 +281,14 @@ function collapseWordLoops(words: readonly TranscribedWord[]): TranscribedWord[]
     out.push(first)
     if (repeats.length + 1 >= MIN_LOOP_REPEATS && repeats.every((r) => r.endS - r.startS < LOOP_WORD_S)) {
       first.endS = Math.max(first.endS, ...repeats.map((r) => r.endS))
+      out[out.length - 1] = withAligned(first, [first, ...repeats])
     } else {
       for (const r of repeats) {
         const prev = out[out.length - 1]
-        if (r.startS < prev.endS - 1e-9) prev.endS = Math.max(prev.endS, r.endS)
-        else out.push({ ...r })
+        if (r.startS < prev.endS - 1e-9) {
+          prev.endS = Math.max(prev.endS, r.endS)
+          out[out.length - 1] = withAligned(prev, [prev, r])
+        } else out.push({ ...r })
       }
     }
     i = j
@@ -511,7 +538,7 @@ export function extractClipPcm(asset: MediaAsset, clip: Clip): Promise<Float32Ar
 }
 
 export interface TranscribeProgress {
-  phase: 'model' | 'listening'
+  phase: 'model' | 'listening' | 'align'
   pct: number | null
   /**
    * True only when model files are really being fetched over the network. A load

@@ -57,6 +57,35 @@ describe('correctWordLag', () => {
     correctWordLag(words, 0.18)
     expect(words[0]!.startS).toBe(0.68)
   })
+
+  // ⛔ The aligner's time comes from the sound, so it has none of the recogniser's
+  // lag to take off. Pulling it back 0.18 s again would put it 0.18 s early.
+  it('never moves a word the aligner timed, and keeps the flag', () => {
+    const aligned: TranscribedWord = { text: 'so', startS: 0.68, endS: 1.0, aligned: true }
+    const out = correctWordLag([aligned], 0.18)
+    expect(spans(out)).toEqual([['so', 0.68, 1.0]])
+    expect(out[0]!.aligned).toBe(true)
+  })
+
+  it('still corrects the words around an aligned one', () => {
+    const out = correctWordLag(
+      [w('a', 0.5, 0.8), { text: 'b', startS: 1.0, endS: 1.4, aligned: true }, w('c', 1.6, 2.0)],
+      0.18,
+    )
+    expect(spans(out)).toEqual([
+      ['a', 0.32, 0.62],
+      ['b', 1.0, 1.4],
+      ['c', 1.42, 1.82],
+    ])
+    expect(out.map((x) => x.aligned)).toEqual([undefined, true, undefined])
+  })
+
+  it('does not pull a late word back past the start of an aligned word before it', () => {
+    // 'b' is the recogniser's and would land at 1.02 s, ahead of 'a', which the aligner put at 1.1 s.
+    const out = correctWordLag([{ text: 'a', startS: 1.1, endS: 1.3, aligned: true }, w('b', 1.2, 1.5)], 0.18)
+    expect(out[0]!.startS).toBe(1.1)
+    expect(out[1]!.startS).toBeGreaterThanOrEqual(1.1)
+  })
 })
 
 describe('snapOnsetsToVoice', () => {

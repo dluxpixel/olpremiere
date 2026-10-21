@@ -70,6 +70,21 @@ describe('wordsFromAsrChunks', () => {
     const words = wordsFromAsrChunks([chunk(' 540', 0, 0.3), chunk(' thousand.', 0.3, 0.7), chunk(' a', 0.8, 0.9), chunk(' thousand', 0.9, 1.2)])
     expect(words.map((w) => w.text)).toEqual(['540,000.', 'a', 'thousand'])
   })
+
+  it('carries the aligner flag onto the word, and leaves the key off when there is none', () => {
+    const words = wordsFromAsrChunks([{ ...chunk(' so', 0, 0.2), aligned: true }, chunk(' I', 0.2, 0.35)])
+    expect(words[0]).toEqual({ text: 'so', startS: 0, endS: 0.2, aligned: true })
+    expect(words[1]).toEqual({ text: 'I', startS: 0.2, endS: 0.35 })
+    expect('aligned' in words[1]!).toBe(false)
+  })
+
+  it('calls a joined number aligned only when every piece was', () => {
+    const both = wordsFromAsrChunks([{ ...chunk(' 30', 0.2, 0.5), aligned: true }, { ...chunk(',000', 0.5, 0.8), aligned: true }])
+    expect(both).toEqual([{ text: '30,000', startS: 0.2, endS: 0.8, aligned: true }])
+    const half = wordsFromAsrChunks([{ ...chunk(' 30', 0.2, 0.5), aligned: true }, chunk(',000', 0.5, 0.8)])
+    expect(half).toEqual([{ text: '30,000', startS: 0.2, endS: 0.8 }])
+    expect('aligned' in half[0]!).toBe(false)
+  })
 })
 
 describe('timelineWords', () => {
@@ -122,6 +137,16 @@ describe('tidyTranscribedWords', () => {
     // A chunk seam: "my" then "my" again 0.02 s later, on top of the first.
     const out = tidyTranscribedWords([w('my', 20.72, 21), w('my', 20.74, 21), w('god', 21, 21.3)])
     expect(out.map((x) => x.text)).toEqual(['my', 'god'])
+  })
+
+  it('keeps the aligner flag through the tidying, and drops it where a recogniser time was mixed in', () => {
+    const a = (text: string, startS: number, endS: number) => ({ text, startS, endS, aligned: true })
+    const kept = tidyTranscribedWords([a('so', 0.1, 0.4), a('nice', 0.4, 0.8)])
+    expect(kept.map((x) => x.aligned)).toEqual([true, true])
+    // A chunk seam: the copy is written over the same moment and folded into the first.
+    const folded = tidyTranscribedWords([a('my', 20.72, 21), w('my', 20.74, 21), w('god', 21, 21.3)])
+    expect(folded.map((x) => x.text)).toEqual(['my', 'god'])
+    expect('aligned' in folded[0]!).toBe(false)
   })
 
   describe('a bare stage direction, which no bracket filter can see', () => {
