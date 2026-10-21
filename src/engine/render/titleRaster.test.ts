@@ -1,5 +1,17 @@
-import { describe, expect, it } from 'vitest'
-import { WORD_BOX_CAP_EM, WORD_BOX_EM, blockLayout, colorRuns, wordBoxRect, wordColorsOn, wrapLinesWith } from './titleRaster'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { defaultTitleDef, type TitleDef } from '../types'
+import {
+  WORD_BOX_CAP_EM,
+  WORD_BOX_EM,
+  blockLayout,
+  clearTitleCache,
+  colorRuns,
+  inkOfIn,
+  rasterizeTitle,
+  wordBoxRect,
+  wordColorsOn,
+  wrapLinesWith,
+} from './titleRaster'
 
 // A deterministic measurer: each char is 10px wide. No canvas needed in node.
 const measure10 = (s: string): number => s.length * 10
@@ -167,6 +179,52 @@ describe('words in their own colour', () => {
     expect(wordColorsOn(['so', 'now'], [{ at: 0, word: '', color: '#f00' }])).toEqual([null, null])
   })
 
+  it('lights each emoji sequence as itself: a skin tone, a joined family, a flag, a heart, a keycap', () => {
+    const sequences = [
+      '\u{1F44D}\u{1F3FD}', // thumbs up, medium skin tone
+      '\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}', // family of four, joined
+      '\u{1F1E8}\u{1F1FF}', // flag of Czechia
+      '❤\uFE0F', // red heart with its emoji selector
+      '1\uFE0F\u20E3', // keycap one
+    ]
+    sequences.forEach((seq, i) => {
+      // Against itself, among plain words: it is found and nothing else is.
+      expect(wordColorsOn(['so', seq, 'now'], [{ at: 1, word: seq, color: '#f00' }])).toEqual([null, '#f00', null])
+      // And among the other sequences, it lights its own place and no other one.
+      const lit = wordColorsOn(sequences, [{ at: i, word: seq, color: '#f00' }])
+      expect(lit).toEqual(sequences.map((_, j) => (j === i ? '#f00' : null)))
+    })
+  })
+
+  it('takes a heart with and without its emoji or text selector as the same word', () => {
+    const bare = '❤'
+    for (const selector of ['\uFE0F', '\uFE0E']) {
+      const dressed = bare + selector
+      expect(wordColorsOn(['so', dressed, 'now'], [{ at: 1, word: bare, color: '#f00' }])).toEqual([null, '#f00', null])
+      expect(wordColorsOn(['so', bare, 'now'], [{ at: 1, word: dressed, color: '#f00' }])).toEqual([null, '#f00', null])
+    }
+  })
+
+  it('takes a keycap as its own word, never the digit it wraps', () => {
+    const keycap = '1\uFE0F\u20E3'
+    // A lit keycap does not light a plain 1, and a lit 1 does not light a keycap.
+    expect(wordColorsOn(['1', keycap, '1'], [{ at: 1, word: keycap, color: '#f00' }])).toEqual([null, '#f00', null])
+    expect(wordColorsOn(['1', keycap], [{ at: 0, word: '1', color: '#0f0' }])).toEqual(['#0f0', null])
+    // Even when the word it was given to is gone, or sits nearer the other: it finds its own, or nothing.
+    expect(wordColorsOn(['x', '1'], [{ at: 1, word: keycap, color: '#f00' }])).toEqual([null, null])
+    expect(wordColorsOn(['x', keycap], [{ at: 1, word: '1', color: '#0f0' }])).toEqual([null, null])
+    expect(wordColorsOn([keycap, '1'], [{ at: 0, word: '1', color: '#0f0' }])).toEqual([null, '#0f0'])
+    expect(wordColorsOn([keycap, '1'], [{ at: 1, word: keycap, color: '#f00' }])).toEqual(['#f00', null])
+    // The keycap with and without its emoji selector is the one keycap.
+    expect(wordColorsOn(['x', '1\u20E3'], [{ at: 1, word: keycap, color: '#f00' }])).toEqual([null, '#f00'])
+    // A keycap of another digit, or of the hash sign, is another word.
+    expect(wordColorsOn([keycap, '2\uFE0F\u20E3', '#\uFE0F\u20E3'], [{ at: 2, word: '#\uFE0F\u20E3', color: '#f00' }])).toEqual([
+      null,
+      null,
+      '#f00',
+    ])
+  })
+
   it('still matches a real word through its punctuation', () => {
     expect(wordColorsOn(['stay', 'AWAKE,'], [{ at: 1, word: 'awake', color: '#f00' }])).toEqual([null, '#f00'])
     expect(wordColorsOn(['stay', 'awake'], [{ at: 1, word: 'AWAKE,', color: '#f00' }])).toEqual([null, '#f00'])
@@ -323,5 +381,286 @@ describe('the word box', () => {
     const two = rect(['one two three'], { at: 1, word: 'two' })!
     const three = rect(['one two three'], { at: 2, word: 'three' })!
     expect(three.x - two.x).toBeCloseTo(40, 9)
+  })
+
+  it('goes round an emoji by its ink, with the side margin each side', () => {
+    // "so 🔥 now": the fire is 2 UTF-16 units, so 20 px here, and starts at 30 px. Its ink is told by the meter.
+    const ink = vi.fn((word: string) => (word === '\u{1F525}' ? { left: 3, right: 17 } : { left: 0, right: 99 }))
+    const r = wordBoxRect(['so \u{1F525} now'], { at: 1, word: '\u{1F525}' }, m, 0, 'left', 100, 80, CAP, ink)!
+    expect(ink).toHaveBeenCalledWith('\u{1F525}')
+    expect(r.x).toBeCloseTo(30 + 3 - WORD_BOX_EM.side * EM, 9)
+    expect(r.w).toBeCloseTo(14 + 2 * WORD_BOX_EM.side * EM, 9)
+    // The box is the caps' height, as for any word.
+    expect(r.y).toBeCloseTo(100 - CAP - WORD_BOX_EM.top * EM, 9)
+  })
+
+  it('goes round "!!" by its ink, with the side margin each side', () => {
+    const ink = (word: string) => (word === '!!' ? { left: 2, right: 11 } : { left: 0, right: 99 })
+    const r = wordBoxRect(['so !! now'], { at: 1, word: '!!' }, m, 0, 'left', 100, 80, CAP, ink)!
+    expect(r.x).toBeCloseTo(30 + 2 - WORD_BOX_EM.side * EM, 9)
+    expect(r.w).toBeCloseTo(9 + 2 * WORD_BOX_EM.side * EM, 9)
+  })
+
+  it('goes round an emoji by its advance when no ink is told', () => {
+    const r = wordBoxRect(['so \u{1F525} now'], { at: 1, word: '\u{1F525}' }, m, 0, 'left', 100, 80, CAP)!
+    expect(r.x).toBeCloseTo(30 - WORD_BOX_EM.side * EM, 9)
+    expect(r.w).toBeCloseTo(20 + 2 * WORD_BOX_EM.side * EM, 9)
+  })
+})
+
+describe('where a word ink sits (inkOfIn)', () => {
+  /** A measure with the numbers a canvas would give; any field left out is not reported. */
+  const meter = (m: Partial<Record<keyof TextMetrics, number>>) => ({ measureText: () => m as TextMetrics })
+
+  it('reads the glyph edges, the left as a distance from the origin, with the reach above and below', () => {
+    const ink = inkOfIn(
+      meter({ width: 40, actualBoundingBoxLeft: -3, actualBoundingBoxRight: 36, actualBoundingBoxAscent: 30, actualBoundingBoxDescent: 7 }),
+      'Hello',
+    )
+    expect(ink).toEqual({ left: 3, right: 36, ascent: 30, descent: 7 })
+  })
+
+  it('falls back to the advance where the canvas reports no ink at all', () => {
+    expect(inkOfIn(meter({ width: 40 }), 'Hello')).toEqual({ left: 0, right: 40 })
+    expect(inkOfIn(meter({ width: 40, actualBoundingBoxLeft: Number.NaN, actualBoundingBoxRight: 30 }), 'Hello')).toEqual({
+      left: 0,
+      right: 40,
+    })
+  })
+
+  it('leaves out an ascent or descent that is not a number', () => {
+    const ink = inkOfIn(meter({ width: 40, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 40, actualBoundingBoxAscent: Number.NaN }), 'Hello')
+    expect(ink).toEqual({ left: -0, right: 40 })
+    expect('ascent' in ink).toBe(false)
+    expect('descent' in ink).toBe(false)
+  })
+
+  it('takes an emoji whose reported ink is a sliver as its whole advance, keeping the vertical reach', () => {
+    const sliver = meter({
+      width: 40,
+      actualBoundingBoxLeft: 0,
+      actualBoundingBoxRight: 3,
+      actualBoundingBoxAscent: 28,
+      actualBoundingBoxDescent: 4,
+    })
+    expect(inkOfIn(sliver, '\u{1F525}')).toEqual({ left: 0, right: 40, ascent: 28, descent: 4 })
+    // Nothing at all reported (a box of no width) is the same.
+    const empty = meter({ width: 40, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 0, actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 })
+    expect(inkOfIn(empty, '\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}')).toEqual({ left: 0, right: 40, ascent: 0, descent: 0 })
+  })
+
+  it('keeps the ink of an emoji whose bounds are sane, and of "!!" (a tight ink on a short mark)', () => {
+    const sane = meter({ width: 40, actualBoundingBoxLeft: -2, actualBoundingBoxRight: 37, actualBoundingBoxAscent: 30, actualBoundingBoxDescent: 3 })
+    expect(inkOfIn(sane, '\u{1F525}')).toEqual({ left: 2, right: 37, ascent: 30, descent: 3 })
+    // "!!": 24 wide, the marks themselves 18 of it: well over 0.3 of the advance.
+    const bangs = meter({ width: 24, actualBoundingBoxLeft: -3, actualBoundingBoxRight: 21, actualBoundingBoxAscent: 30, actualBoundingBoxDescent: 0 })
+    expect(inkOfIn(bangs, '!!')).toEqual({ left: 3, right: 21, ascent: 30, descent: 0 })
+    // Just over the line is kept, just under is not.
+    expect(inkOfIn(meter({ width: 100, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 31 }), '!!')).toEqual({ left: -0, right: 31 })
+    expect(inkOfIn(meter({ width: 100, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 29 }), '!!')).toEqual({ left: 0, right: 100 })
+  })
+
+  it('never widens a word with a letter or a digit, however thin its ink', () => {
+    const thin = meter({ width: 40, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 3, actualBoundingBoxAscent: 28, actualBoundingBoxDescent: 0 })
+    for (const word of ['I', 'l1', 'Č', 'x\u{1F525}', '7']) {
+      expect(inkOfIn(thin, word)).toEqual({ left: -0, right: 3, ascent: 28, descent: 0 })
+    }
+  })
+})
+
+// The popping word is drawn grown, about its own centre, and where it grows over a
+// neighbour it must not cover the neighbour's letters: the box goes down under
+// every word, the grown letters over them. A fake canvas that writes down what it
+// is asked to draw, in order, with the size it is drawn at, reads that off.
+describe('the order a popping word is drawn in', () => {
+  const BOX = { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' }
+  const POPPED = '#A3FF12'
+
+  interface Drawn {
+    op: 'fillText' | 'strokeText' | 'box'
+    text: string
+    x: number
+    y: number
+    /** How much bigger than the plain title this was drawn. */
+    k: number
+    fillStyle: string
+    strokeStyle: string
+    shadowBlur: number
+  }
+
+  let drawn: Drawn[] = []
+
+  /** A 2D context that records the text and the word box it is asked to draw. Ten px a character. */
+  function fakeContext(): unknown {
+    let k = 1
+    const stack: number[] = []
+    const ctx = {
+      font: '',
+      textAlign: 'center',
+      textBaseline: 'alphabetic',
+      fillStyle: '' as string,
+      strokeStyle: '' as string,
+      lineWidth: 0,
+      lineCap: 'round',
+      lineJoin: 'round',
+      shadowBlur: 0,
+      shadowColor: '',
+      shadowOffsetX: 0,
+      shadowOffsetY: 0,
+      measureText: (s: string) => ({
+        width: s.length * 10,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: s.length * 10,
+        actualBoundingBoxAscent: 28,
+        actualBoundingBoxDescent: s === 'H' ? 0 : 6,
+      }),
+      save: () => void stack.push(k),
+      restore: () => void (k = stack.pop() ?? 1),
+      translate: () => undefined,
+      scale: (sx: number) => void (k *= sx),
+      beginPath: () => undefined,
+      closePath: () => undefined,
+      moveTo: () => undefined,
+      arcTo: () => undefined,
+      stroke: () => undefined,
+      // The only filled path in these titles is the word box.
+      fill: () =>
+        void drawn.push({ op: 'box', text: '', x: 0, y: 0, k, fillStyle: ctx.fillStyle, strokeStyle: ctx.strokeStyle, shadowBlur: ctx.shadowBlur }),
+      fillText: (text: string, x: number, y: number) =>
+        void drawn.push({ op: 'fillText', text, x, y, k, fillStyle: ctx.fillStyle, strokeStyle: ctx.strokeStyle, shadowBlur: ctx.shadowBlur }),
+      strokeText: (text: string, x: number, y: number) =>
+        void drawn.push({ op: 'strokeText', text, x, y, k, fillStyle: ctx.fillStyle, strokeStyle: ctx.strokeStyle, shadowBlur: ctx.shadowBlur }),
+    }
+    return ctx
+  }
+
+  class FakeCanvas {
+    constructor(
+      public width: number,
+      public height: number,
+    ) {}
+    getContext(): unknown {
+      return fakeContext()
+    }
+  }
+
+  beforeEach(() => {
+    drawn = []
+    clearTitleCache()
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    clearTitleCache()
+  })
+
+  /** "one two three" on a canvas wide enough to leave the pop room, 'two' lit, boxed and (by `scale`) popped. */
+  const titleFor = (scale: number, over: Partial<TitleDef> = {}): TitleDef => ({
+    ...defaultTitleDef('one two three'),
+    fontSizePx: 40,
+    outline: { color: '#000000', widthPx: 6 },
+    shadow: { color: 'rgba(0,0,0,0.5)', blurPx: 6, dx: 3, dy: 3 },
+    wordColors: [{ at: 1, word: 'two', color: POPPED }],
+    wordBox: BOX,
+    boxWord: { at: 1, word: 'two' },
+    wordPopSize: 1.15,
+    popWord: { at: 1, word: 'two', scale },
+    ...over,
+  })
+
+  const draw = (def: TitleDef): Drawn[] => {
+    drawn = []
+    rasterizeTitle(def, 800, 400)
+    return drawn
+  }
+  const ofWord = (calls: Drawn[], text: string): Drawn[] => calls.filter((c) => c.op !== 'box' && c.text === text)
+  const strip = (calls: Drawn[]): Omit<Drawn, never>[] => calls.map((c) => ({ ...c }))
+
+  it('draws the neighbours of a popping word exactly as it draws them when nothing pops', () => {
+    const still = draw(titleFor(1))
+    const popping = draw(titleFor(1.15))
+    for (const word of ['one', 'three']) {
+      const before = ofWord(still, word)
+      expect(before.length, `${word} is drawn on the plain frame`).toBeGreaterThan(0)
+      expect(strip(ofWord(popping, word))).toEqual(strip(before))
+      for (const c of before) expect(c.k).toBe(1)
+    }
+  })
+
+  it('puts the popping word box down first, then the other words, then the popping letters last', () => {
+    const calls = draw(titleFor(1.15))
+    const boxAt = calls.findIndex((c) => c.op === 'box')
+    const indexesOf = (word: string): number[] => calls.flatMap((c, i) => (c.op !== 'box' && c.text === word ? [i] : []))
+    const others = [...indexesOf('one'), ...indexesOf('three')]
+    const two = indexesOf('two')
+    expect(boxAt).toBeGreaterThanOrEqual(0)
+    expect(calls.filter((c) => c.op === 'box')).toHaveLength(1)
+    // The box is under every other word, the grown letters are over every one.
+    expect(boxAt).toBeLessThan(Math.min(...others))
+    expect(Math.max(...others)).toBeLessThan(Math.min(...two))
+    // Outline, then fill, and the fill is the very last thing drawn.
+    expect(calls.slice(-2).map((c) => [c.op, c.text])).toEqual([
+      ['strokeText', 'two'],
+      ['fillText', 'two'],
+    ])
+    expect(calls[calls.length - 1]!.fillStyle).toBe(POPPED)
+  })
+
+  it('grows the box and the letters about the same size, the shadow with them, and no other word at all', () => {
+    const calls = draw(titleFor(1.15))
+    const box = calls.find((c) => c.op === 'box')!
+    const [outline, fill] = ofWord(calls, 'two')
+    expect(box.k).toBeGreaterThan(1)
+    expect(box.k).toBeLessThanOrEqual(1.15 + 1e-9)
+    expect(outline!.k).toBe(box.k)
+    expect(fill!.k).toBe(box.k)
+    // The shadow is scaled by hand (a canvas shadow ignores the transform): the outline casts it.
+    expect(outline!.shadowBlur).toBeCloseTo(6 * box.k, 9)
+    expect(fill!.shadowBlur).toBe(0)
+    // The other words cast theirs at the plain size.
+    const oneOutline = ofWord(calls, 'one').find((c) => c.op === 'strokeText')!
+    expect(oneOutline.shadowBlur).toBe(6)
+    for (const c of [...ofWord(calls, 'one'), ...ofWord(calls, 'three')]) expect(c.k).toBe(1)
+  })
+
+  it('holds the grown box back to the canvas, as the letters are', () => {
+    // "three" ends a line that nearly fills a 160 px canvas, so it has no room to swell the whole 15
+    // percent: its shadow would run off the right edge. The box is held to the same smaller size.
+    const last = { wordColors: [{ at: 2, word: 'three', color: POPPED }], boxWord: { at: 2, word: 'three' } }
+    drawn = []
+    rasterizeTitle(titleFor(1.15, { ...last, popWord: { at: 2, word: 'three', scale: 1.15 } }), 160, 400)
+    const calls = drawn
+    const box = calls.find((c) => c.op === 'box')!
+    expect(box.k).toBeGreaterThan(1)
+    expect(box.k).toBeLessThan(1.15)
+    expect(ofWord(calls, 'three')[0]!.k).toBe(box.k)
+    expect(ofWord(calls, 'three')[1]!.k).toBe(box.k)
+  })
+
+  it('draws the box under everything when nothing pops, as it always was', () => {
+    const calls = draw(titleFor(1))
+    expect(calls.findIndex((c) => c.op === 'box')).toBe(0)
+    expect(calls.filter((c) => c.op === 'box')).toHaveLength(1)
+    expect(calls.find((c) => c.op === 'box')!.k).toBe(1)
+    // All three words, in line order, outline then fill: two draws each.
+    expect(calls.filter((c) => c.op === 'fillText').map((c) => c.text)).toEqual(['one', 'two', 'three'])
+  })
+
+  it('still draws the popping letters last with no box at all', () => {
+    const calls = draw(titleFor(1.15, { wordBox: undefined, boxWord: undefined }))
+    expect(calls.some((c) => c.op === 'box')).toBe(false)
+    expect(calls.slice(-2).map((c) => [c.op, c.text])).toEqual([
+      ['strokeText', 'two'],
+      ['fillText', 'two'],
+    ])
+    expect(calls[calls.length - 1]!.k).toBeGreaterThan(1)
+  })
+
+  it('draws a box that sits round a word that is not the popping one behind the text, at the plain size', () => {
+    const calls = draw(titleFor(1.15, { boxWord: { at: 0, word: 'one' } }))
+    const box = calls.findIndex((c) => c.op === 'box')
+    expect(box).toBe(0)
+    expect(calls[box]!.k).toBe(1)
+    expect(calls[calls.length - 1]!.text).toBe('two')
   })
 })

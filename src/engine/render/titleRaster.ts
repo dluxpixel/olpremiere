@@ -167,8 +167,18 @@ function textLeftOf(anchorX: number, textW: number, align: TitleDef['align']): n
  * screen. A word with none (an emoji, "!!") is matched as itself, lowercased and
  * trimmed, so it still gets its box, its pop and its colour. Empty only when the
  * word itself is empty, and an empty word is skipped.
+ *
+ * Two emoji details. The text and emoji presentation selectors (U+FE0E, U+FE0F)
+ * are dropped, so a heart typed with one and a heart typed without are the same
+ * word. And a keycap (1 then U+FE0F then U+20E3) is its own word and never the
+ * digit it wraps, or a lit 1 would light every keycap and the other way round.
  */
-const bareWord = (w: string): string => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '') || w.toLowerCase().trim()
+const bareWord = (w: string): string => {
+  const lower = w.toLowerCase()
+  const plain = lower.replace(/[\uFE0E\uFE0F]/g, '').trim()
+  if (plain.includes('\u20E3')) return plain
+  return lower.replace(/[^\p{L}\p{N}]/gu, '') || plain
+}
 
 /**
  * The colour each shown word wears, or null for the title's own. Each entry
@@ -482,17 +492,27 @@ function canvasMeasurer(def: TitleDef): ((s: string) => number) | null {
  * Where a word's ink sits, measured on `ctx` (its font already set, textAlign
  * 'left'): from the glyph edges, so a g gets its tail and a Czech Š its accent.
  * Without ink metrics the word's advance stands in.
+ *
+ * An emoji is drawn from a colour font, and some canvases report almost nothing as
+ * its ink: a sliver, or a box that does not hold the picture. A word with no
+ * letter or digit whose ink is under 0.3 of its own advance wide is taken as the
+ * advance instead, so its box and its pop are not built round a sliver. "!!" is
+ * such a word too, but its bounds are sane (a good part of its advance), so it
+ * keeps its tight ink.
  */
-function inkOfIn(ctx: OffscreenCanvasRenderingContext2D, word: string): WordInk {
+export function inkOfIn(ctx: Pick<OffscreenCanvasRenderingContext2D, 'measureText'>, word: string): WordInk {
   const m = ctx.measureText(word)
-  return Number.isFinite(m.actualBoundingBoxLeft) && Number.isFinite(m.actualBoundingBoxRight)
-    ? {
-        left: -m.actualBoundingBoxLeft,
-        right: m.actualBoundingBoxRight,
-        ...(Number.isFinite(m.actualBoundingBoxAscent) ? { ascent: m.actualBoundingBoxAscent } : {}),
-        ...(Number.isFinite(m.actualBoundingBoxDescent) ? { descent: m.actualBoundingBoxDescent } : {}),
-      }
-    : { left: 0, right: m.width }
+  if (!Number.isFinite(m.actualBoundingBoxLeft) || !Number.isFinite(m.actualBoundingBoxRight)) {
+    return { left: 0, right: m.width }
+  }
+  const vertical = {
+    ...(Number.isFinite(m.actualBoundingBoxAscent) ? { ascent: m.actualBoundingBoxAscent } : {}),
+    ...(Number.isFinite(m.actualBoundingBoxDescent) ? { descent: m.actualBoundingBoxDescent } : {}),
+  }
+  const left = -m.actualBoundingBoxLeft
+  const right = m.actualBoundingBoxRight
+  if (!/[\p{L}\p{N}]/u.test(word) && right - left < 0.3 * m.width) return { left: 0, right: m.width, ...vertical }
+  return { left, right, ...vertical }
 }
 
 /** The face's cap height at the title's size, measured on `ctx`; the usual 0.70 em where it cannot be. */
@@ -906,8 +926,9 @@ export function rasterizeTitle(
     )
     ctx.textAlign = def.align
     if (rect && rect.x < width && rect.x + rect.w > 0 && rect.y < height && rect.y + rect.h > 0) {
-      // The box of the word that is popping pops with it, and is drawn with it
-      // after the other words; any other box stays behind the text as it was.
+      // The box of the word that is popping pops with it, and is held back to be
+      // drawn grown, under every word, by the word-by-word pass; any other box
+      // stays behind the text as it was.
       if (popPlace && locateWord(lines, def.boxWord)?.index === popPlace.index) focusBox = rect
       else drawWordBox(ctx, rect, def.wordBox)
     }
@@ -1056,10 +1077,11 @@ function drawWordBox(
  * The text of a title that pops its words, one word at a time. Every word is
  * drawn at the place the whole line gives it, in the order the whole line is
  * drawn (outlines, then fills), so the words that are not popping are the same
- * pixels on every frame. The popping word, and its box, are drawn last, grown
- * about their own centre by `focus.scale` (less where it would leave the canvas).
- * Fill, outline and shadow grow with it; the shadow is scaled by hand because
- * a canvas shadow ignores the transform.
+ * pixels on every frame. The popping word's box goes down first and its letters
+ * last, both grown about their own centre by `focus.scale` (less where it would
+ * leave the canvas): the box sits under every word, the letters over them.
+ * Fill, outline and shadow grow with the letters; the shadow is scaled by hand
+ * because a canvas shadow ignores the transform.
  */
 function drawWordsOneByOne(
   ctx: OffscreenCanvasRenderingContext2D,
@@ -1102,6 +1124,28 @@ function drawWordsOneByOne(
 
   ctx.textAlign = 'left'
 
+  // Everything that grows with the popped word must stay inside the canvas, so the
+  // scale is fitted to the footprint: the ink, half the outline, the shadow's
+  // reach, the box and its thin edge. It is worked out first because the box,
+  // which grows too, goes down before any word is drawn.
+  let grow: { cx: number; cy: number; k: number } | null = null
+  if (focus && popped) {
+    const { cx, cy, ext } = popFootprint(def, popped, inkOfIn(ctx, popped.text), capHeightIn(ctx, def), focusBox)
+    grow = { cx, cy, k: fitScaleAbout(cx, cy, ext, width, height, focus.scale) }
+  }
+
+  // The popping word's box goes down FIRST, grown about its own centre, so that
+  // where it grows over a neighbour it sits under that word's letters. Drawn after
+  // them it covered the letters it grew over.
+  if (grow && focusBox && def.wordBox) {
+    ctx.save()
+    ctx.translate(grow.cx, grow.cy)
+    ctx.scale(grow.k, grow.k)
+    ctx.translate(-grow.cx, -grow.cy)
+    drawWordBox(ctx, focusBox, def.wordBox)
+    ctx.restore()
+  }
+
   // The other words: the outline is the bottom layer and casts the shadow, the
   // fills land on top of it, as they do when the line is drawn whole.
   const others = slots.filter((s) => s !== popped)
@@ -1117,17 +1161,12 @@ function drawWordsOneByOne(
   }
   clearShadow()
 
-  if (focus && popped) {
-    // Everything that grows with it must stay inside the canvas, so the scale is
-    // fitted to the footprint: the ink, half the outline, the shadow's reach, the box and its thin edge.
-    const { cx, cy, ext } = popFootprint(def, popped, inkOfIn(ctx, popped.text), capHeightIn(ctx, def), focusBox)
-    const k = fitScaleAbout(cx, cy, ext, width, height, focus.scale)
-
+  if (grow && popped) {
+    const { cx, cy, k } = grow
     ctx.save()
     ctx.translate(cx, cy)
     ctx.scale(k, k)
     ctx.translate(-cx, -cy)
-    if (focusBox && def.wordBox) drawWordBox(ctx, focusBox, def.wordBox)
     setShadow(k)
     if (hasOutline) {
       setStroke()

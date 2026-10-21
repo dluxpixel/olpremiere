@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { computeQuad, pointInQuad, subQuad } from './mat'
-import { titleInkBoxUV } from './titleRaster'
-import { defaultTitleDef, defaultTransform, type TitleDef } from '../types'
+import { WORD_BOX_CAP_EM, WORD_BOX_EM, titleInkBoxUV } from './titleRaster'
+import { POP_EMPHASIS_BOOST, defaultTitleDef, defaultTransform, type TitleDef } from '../types'
 import type { ResolvedTransform } from './types'
 
 const W = 1920
@@ -119,6 +119,35 @@ describe('titleInkBoxUV', () => {
     expect(poppedBoxed.v0).toBeLessThanOrEqual(boxed.v0)
     expect(poppedBoxed.v1).toBeGreaterThanOrEqual(boxed.v1)
     expect(poppedBoxed.u1 - poppedBoxed.u0).toBeGreaterThan(boxed.u1 - boxed.u0)
+  })
+
+  it('grows for an emoji word the same way as for a letter word, round its whole advance', () => {
+    // "say 🔥": the fire ends the line, so its growth shows on the right edge. The meter gives the
+    // emoji its whole advance as ink (what inkOfIn gives one whose canvas bounds are a sliver).
+    const base = title({ text: 'say \u{1F525}', outline: undefined, shadow: undefined })
+    const measure = measureFor(base)
+    const advance = measure('\u{1F525}')
+    const meter = {
+      capPx: 0.7 * base.fontSizePx,
+      inkOf: (w: string) => ({ left: 0, right: measure(w), ascent: base.fontSizePx * 0.9, descent: base.fontSizePx * 0.2 }),
+    }
+    const top = 1 + 0.15 * POP_EMPHASIS_BOOST
+    const plain = titleInkBoxUV(base, W, H, measure, meter)!
+    const popped = titleInkBoxUV({ ...base, wordPopSize: 1.15 }, W, H, measure, meter)!
+    // The fire grows about its middle, so its right edge goes out by half its width times the extra.
+    expect((popped.u1 - plain.u1) * W).toBeCloseTo((advance / 2) * (top - 1), 6)
+    expect(popped.u0).toBeLessThan(plain.u0)
+
+    // With the word box round it, the box (margin and dark edge) grows with the fire.
+    const wordBox = { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' }
+    const em = meter.capPx / WORD_BOX_CAP_EM
+    const gx = (WORD_BOX_EM.side + WORD_BOX_EM.edge) * em
+    const boxed = titleInkBoxUV({ ...base, wordBox }, W, H, measure, meter)!
+    const poppedBoxed = titleInkBoxUV({ ...base, wordBox, wordPopSize: 1.15 }, W, H, measure, meter)!
+    expect((poppedBoxed.u1 - boxed.u1) * W).toBeCloseTo((advance / 2 + gx) * (top - 1), 6)
+    // Neither is smaller than the same caption with no emoji pop, on any side.
+    expect(poppedBoxed.v0).toBeLessThanOrEqual(boxed.v0)
+    expect(poppedBoxed.v1).toBeGreaterThanOrEqual(boxed.v1)
   })
 
   it('an inverted title draws no pop, so its box is the same with a pop size', () => {
