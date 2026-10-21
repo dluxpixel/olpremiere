@@ -381,6 +381,41 @@ describe('transcribePcm run lifecycle', () => {
     run.cancel()
   })
 
+  // The word aligner is a second model in the same worker. Only a caller that
+  // needs the exact moment asks for it, so the request says so only then.
+  it('asks the worker to time the words only when the caller wants it', () => {
+    const plain = transcribePcm(minute(), 'en', () => {})
+    const first = FakeWorker.last!
+    expect(first.posted[0]).not.toHaveProperty('align')
+    plain.promise.catch(() => {})
+    plain.cancel()
+
+    const exact = transcribePcm(minute(), 'en', () => {}, { align: true })
+    expect(FakeWorker.last!.posted[0]).toMatchObject({ language: 'en', align: true })
+    exact.promise.catch(() => {})
+    exact.cancel()
+  })
+
+  it('passes the aligner progress on and keeps the clock running while it reports', async () => {
+    const seen: unknown[] = []
+    const run = transcribePcm(minute(), 'en', (p) => seen.push(p), { align: true })
+    const worker = FakeWorker.last!
+    worker.emit({ type: 'progress', phase: 'listening', pct: null })
+    await vi.advanceTimersByTimeAsync(60_000 + 60 * 10_000 - 1000)
+    // The aligner model downloads (first time only), then times each window.
+    worker.emit({ type: 'progress', phase: 'align', pct: 30, downloading: true })
+    worker.emit({ type: 'progress', phase: 'align', pct: 100 })
+    expect(seen.slice(-2)).toEqual([
+      { phase: 'align', pct: 30, downloading: true },
+      { phase: 'align', pct: 100, downloading: undefined },
+    ])
+    await vi.advanceTimersByTimeAsync(2000)
+    // Each report started the budget again, so the worker was not given up on.
+    expect(worker.terminated).toBe(false)
+    worker.emit({ type: 'done', chunks: [{ text: ' hey', timestamp: [0, 0.2], aligned: true }] })
+    await expect(run.promise).resolves.toEqual([{ text: ' hey', timestamp: [0, 0.2], aligned: true }])
+  })
+
   it('a failing model WARM does not kill the caption run alongside it', async () => {
     // ⛔ The worker is shared and has no request id, so every message reaches
     // whoever is listening. 'warmed' was already special-cased for that reason

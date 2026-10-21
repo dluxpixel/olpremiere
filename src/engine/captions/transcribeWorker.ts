@@ -11,6 +11,7 @@
 // timestamps need the cross-attention outputs only those carry, and older Xenova
 // exports trip onnxruntime's session validation outright).
 import { generationOptsFor, modelFor, modelsInUse, staleModelKeys, whisperModel, type CaptionLanguage } from './transcribeConfig'
+import { alignRecognised } from './alignRunner'
 
 export interface TranscribeRequest {
   /** Mono PCM at 16kHz (the Whisper feature-extractor rate). Absent on a warm. */
@@ -29,11 +30,18 @@ export interface TranscribeRequest {
    * count it was told is the one it trusts (see gpuFailures below).
    */
   gpuFailures?: number
+  /**
+   * Time every word against the sound after the speech model has said them
+   * (alignRunner.ts), and mark the ones it timed `aligned`. Asked for only by a
+   * caller that cuts or places captions on the exact moment (transcribeActions
+   * `wantsExact`); the rest never pay for the second model.
+   */
+  align?: boolean
 }
 
 export type TranscribeResponse =
-  | { type: 'progress'; phase: 'model' | 'listening'; pct: number | null; downloading?: boolean }
-  | { type: 'done'; chunks: { text: string; timestamp: [number, number | null] }[] }
+  | { type: 'progress'; phase: 'model' | 'listening' | 'align'; pct: number | null; downloading?: boolean }
+  | { type: 'done'; chunks: { text: string; timestamp: [number, number | null]; aligned?: boolean }[] }
   | { type: 'warmed' }
   /** The GPU failed at inference: how many times now, for the main thread to keep. */
   | { type: 'gpuFailed'; model: string; failures: number }
@@ -72,7 +80,7 @@ self.onmessage = (e: MessageEvent<TranscribeRequest>) => {
       )
     return
   }
-  void run(e.data.pcm, e.data.language ?? 'en', e.data.gpuFailures ?? 0)
+  void run(e.data.pcm, e.data.language ?? 'en', e.data.gpuFailures ?? 0, e.data.align === true)
 }
 
 /**
@@ -264,7 +272,7 @@ const OPTS = {
  * Deliberately NOT sent: a prompt of his vocabulary. Built and measured on
  * 2026-10-03 and it made his captions worse; vocabulary.ts has the numbers.
  */
-async function run(pcm: Float32Array, language: CaptionLanguage, gpuFailuresTold: number): Promise<void> {
+async function run(pcm: Float32Array, language: CaptionLanguage, gpuFailuresTold: number, align: boolean): Promise<void> {
   try {
     const model = modelFor(language)
     // A worker built after the last one was killed starts with no count of its
@@ -320,7 +328,23 @@ async function run(pcm: Float32Array, language: CaptionLanguage, gpuFailuresTold
       }
       out = await wasmAsr(pcm, opts)
     }
-    post({ type: 'done', chunks: out.chunks ?? [] })
+    // ⛔ THE ALIGNER ONLY EVER MAKES A CAPTION BETTER. It is a second model on top
+    // of one that works, so it cannot fail the run: alignRecognised never throws and
+    // hands back these same chunks when anything goes wrong, and the catch below is
+    // for the case that it somehow does. The words are the speech model's either way;
+    // only their times can change.
+    let chunks: { text: string; timestamp: [number, number | null]; aligned?: boolean }[] = out.chunks ?? []
+    if (align && chunks.length > 0) {
+      try {
+        chunks = await alignRecognised(chunks, pcm, language, (pct, downloading) =>
+          post({ type: 'progress', phase: 'align', pct, ...(downloading ? { downloading } : {}) }),
+        )
+      } catch (err) {
+        console.warn('OL Premiere transcribe: word timing was skipped', err)
+        chunks = out.chunks ?? []
+      }
+    }
+    post({ type: 'done', chunks })
   } catch (err) {
     post({ type: 'error', message: err instanceof Error ? err.message : String(err) })
   }

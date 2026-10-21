@@ -42,8 +42,10 @@ export interface AsrChunk {
  * compare equal to what they were before it existed.
  */
 function withAligned<T extends TranscribedWord>(word: T, parts: readonly TranscribedWord[]): T {
-  const { aligned: _drop, ...rest } = word
-  return parts.every((p) => p.aligned === true) ? ({ ...rest, aligned: true } as T) : (rest as unknown as T)
+  const out: TranscribedWord = { ...word }
+  if (parts.every((p) => p.aligned === true)) out.aligned = true
+  else delete out.aligned
+  return out as T
 }
 
 /**
@@ -630,11 +632,19 @@ const gpuFailures = new Map<string, number>()
 const LISTEN_FLOOR_MS = 60_000
 const LISTEN_MS_PER_AUDIO_SECOND = 10_000
 
-/** Run Whisper on 16kHz mono PCM in the shared, kept-alive worker. */
+/**
+ * Run Whisper on 16kHz mono PCM in the shared, kept-alive worker. With
+ * `align`, the worker then times every word against the sound (alignRunner.ts)
+ * and returns the chunks it timed marked `aligned`. The 'align' progress the
+ * second model reports restarts the listening budget like any other report, and a
+ * second model that cannot run changes nothing: the chunks come back as Whisper
+ * made them.
+ */
 export function transcribePcm(
   pcm: Float32Array,
   language: CaptionLanguage,
   onProgress: (p: TranscribeProgress) => void,
+  opts: { align?: boolean } = {},
 ): TranscribeRun {
   if (busy) {
     return {
@@ -749,7 +759,12 @@ export function transcribePcm(
   // true and every later caption run in the session would report that a
   // transcription was already going, with no way back short of a restart.
   try {
-    const request: TranscribeRequest = { pcm, language, gpuFailures: gpuFailures.get(modelFor(language)) ?? 0 }
+    const request: TranscribeRequest = {
+      pcm,
+      language,
+      gpuFailures: gpuFailures.get(modelFor(language)) ?? 0,
+      ...(opts.align ? { align: true } : {}),
+    }
     worker.postMessage(request, [pcm.buffer])
   } catch (err) {
     settled = true
