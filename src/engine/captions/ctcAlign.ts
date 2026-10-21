@@ -39,13 +39,29 @@ export const STAR_PENALTY = 0.5
 /** A word that moves more than this from the recogniser's time is not trusted. */
 export const MAX_SHIFT_S = 1
 /**
- * A window whose letters average below this log prob was not the audio it was
- * given. On the 28 windows of the four recordings (xlsr) the right text scored
- * -0.19 or better, the right text with 1 word in 10 swapped -1.81 or better,
- * and another passage's words -5.27 or worse, so the floor sits in the empty
- * space between.
+ * A window whose MEDIAN word scores below this log prob (a word's score is the
+ * mean over its own letters) was not the audio it was given. The median, not the
+ * mean of all the letters, because one repeated or invented passage (the
+ * recogniser does both) squeezes its words onto a few frames, where each letter
+ * scores -10 or worse, and a handful of those sank a window of 50 good words.
+ * On the 28 windows of the four SAPI recordings (xlsr) the right text scored
+ * -0.19 or better, the right text with 1 word in 10 swapped -1.81 or better, and
+ * another passage's words -5.27 or worse. On FLEURS read speech, clip by clip,
+ * the right text's median word is -0.98 or better in English (34 clips) and -2.62
+ * or better in Czech (23 clips), another clip's words -4.45 or worse in English
+ * and -4.12 or worse in Czech, so the floor sits in the empty space between.
  */
 export const WINDOW_FLOOR = -3
+/**
+ * A word whose own letters average below this log prob was not found in the audio
+ * where the aligner had to put it (a repeated passage's second copy, a word the
+ * recogniser invented): it keeps the recogniser's time, and the words around it
+ * are still timed. Of the true words of FLEURS read speech, 0.55 percent in
+ * English (728 words) and 1.1 percent in Czech (440) score below it; of the
+ * words of a passage said twice in the text and once in the audio, about half do.
+ * (-4 would lose 3.2 percent of the Czech words, -6 catches fewer squeezed ones.)
+ */
+export const WORD_FLOOR = -5
 /**
  * Seconds added to every aligned time. A CTC model puts a letter's spike a
  * little INSIDE the letter, so raw onsets come out late: xlsr by +20 ms median
@@ -347,7 +363,10 @@ export interface AlignedWord extends RoughWord {
 export interface AlignOpts {
   starPenalty?: number
   maxShiftS?: number
+  /** The window gate, on the median word score (WINDOW_FLOOR). */
   floor?: number
+  /** The gate on one word's score (WORD_FLOOR). */
+  wordFloor?: number
   biasS?: number
 }
 
@@ -368,8 +387,11 @@ export interface WindowAlignment {
  *   - the chunk has nothing to say aloud (punctuation only);
  *   - it moved more than `maxShiftS` from the recogniser's time (the alignment
  *     latched onto other speech);
- *   - the whole window's letters average below `floor` (the audio was not the
- *     words), or no path exists.
+ *   - the window's median word scores below `floor` (the audio was not the
+ *     words), or no path exists;
+ *   - its own letters average below `wordFloor` (it was squeezed onto frames
+ *     that are not its sound: a passage the recogniser said twice or made up).
+ *     The words around it are still timed.
  */
 export function alignWords(
   words: readonly AlignInput[],
@@ -381,6 +403,7 @@ export function alignWords(
 ): WindowAlignment {
   const maxShift = opts.maxShiftS ?? MAX_SHIFT_S
   const floor = opts.floor ?? WINDOW_FLOOR
+  const wordFloor = opts.wordFloor ?? WORD_FLOOR
   const bias = opts.biasS ?? ONSET_BIAS_S
   const unaligned = (): WindowAlignment => ({
     words: words.map((w) => ({ startS: w.startS, endS: w.endS, aligned: false })),
@@ -422,12 +445,32 @@ export function alignWords(
     let sum = 0
     for (const k of letterTokens) sum += path.scores[k]
     meanLogProb = sum / letterTokens.length
-    if (!(meanLogProb >= floor)) return { ...unaligned(), meanLogProb }
   }
+
+  // Each spelled word's own score. The window stands or falls on the MEDIAN of
+  // them, so a few squeezed words cannot sink the good ones around them; a word
+  // that scores badly itself is left out below.
+  const wordScore = ranges.map((r) => {
+    if (!r || r.star) return null
+    let sum = 0
+    let n = 0
+    for (let k = r.from; k < r.to; k++) {
+      const v = path.scores[k]
+      if (Number.isFinite(v)) {
+        sum += v
+        n++
+      }
+    }
+    return n > 0 ? sum / n : null
+  })
+  const scored = wordScore.filter((v): v is number => v !== null).sort((x, y) => x - y)
+  if (scored.length > 0 && !(scored[scored.length >> 1] >= floor)) return { ...unaligned(), meanLogProb }
 
   const out: AlignedWord[] = words.map((w, i) => {
     const r = ranges[i]
     if (!r) return { startS: w.startS, endS: w.endS, aligned: false }
+    const score = wordScore[i]
+    if (score !== null && !(score >= wordFloor)) return { startS: w.startS, endS: w.endS, aligned: false }
     const startS = windowStartS + path.spans[r.from].start * frameS + bias
     const endS = windowStartS + path.spans[r.to - 1].end * frameS + bias
     if (!(Math.abs(startS - w.startS) <= maxShift)) return { startS: w.startS, endS: w.endS, aligned: false }

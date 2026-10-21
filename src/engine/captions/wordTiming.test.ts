@@ -176,4 +176,28 @@ describe('meetAtDips', () => {
     const words = [w('a', 0.5, 1.0), w('b', 1.0, 1.5)]
     expect(spans(meetAtDips(words, new Float32Array(0), DIP_ENVELOPE_HOP_S))).toEqual(spans(words))
   })
+
+  describe('a boundary next to a word the aligner timed', () => {
+    const env = envelope(2, -12, [[0.94, 0.97]], -12 - DIP_DEPTH_DB - 5)
+    const aligned = (text: string, startS: number, endS: number): TranscribedWord => ({ text, startS, endS, aligned: true })
+
+    it('stays where the aligner put it, whichever side the aligned word is on', () => {
+      const both = meetAtDips([aligned('the', 0.5, 1.0), aligned('strongest', 1.0, 1.5)], env, DIP_ENVELOPE_HOP_S)
+      expect(spans(both)).toEqual([
+        ['the', 0.5, 1.0],
+        ['strongest', 1.0, 1.5],
+      ])
+      const before = meetAtDips([aligned('the', 0.5, 1.0), w('strongest', 1.0, 1.5)], env, DIP_ENVELOPE_HOP_S)
+      expect(before[1]!.startS).toBe(1.0)
+      const after = meetAtDips([w('the', 0.5, 1.0), aligned('strongest', 1.0, 1.5)], env, DIP_ENVELOPE_HOP_S)
+      expect(after[0]!.endS).toBe(1.0)
+    })
+
+    it('still moves a boundary between two words the aligner did not time', () => {
+      const out = meetAtDips([aligned('a', 0.1, 0.4), w('the', 0.5, 1.0), w('strongest', 1.0, 1.5)], env, DIP_ENVELOPE_HOP_S)
+      expect(out[1]!.endS).toBeCloseTo(0.945, 6)
+      expect(out[2]!.startS).toBeCloseTo(0.945, 6)
+      expect(out[0]!.aligned).toBe(true)
+    })
+  })
 })

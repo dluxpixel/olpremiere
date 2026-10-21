@@ -23,11 +23,15 @@ import {
 const V = 8
 const vocab = makeAlignVocab({ '<pad>': 0, a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, '|': 7 }, '<pad>')
 
-/** A peaky CTC table: blank nearly everywhere, a letter at each spike frame. */
-function table(T: number, spikes: Record<number, number>): Float32Array {
+/**
+ * A peaky CTC table: blank nearly everywhere, a letter at each spike frame.
+ * `off` is the weight every other token gets: 0.01 is a model that is unsure,
+ * 1e-5 one that is sure of what it heard (a wrong letter then scores about -11).
+ */
+function table(T: number, spikes: Record<number, number>, off = 0.01): Float32Array {
   const lp = new Float32Array(T * V)
   for (let t = 0; t < T; t++) {
-    const p = new Array<number>(V).fill(0.01)
+    const p = new Array<number>(V).fill(off)
     const spike = spikes[t]
     if (spike === undefined) p[0] = 0.9
     else {
@@ -200,6 +204,35 @@ describe('alignWords', () => {
     const r = alignWords(words, emissions, FRAME_S, 100, vocab)
     expect(r.words).toEqual(words.map((w) => ({ startS: w.startS, endS: w.endS, aligned: false })))
     expect(r.meanLogProb).toBeLessThan(-3)
+  })
+
+  describe('when only some of the words are the audio', () => {
+    // The audio spells abc | def and the model is sure of it.
+    const sure = { logProbs: table(50, spikes, 1e-5), T: 50, V }
+
+    it('keeps a word that is not in the audio at its time and still times the words around it', () => {
+      // The text says "abc def cab": the recogniser said a word the speaker did not.
+      const words = [rough('abc', 100.3, 100.6), rough('def', 100.6, 100.9), rough('cab', 100.9, 101.2)]
+      const r = alignWords(words, sure, FRAME_S, 100, vocab, { biasS: 0 })
+      // The mean of all the letters is -3.8, below the window floor: it used to throw the good words away too.
+      expect(r.meanLogProb).toBeLessThan(-3)
+      expect(r.words.map((w) => w.aligned)).toEqual([true, true, false])
+      expect(r.words[2]).toEqual({ startS: 100.9, endS: 101.2, aligned: false })
+      expect(r.words[0].startS).toBeCloseTo(100 + 10 * FRAME_S, 6)
+      expect(r.words[1].startS).toBeCloseTo(100 + 26 * FRAME_S, 6)
+    })
+
+    it('lets the word floor be moved', () => {
+      const words = [rough('abc', 100.3, 100.6), rough('def', 100.6, 100.9), rough('cab', 100.9, 101.2)]
+      const r = alignWords(words, sure, FRAME_S, 100, vocab, { biasS: 0, wordFloor: -100 })
+      expect(r.words.map((w) => w.aligned)).toEqual([true, true, true])
+    })
+
+    it('gives the whole window up when most of its words are not the audio', () => {
+      const words = [rough('fed', 100.3, 100.6), rough('cab', 100.6, 100.9), rough('def', 100.9, 101.2)]
+      const r = alignWords(words, sure, FRAME_S, 100, vocab, { biasS: 0 })
+      expect(r.words).toEqual(words.map((w) => ({ startS: w.startS, endS: w.endS, aligned: false })))
+    })
   })
 
   it('leaves a chunk of punctuation at its time and aligns around it', () => {

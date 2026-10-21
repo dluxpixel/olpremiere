@@ -98,6 +98,16 @@ export const DIP_DEPTH_DB = 10
  * Only words that touch (the recogniser's own tiling, at most 50 ms apart) are
  * moved, never a pause, and each keeps at least MIN_WORD_S, so no word is lost
  * and no pause is closed. `envelope` is RMS per `hopS` of the clip's audio.
+ *
+ * ⛔ A BOUNDARY THAT HAS AN ALIGNED WORD ON EITHER SIDE IS LEFT WHERE THE ALIGNER
+ * PUT IT. The dip repairs the recogniser's guess (0.1 s off); the aligner is
+ * 0.015 s off, and a loudness dip is not where a word begins ("sixty" has two
+ * dips, "so" opens on a rise). Measured on SAPI speech with known word onsets
+ * (three recordings, real Whisper timings, 837 letter words, 18 number words,
+ * _verify/aligner), with the dips on, aligned words started within 50 ms of the
+ * truth 84.5 percent of the time (number words 72.2 percent); with them off,
+ * 93.1 percent (83.3 percent), and the word END within 50 ms went from 72.9 to
+ * 82.4 percent. Words the aligner did not time still meet at the dips.
  */
 export function meetAtDips<T extends TranscribedWord>(words: readonly T[], envelope: ArrayLike<number>, hopS: number): T[] {
   const out: T[] = words.map((w) => ({ ...w }))
@@ -112,6 +122,7 @@ export function meetAtDips<T extends TranscribedWord>(words: readonly T[], envel
     const a = out[order[j - 1]!]!
     const b = out[order[j]!]!
     if (b.startS - a.endS > MIN_WORD_S) continue
+    if (a.aligned || b.aligned) continue
     const x = frameOf(b.startS)
     const lo = Math.max(0, frameOf(a.startS + MIN_WORD_S), x - reach)
     const hi = Math.min(n - 1, frameOf(b.endS - MIN_WORD_S), x + reach)

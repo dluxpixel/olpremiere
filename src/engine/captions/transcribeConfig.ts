@@ -148,7 +148,9 @@ export interface AlignerModel {
 //
 // COST. 247 MB once, in the same browser cache as Whisper, and it loads on the
 // same device (WebGPU, else wasm). base-960h (95 MB) was the English-only
-// alternative.
+// alternative. TIME, in the real app on the RTX 4060 laptop GPU (WebGPU): the
+// aligner adds about 2 to 8 s to a clip of 88 to 145 s that Whisper turbo reads
+// in 41 to 45 s. The rest of a caption run is the music gate, not this.
 const XLSR_ALIGNER: AlignerModel = {
   id: 'NewComer00/wav2vec2-xlsr-multilingual-56-ONNX',
   dtype: 'q4',
