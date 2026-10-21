@@ -38,7 +38,7 @@ import { currentVocabulary } from './captionVocabulary'
 import { useStore } from './store'
 import { useToasts } from './toasts'
 
-export type TranscribeStatus = 'idle' | 'reading' | 'screening' | 'model' | 'listening'
+export type TranscribeStatus = 'idle' | 'reading' | 'screening' | 'model' | 'listening' | 'align'
 
 interface TranscribeState {
   status: TranscribeStatus
@@ -160,8 +160,10 @@ export const NOBODY_TALKS = 'Nobody talks in this clip'
 const heardBefore = new Map<string, AsrChunk[]>()
 /** Plenty for a project's worth of clips, and each entry is only words. */
 const HEARD_KEEP = 200
-const heardKey = (asset: MediaAsset, clip: Clip, language: CaptionLanguage): string =>
-  [asset.id, asset.blobKey, clip.inS, clip.outS, language, modelFor(language)].join('|')
+const heardKey = (asset: MediaAsset, clip: Clip, language: CaptionLanguage, aligned: boolean): string =>
+  // The word aligner changes the answer (the times, and which words carry the
+  // aligned flag), so a timed run and a raw run of one clip are two entries.
+  [asset.id, asset.blobKey, clip.inS, clip.outS, language, modelFor(language), aligned ? 'aligned' : 'raw'].join('|')
 /** Forget everything heard: for tests that change what a clip says between runs. */
 export function forgetHeard(): void {
   heardBefore.clear()
@@ -263,6 +265,12 @@ async function hearClip(clip: Clip, asset: MediaAsset, opts: HearOptions, job: C
     if (screened && isPureMusic(screened)) return []
   }
 
+  // ⛔ ONLY THE DOORS THAT NEED THE WORDS ON TIME GET THE WORD ALIGNER. Captions
+  // and the Words tab put a word where he said it; the silence cutter cuts
+  // against the recogniser's own timings and its air is tuned on them, so it
+  // keeps the raw answer (opts.trimToVoice and opts.onSpoken are what tell the
+  // two apart, as they do for the lag correction below).
+  const wantsExact = Boolean(opts.trimToVoice || opts.onSpoken)
   const pcm = await extractClipPcm(asset, clip)
   // Reading the sound cannot be interrupted, but a Stop pressed during it is
   // answered the moment it is done, before the model is asked anything.
@@ -281,17 +289,22 @@ async function hearClip(clip: Clip, asset: MediaAsset, opts: HearOptions, job: C
   // Finer loudness for where one word meets the next (wordTiming.meetAtDips),
   // taken here for the same reason and at the same cost: one pass, 100 floats
   // per second. Captions and the Words tab only.
-  const loudness = opts.trimToVoice || opts.onSpoken ? speechEnvelope(pcm, TRANSCRIBE_SAMPLE_RATE, DIP_ENVELOPE_HOP_S) : null
+  const loudness = wantsExact ? speechEnvelope(pcm, TRANSCRIBE_SAMPLE_RATE, DIP_ENVELOPE_HOP_S) : null
   // The persisted language pick (CaptionsDialog) drives every caption door.
   const language = getCaptionLanguage()
-  const key = heardKey(asset, clip, language)
+  const key = heardKey(asset, clip, language, wantsExact)
   const known = heardBefore.get(key)
   const run = known
     ? null
-    : transcribePcm(pcm, language, (p) => {
-        if (p.downloading) job.downloaded = true
-        useTranscribe.setState({ status: p.phase, pct: p.pct, downloading: p.downloading ?? false })
-      })
+    : transcribePcm(
+        pcm,
+        language,
+        (p) => {
+          if (p.downloading) job.downloaded = true
+          useTranscribe.setState({ status: p.phase, pct: p.pct, downloading: p.downloading ?? false })
+        },
+        { align: wantsExact },
+      )
   // Aborted the moment the run fails or is cancelled, so a dead run cannot leave
   // an analysis churning into the next clip of a whole-timeline sweep.
   const stop = new AbortController()
@@ -387,7 +400,10 @@ async function hearClip(clip: Clip, asset: MediaAsset, opts: HearOptions, job: C
   // a second late the first fifth of the cut word stayed in the edit and the
   // first fifth of the next one went ("ey" for "hey"). It has no air to protect.
   // It does not get the trim, because a cut must take the whole word, tail and all.
-  const needOnTime = opts.trimToVoice || opts.onSpoken
+  //
+  // A word the aligner timed (`aligned`) is already where he said it, so the lag
+  // correction passes it by and only moves the words the aligner could not time.
+  const needOnTime = wantsExact
   const unlagged = needOnTime ? correctWordLag(marked, whisperModel(modelFor(getCaptionLanguage())).wordLagS) : marked
   const onTime = needOnTime && loudness ? meetAtDips(unlagged, loudness, DIP_ENVELOPE_HOP_S) : unlagged
   if (opts.onSpoken) {

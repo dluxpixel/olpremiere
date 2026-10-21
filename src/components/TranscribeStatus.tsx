@@ -33,7 +33,7 @@ export function TranscribeStatus() {
           clip {queue.index} of {queue.total}
         </span>
       )}
-      {status === 'model' && (
+      {(status === 'model' || (status === 'align' && downloading)) && (
         <span className="font-numeric text-ui-sm text-text-secondary">
           {pct != null ? `${Math.round(pct)}%` : '…'}
         </span>

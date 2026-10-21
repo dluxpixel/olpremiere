@@ -239,7 +239,11 @@ export function captionJobLabel(status: TranscribeStatus, downloading: boolean):
         ? downloading
           ? 'Downloading Whisper (first time only)'
           : 'Loading Whisper…'
-        : 'Listening for words…'
+        : status === 'align'
+          ? downloading
+            ? 'Downloading the word timing model (first time only)'
+            : 'Timing each word…'
+          : 'Listening for words…'
 }
 
 /**
@@ -252,8 +256,20 @@ export function captionJobProgress(
   pct: number | null,
   queue: { index: number; total: number } | null,
 ): number | null {
+  // The word timing comes after the listening, so it sits past it. Its percent is
+  // a file download at first and a count of windows after, so it is not drawn.
   const step =
-    status === 'reading' ? 0.05 : status === 'screening' ? 0.15 : status === 'model' ? 0.2 + 0.3 * ((pct ?? 0) / 100) : status === 'listening' ? 0.6 : 0
+    status === 'reading'
+      ? 0.05
+      : status === 'screening'
+        ? 0.15
+        : status === 'model'
+          ? 0.2 + 0.3 * ((pct ?? 0) / 100)
+          : status === 'listening'
+            ? 0.6
+            : status === 'align'
+              ? 0.8
+              : 0
   if (queue && queue.total > 0) return Math.min(1, (queue.index - 1 + step) / queue.total)
   return status === 'model' && pct != null ? step : null
 }

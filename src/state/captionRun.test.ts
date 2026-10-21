@@ -60,6 +60,7 @@ import {
 import { CAPTION_TRACK_NAME, captionsOn, setCaptionText } from './captionActions'
 import {
   captionFromScript,
+  captionJobLabel,
   captionJobProgress,
   captionLabel,
   captionTargets,
@@ -769,5 +770,22 @@ describe('the job progress', () => {
     expect(captionJobProgress('listening', null, { index: 4, total: 4 })!).toBeLessThan(1)
     expect(captionJobProgress('listening', null, null)).toBeNull()
     expect(captionJobProgress('model', 50, null)).toBeCloseTo(0.35, 6)
+  })
+
+  it('puts the word timing after the listening, still short of the next clip', () => {
+    const listening = captionJobProgress('listening', null, { index: 2, total: 4 })!
+    const timing = captionJobProgress('align', 40, { index: 2, total: 4 })!
+    expect(timing).toBeGreaterThan(listening)
+    expect(timing).toBeLessThan(0.5)
+    // Its percent is a download and then a window count, so a lone clip draws no bar for it.
+    expect(captionJobProgress('align', 40, null)).toBeNull()
+  })
+})
+
+describe('what the pill says while the words are timed', () => {
+  it('says the timing model is downloading the first time, and timing the words after', () => {
+    expect(captionJobLabel('align', true)).toBe('Downloading the word timing model (first time only)')
+    expect(captionJobLabel('align', false)).toBe('Timing each word…')
+    expect(captionJobLabel('listening', false)).toBe('Listening for words…')
   })
 })
