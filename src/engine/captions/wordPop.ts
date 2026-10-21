@@ -20,7 +20,7 @@
 // activeWordAt (a test reads the source to hold that line).
 
 import type { Clip, TitleDef } from '../types'
-import { splitWords } from '../types'
+import { POP_EMPHASIS_BOOST, splitWords } from '../types'
 import { spreadWords } from './captions'
 
 /** The lit colour a new Word pop style starts with: lime, not white and not the yellow punch. */
@@ -30,8 +30,6 @@ export const WORD_POP_SIZE = 1.15
 /** The pop rises for this long from the moment the word starts, then settles for as long again. */
 const POP_RISE_S = 0.1
 const POP_SETTLE_S = 0.1
-/** A word he leaned on (`emphasis`) pops a third further than the others. */
-const EMPHASIS_BOOST = 4 / 3
 /** The size a frame is drawn at is rounded to this step, so frames that look the same share one raster. */
 const SCALE_STEP = 0.005
 /** A first word this close after the caption's start is said "at the start": the start went onto a frame. */
@@ -58,7 +56,7 @@ export interface PopWord {
 export function popScaleAt(dtS: number, peak: number, emphasis = false): number {
   if (!(peak > 1) || !Number.isFinite(peak) || !(dtS >= 0)) return 1
   if (dtS >= POP_RISE_S + POP_SETTLE_S) return 1
-  const top = emphasis ? 1 + (peak - 1) * EMPHASIS_BOOST : peak
+  const top = emphasis ? 1 + (peak - 1) * POP_EMPHASIS_BOOST : peak
   const swell = top - 1
   if (dtS <= POP_RISE_S) {
     const u = dtS / POP_RISE_S

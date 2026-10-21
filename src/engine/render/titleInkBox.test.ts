@@ -82,6 +82,54 @@ describe('titleInkBoxUV', () => {
     expect(invertedBoxed).toEqual(inverted)
   })
 
+  it('holds the growth of a size pop, which draws a word bigger than the line', () => {
+    const base = title({ text: 'Hello there', outline: undefined, shadow: undefined })
+    const plain = titleInkBoxUV(base, W, H, measureFor(base), null)!
+    const popped = titleInkBoxUV({ ...base, wordPopSize: 1.15 }, W, H, measureFor(base), null)!
+    // Never smaller on any side, and bigger on at least one where the text is clear of the frame.
+    expect(plain.u0).toBeGreaterThan(0)
+    expect(plain.u1).toBeLessThan(1)
+    expect(plain.v0).toBeGreaterThan(0)
+    expect(popped.u0).toBeLessThanOrEqual(plain.u0)
+    expect(popped.u1).toBeGreaterThanOrEqual(plain.u1)
+    expect(popped.v0).toBeLessThanOrEqual(plain.v0)
+    expect(popped.v1).toBeGreaterThanOrEqual(plain.v1)
+    expect(popped.u0).toBeLessThan(plain.u0)
+    expect(popped.u1).toBeGreaterThan(plain.u1)
+    // A bigger peak reaches further.
+    const bigger = titleInkBoxUV({ ...base, wordPopSize: 1.5 }, W, H, measureFor(base), null)!
+    expect(bigger.u1 - bigger.u0).toBeGreaterThan(popped.u1 - popped.u0)
+    // No pop at all (one or less, or not a number) leaves the box as it was.
+    for (const none of [1, 0.9, null, Number.NaN]) {
+      expect(titleInkBoxUV({ ...base, wordPopSize: none }, W, H, measureFor(base), null)).toEqual(plain)
+    }
+  })
+
+  it('a size pop also grows the box round the word and what the ink meter says', () => {
+    const base = title({ text: 'Hello there', outline: { color: '#000', widthPx: 10 }, shadow: undefined })
+    const wordBox = { color: 'rgba(55,6,16,0.8)', borderColor: '#C02749' }
+    const meter = {
+      capPx: 0.7 * base.fontSizePx,
+      inkOf: (w: string) => ({ left: 0, right: measureFor(base)(w), ascent: base.fontSizePx * 0.9, descent: base.fontSizePx * 0.2 }),
+    }
+    const boxed = titleInkBoxUV({ ...base, wordBox }, W, H, measureFor(base), meter)!
+    const poppedBoxed = titleInkBoxUV({ ...base, wordBox, wordPopSize: 1.15 }, W, H, measureFor(base), meter)!
+    expect(poppedBoxed.u0).toBeLessThanOrEqual(boxed.u0)
+    expect(poppedBoxed.u1).toBeGreaterThanOrEqual(boxed.u1)
+    expect(poppedBoxed.v0).toBeLessThanOrEqual(boxed.v0)
+    expect(poppedBoxed.v1).toBeGreaterThanOrEqual(boxed.v1)
+    expect(poppedBoxed.u1 - poppedBoxed.u0).toBeGreaterThan(boxed.u1 - boxed.u0)
+  })
+
+  it('an inverted title draws no pop, so its box is the same with a pop size', () => {
+    const base = title({ text: 'Hello there', outline: undefined, shadow: undefined, invertBackdrop: true })
+    const plain = titleInkBoxUV(base, W, H, measureFor(base), null)!
+    expect(titleInkBoxUV({ ...base, wordPopSize: 1.15 }, W, H, measureFor(base), null)).toEqual(plain)
+    expect(titleInkBoxUV({ ...base, wordPopSize: 1.15 }, W, H, measureFor(base))).toEqual(
+      titleInkBoxUV(base, W, H, measureFor(base)),
+    )
+  })
+
   it('is null when the title draws nothing at all', () => {
     expect(inkBox(title({ text: '' }))).toBeNull()
     expect(inkBox(title({ fontSizePx: 0 }))).toBeNull()

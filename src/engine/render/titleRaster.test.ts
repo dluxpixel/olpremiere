@@ -155,6 +155,22 @@ describe('words in their own colour', () => {
     // Twice in the caption: the one nearest where it was.
     expect(wordColorsOn(['record', 'a', 'b', 'record'], lit)).toEqual([null, null, null, '#ff0'])
   })
+
+  it('lights a word of no letters or digits, an emoji or punctuation, as itself', () => {
+    const marks = [
+      { at: 1, word: '\u{1F525}', color: '#f00' },
+      { at: 2, word: '!!', color: '#0f0' },
+    ]
+    expect(wordColorsOn(['so', '\u{1F525}', '!!', 'now'], marks)).toEqual([null, '#f00', '#0f0', null])
+    // A different mark is not it, and an empty word lights nothing.
+    expect(wordColorsOn(['so', '??'], marks)).toEqual([null, null])
+    expect(wordColorsOn(['so', 'now'], [{ at: 0, word: '', color: '#f00' }])).toEqual([null, null])
+  })
+
+  it('still matches a real word through its punctuation', () => {
+    expect(wordColorsOn(['stay', 'AWAKE,'], [{ at: 1, word: 'awake', color: '#f00' }])).toEqual([null, '#f00'])
+    expect(wordColorsOn(['stay', 'awake'], [{ at: 1, word: 'AWAKE,', color: '#f00' }])).toEqual([null, '#f00'])
+  })
 })
 
 // His ask, 2026-10-19: a rounded box round the word being said, off a frame of a

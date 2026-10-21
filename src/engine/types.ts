@@ -651,6 +651,9 @@ export interface TitleBox {
   radiusPx: number
 }
 
+/** A word he leaned on (`emphasis`) pops a third further than the others: 1 + (peak - 1) * this. */
+export const POP_EMPHASIS_BOOST = 4 / 3
+
 export interface TitleDef {
   text: string
   fontFamily: string
