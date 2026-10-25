@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { alignChunks, normaliseSlice, reduceLogits, type AlignRun, type Logits, type WordChunk } from './alignRunner'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { LISTEN_FLOOR_MS } from './transcribe'
+import { LISTEN_FLOOR_MS, LISTEN_MS_PER_AUDIO_SECOND } from './transcribe'
 
 const hf = vi.hoisted(() => ({ from_pretrained: vi.fn() }))
 vi.mock('@huggingface/transformers', () => ({
@@ -49,6 +49,7 @@ const run = (over: Partial<AlignRun> = {}): AlignRun => ({
   aligner: ALIGNER,
   vocab: VOCAB,
   logitsOf: scripted(SAID),
+  device: 'webgpu',
   budgetMs: 60_000,
   ...over,
 })
@@ -232,6 +233,29 @@ describe('alignRecognised', () => {
     expect(await alignRecognised(chunks, quiet(4), 'en', () => {})).toEqual(chunks)
   })
 
+  it('says nothing more about a load it has given up on', async () => {
+    // The vocabulary fails, so the run is over, but from_pretrained cannot be cancelled and
+    // goes on downloading. Its later reports must not reach the main thread, where they would
+    // wind back a newer run's watchdog.
+    let report!: (p: object) => void
+    hf.from_pretrained.mockImplementation((_id: string, opts: { progress_callback: (p: object) => void }) => {
+      report = opts.progress_callback
+      report({ status: 'progress', progress: 10, total: 247_000_000 })
+      return new Promise(() => {})
+    })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    const { alignRecognised } = await import('./alignRunner')
+    const chunks = [chunk(' ab', 0.9, 1.2)]
+    const told: Array<[number | null, boolean]> = []
+    expect(await alignRecognised(chunks, quiet(4), 'en', (p, d) => told.push([p, d]))).toEqual(chunks)
+    // While the run was waiting, the download was heard ...
+    expect(told).toContainEqual([10, false])
+    const heard = told.length
+    // ... and after it gave up, it is not.
+    report({ status: 'progress', progress: 50, total: 247_000_000 })
+    expect(told).toHaveLength(heard)
+  })
+
   it('times the words with the loaded model', async () => {
     hf.from_pretrained.mockResolvedValue(model())
     const { alignRecognised } = await import('./alignRunner')
@@ -330,10 +354,26 @@ describe('alignRecognised', () => {
       expect(signal?.aborted).toBe(true)
     })
 
-    it('gives up on a model that loaded and then never answers a window', async () => {
+    it('gives up on a model that loaded and then never answers a window on the GPU, in time', async () => {
+      vi.stubGlobal('navigator', { gpu: { requestAdapter: async () => ({}) } })
       const { model: stuck, asked } = hung()
       hf.from_pretrained.mockResolvedValue(stuck)
       expect(await runFor(LISTEN_FLOOR_MS - 1, asked)).toEqual(chunks)
+    })
+
+    // No GPU in this test environment, so these two are the CPU. The four second recording gives
+    // a slice of three seconds (the words, padded a second each side), so the deadline is 40 s
+    // plus 3 x 10 s, 70 s, and the main thread's watchdog for it is 60 s plus 4 x 10 s, 100 s.
+    it('waits on a CPU window past the 40 s a GPU window gets, for the length of its slice', async () => {
+      const { model: stuck, asked } = hung()
+      hf.from_pretrained.mockResolvedValue(stuck)
+      expect(await runFor(65_000, asked)).toBeNull()
+    })
+
+    it('then gives up on that CPU window before the watchdog of that recording would have fired', async () => {
+      const { model: stuck, asked } = hung()
+      hf.from_pretrained.mockResolvedValue(stuck)
+      expect(await runFor(LISTEN_FLOOR_MS + 4 * LISTEN_MS_PER_AUDIO_SECOND - 1, asked)).toEqual(chunks)
     })
 
     it('forgets a load that timed out, so the next run tries again', async () => {
@@ -376,6 +416,21 @@ describe('alignRecognised', () => {
       for (const ms of [m.ALIGN_LOAD_STALL_MS, m.ALIGN_VOCAB_MS, m.ALIGN_WINDOW_MS]) {
         expect(ms).toBeGreaterThan(0)
         expect(ms).toBeLessThan(LISTEN_FLOOR_MS)
+      }
+    })
+
+    it('lets a window on the CPU run longer than the floor, but never past the watchdog of its recording', async () => {
+      // The watchdog is LISTEN_FLOOR_MS + the recording's seconds x LISTEN_MS_PER_AUDIO_SECOND, and a slice is
+      // never longer than the recording. So a deadline of ALIGN_WINDOW_MS + the slice's seconds x
+      // ALIGN_WASM_MS_PER_SECOND ends first whenever these two hold.
+      const m = await import('./alignRunner')
+      expect(m.ALIGN_WINDOW_MS).toBeLessThan(LISTEN_FLOOR_MS)
+      expect(m.ALIGN_WASM_MS_PER_SECOND).toBeLessThanOrEqual(LISTEN_MS_PER_AUDIO_SECOND)
+      expect(m.windowDeadlineMs('webgpu', 20)).toBe(40_000)
+      expect(m.windowDeadlineMs('wasm', 20)).toBe(240_000)
+      for (const s of [0.1, 1, 3, 20, 30, 600]) {
+        expect(m.windowDeadlineMs('webgpu', s)).toBeLessThan(LISTEN_FLOOR_MS + s * LISTEN_MS_PER_AUDIO_SECOND)
+        expect(m.windowDeadlineMs('wasm', s)).toBeLessThan(LISTEN_FLOOR_MS + s * LISTEN_MS_PER_AUDIO_SECOND)
       }
     })
   })

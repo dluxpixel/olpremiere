@@ -45,7 +45,9 @@ export interface AlignRun {
   /** No window is started after this long; the words in later ones keep Whisper's times. */
   budgetMs: number
   now?: () => number
-  /** How long one `logitsOf` may take before the aligner gives up (AlignTimeout); ALIGN_WINDOW_MS when absent. */
+  /** The device `logitsOf` runs on: how long a window may take depends on it (windowDeadlineMs). */
+  device: 'webgpu' | 'wasm'
+  /** How long one `logitsOf` may take before the aligner gives up (AlignTimeout); windowDeadlineMs(device, the slice) when absent. */
   windowMs?: number
 }
 
@@ -77,17 +79,52 @@ const MIN_SLICE = 1600
 // So each wait has its own shorter deadline, it throws AlignTimeout, and
 // alignRecognised answers that like any other failure: Whisper's chunks, unchanged.
 //
-// They are shorter than the 60 s floor because the quietest stretch the watchdog
-// can see is one of these waits, started right after a progress message
-// (alignRecognised posts one before the load, one when it is done and one after
-// each window). alignRunner.test.ts pins the sizes against the watchdog's floor.
+// The load, the vocabulary and a WebGPU window are shorter than the 60 s floor
+// because the quietest stretch the watchdog can see is one of these waits, started
+// right after a progress message (alignRecognised posts one before the load, one
+// when it is done and one after each window). A window on the CPU is the one wait
+// that can be longer than the floor, because the CPU really is that slow; it grows
+// with the slice instead (windowDeadlineMs) and the watchdog grows with the
+// recording, so it still ends first. alignRunner.test.ts pins all of it against
+// the watchdog's numbers.
 
 /** A model load that has gone this long without one download report is stalled. Each report starts the count again, so a slow download that keeps moving is let be. */
 export const ALIGN_LOAD_STALL_MS = 40_000
 /** The vocabulary is one 147 KB file; if it has not come in this long it is not coming. */
 export const ALIGN_VOCAB_MS = 20_000
-/** One window through the model. A 20 s slice takes a few seconds on the CPU; this is the hung session, not the slow one. */
+/**
+ * One window through the model on the GPU. Measured 2026-10-25 (onnxruntime-web
+ * 1.26.0-dev, q4 model, RTX 4060): a whole recording's windows took 2.3 to 4.6 s
+ * on WebGPU, so 40 s is the hung GPU session, not the slow one. It is NOT the
+ * deadline on the CPU, see windowDeadlineMs.
+ */
 export const ALIGN_WINDOW_MS = 40_000
+/**
+ * What each second of slice adds to a window's deadline on the CPU (wasm). Measured
+ * 2026-10-25 on the same machine and build: one 20 s slice took 43 to 48 s on one
+ * thread and 16 to 28 s on four, so 2.4 s per second of audio at the worst, and
+ * 10 s per second leaves four times that before a window is called hung.
+ * It stays under what the watchdog waits for (transcribe.ts LISTEN_MS_PER_AUDIO_SECOND,
+ * also 10 s) because a slice is never longer than the recording.
+ *
+ * ⛔ The wasm `session.run` also holds the worker's event loop for the whole run, so
+ * today this timer cannot fire during it, by accident and not by design. Do not
+ * lean on that: the deadline is sized as if the timer could fire, so a slow but
+ * healthy CPU window is never cut short the day the run stops blocking the loop.
+ */
+export const ALIGN_WASM_MS_PER_SECOND = 10_000
+
+/**
+ * How long one window may take on `device` for a slice of `sliceS` seconds. On
+ * WebGPU that is ALIGN_WINDOW_MS flat. On wasm it is ALIGN_WINDOW_MS plus
+ * ALIGN_WASM_MS_PER_SECOND for each second of slice (a 20 s slice: 240 s), which is
+ * longer than the watchdog's 60 s floor but still ends before the watchdog does:
+ * ALIGN_WINDOW_MS < LISTEN_FLOOR_MS, ALIGN_WASM_MS_PER_SECOND <= LISTEN_MS_PER_AUDIO_SECOND
+ * and a slice is never longer than the recording the watchdog is counted from.
+ */
+export function windowDeadlineMs(device: 'webgpu' | 'wasm', sliceS: number): number {
+  return device === 'webgpu' ? ALIGN_WINDOW_MS : ALIGN_WINDOW_MS + sliceS * ALIGN_WASM_MS_PER_SECOND
+}
 
 export type AlignStage = 'load' | 'vocabulary' | 'window'
 
@@ -248,7 +285,7 @@ export async function alignChunks(chunks: readonly WordChunk[], pcm: Float32Arra
     const words = heard.slice(win.first, win.end)
     const cols = columnsFor(words, full)
     const slice = normaliseSlice(pcm.subarray(a, b))
-    const logits = await guarded(() => run.logitsOf(slice), run.windowMs ?? ALIGN_WINDOW_MS, 'window')
+    const logits = await guarded(() => run.logitsOf(slice), run.windowMs ?? windowDeadlineMs(run.device, slice.length / RATE), 'window')
     const emissions = reduceLogits(logits, cols.ids)
     const got = alignWords(words, emissions, FRAME_S, a / RATE, cols.vocab, { biasS: run.aligner.onsetBiasS })
     got.words.forEach((w, k) => {
@@ -348,19 +385,33 @@ async function buildModel(aligner: AlignerModel, device: 'webgpu' | 'wasm', repo
   // slow connection that keeps moving is let be and one that has gone quiet is not. Only the
   // reports the main thread hears count, or its watchdog could run out while this one did not.
   const progress = fileProgress(report)
+  // ⛔ A LOAD THIS FILE HAS GIVEN UP ON GOES QUIET. Neither a deadline nor a failed vocabulary
+  // fetch can cancel from_pretrained, so it keeps downloading with nobody listening, and its
+  // progress_callback would go on posting 'align' progress. That is a message the main thread
+  // takes for a sign of life: it winds a LATER run's watchdog back and can flip that run's
+  // status, for a model nobody is waiting for. `live` is switched off the moment this load's
+  // wait is over for good, and from then on the callback says nothing.
+  let live = true
   const loading = guarded(
     (touch) =>
       tf.AutoModelForCTC.from_pretrained(aligner.id, {
         device,
         dtype: aligner.dtype,
         progress_callback: (p: LoadProgress) => {
-          if (progress(p)) touch()
+          if (live && progress(p)) touch()
         },
       }),
     ALIGN_LOAD_STALL_MS,
     'load',
   )
-  const [model, vocab] = await Promise.all([loading, readVocab(aligner.id)])
+  let model: Awaited<typeof loading>
+  let vocab: Record<string, number>
+  try {
+    ;[model, vocab] = await Promise.all([loading, readVocab(aligner.id)])
+  } catch (err) {
+    live = false
+    throw err
+  }
   const callable = model as unknown as {
     (inputs: Record<string, unknown>): Promise<{ logits: { data: Float32Array; dims: number[] } }>
     sessions?: Record<string, { inputNames?: string[] } | undefined>
@@ -436,6 +487,7 @@ export async function alignRecognised(
           aligner,
           vocab: model.vocab,
           logitsOf: model.logitsOf,
+          device,
           report: (pct) => report(pct, false),
           budgetMs,
         })
