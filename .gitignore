@@ -30,3 +30,11 @@ ship-*.log
 
 # Scratch launcher for the detached ship. Never part of the app.
 ship-now.cmd
+
+# His own project files (*.olstudio) and his media folder (OLP-MEDIA) sit in this
+# folder and are never part of the app. A release takes every new file that is not
+# ignored, so both are named here.
+# 2026-10-25: three project files and the media folder, about 4.3 GB, went into
+# a release commit because nothing ignored them.
+*.olstudio
+/OLP-MEDIA/

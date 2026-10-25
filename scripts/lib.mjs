@@ -519,11 +519,12 @@ export async function fetchRetry(url, opts = {}, tries = 4) {
 // never from whatever is on disk at commit time.
 
 /** git in `cwd`, stdout trimmed. `env` adds to the environment. */
-function gitIn(cwd, args, { env, input } = {}) {
+function gitIn(cwd, args, { env, input, maxBuffer } = {}) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
     input,
+    ...(maxBuffer ? { maxBuffer } : {}),
     env: env ? { ...process.env, ...env } : process.env,
     stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     windowsHide: true,
@@ -588,6 +589,107 @@ export function commitExactTree(tree, message, { parent, cwd = process.cwd() }) 
   gitIn(cwd, ['update-ref', '-m', 'patch: release commit of the gated tree', 'HEAD', commit, parent])
   gitIn(cwd, ['reset', '-q'])
   return commit
+}
+
+/** A file this size or larger is not taken: GitHub warns at 50 MB, refuses 100 MB, and a push of it hangs packing. */
+const REFUSED_BYTES = 50 * 1024 * 1024
+
+/** Why a file at `path` of `bytes` must not be in a release, or '' when it may be. */
+function whyRefused(path, bytes) {
+  if (/\.olstudio$/i.test(path)) return 'his project file'
+  if (bytes >= REFUSED_BYTES) return 'GitHub warns at 50 MB and refuses 100 MB, and a push of it hangs packing'
+  return ''
+}
+
+/** A list of paths or objects can run to megabytes; the default 1 MB would cut it off. */
+const LIST_BYTES = 512 * 1024 * 1024
+
+/**
+ * Every path `tree` adds or changes against `base` (any tree-ish) that a release must
+ * not take: a `.olstudio` project file (his own, never part of the app) or a blob of
+ * 50 MB or more. Empty means the tree may be committed. 2026-10-25: `git add -A` took
+ * three project files and a media folder, 4.3 GB, into a release commit and the push
+ * hung packing. Two git calls however many paths there are: one diff, one batch of sizes.
+ */
+export function refusedAdds(tree, base, cwd = process.cwd()) {
+  // -z so a path with spaces or odd characters comes back exactly; --no-renames so a
+  // moved big file is an add and cannot slip past the filter; T because a symlink
+  // replaced by a regular file is a type change, not an add or a modify.
+  const raw = gitIn(cwd, ['diff-tree', '-r', '-z', '--no-renames', '--no-commit-id', '--diff-filter=AMT', base, tree])
+  const parts = raw.split('\0')
+  const added = []
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    // `:oldmode newmode oldid newid status`; a submodule (160000) has no blob to weigh.
+    const [, mode, , id] = parts[i].split(' ')
+    if (mode !== '160000') added.push({ path: parts[i + 1], id })
+  }
+  if (!added.length) return []
+  const sizes = gitIn(cwd, ['cat-file', '--batch-check=%(objectsize)'], { input: `${added.map((a) => a.id).join('\n')}\n` }).split('\n')
+  const refused = []
+  added.forEach(({ path }, i) => {
+    const bytes = Number(sizes[i])
+    const why = whyRefused(path, bytes)
+    if (why) refused.push({ path, bytes, why })
+  })
+  return refused
+}
+
+/**
+ * The same refusal for a PUSH: every file in the commits `range` would send that a
+ * release must not take, including one a later commit in the range removed again,
+ * because the push sends every commit and every blob in it. A commit that already
+ * exists locally (a release commit that was undone and put back, a reset to it) is
+ * not caught by the checks that run before a commit is made. One rev-list and one
+ * batch of sizes however many objects there are.
+ */
+export function refusedInPush(range, cwd = process.cwd()) {
+  const listed = gitIn(cwd, ['rev-list', '--objects', range], { maxBuffer: LIST_BYTES })
+  const named = []
+  for (const line of listed.split('\n')) {
+    // `<oid> <path>`; a commit and a root tree have no path.
+    const space = line.indexOf(' ')
+    if (space > 0 && line.slice(space + 1)) named.push({ oid: line.slice(0, space), path: line.slice(space + 1) })
+  }
+  if (!named.length) return []
+  const checked = gitIn(cwd, ['cat-file', '--batch-check=%(objecttype) %(objectname) %(objectsize)'], {
+    input: `${named.map((n) => n.oid).join('\n')}\n`,
+    maxBuffer: LIST_BYTES,
+  }).split('\n')
+  const refused = []
+  named.forEach(({ path }, i) => {
+    const [type, , size] = (checked[i] ?? '').split(' ')
+    if (type !== 'blob') return
+    const bytes = Number(size)
+    const why = whyRefused(path, bytes)
+    if (why) refused.push({ path, bytes, why })
+  })
+  return refused
+}
+
+/**
+ * The same refusal for new files, BEFORE anything is hashed: the untracked files nothing
+ * ignores that are a `.olstudio` project or 50 MB or more. `treeHash` runs `git add -A`,
+ * which reads every new file and writes it into .git/objects first, minutes and
+ * gigabytes for a 1.4 GB project file, so the files are looked at here, by name and by
+ * size on disk, and nothing is read. One git call and one stat per new file.
+ */
+export function refusedUntracked(cwd = process.cwd()) {
+  const listed = gitIn(cwd, ['ls-files', '-o', '--exclude-standard', '-z'], { maxBuffer: LIST_BYTES })
+  const refused = []
+  for (const path of listed.split('\0')) {
+    if (!path) continue
+    let bytes = 0
+    try {
+      const st = statSync(join(cwd, path))
+      if (!st.isFile()) continue // a folder that is its own repo is listed with a slash
+      bytes = st.size
+    } catch {
+      continue // gone since it was listed, or a link to nothing: git has nothing to take
+    }
+    const why = whyRefused(path, bytes)
+    if (why) refused.push({ path, bytes, why })
+  }
+  return refused
 }
 
 // --- THE VERSION BUMP IS BUILT FROM THE GATED MANIFESTS (2026-10-08) ----------------

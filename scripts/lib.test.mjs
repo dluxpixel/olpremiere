@@ -4,7 +4,7 @@
 // release cannot be "checked by eye" in any useful sense.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,6 +32,9 @@ import {
   nextVersion,
   planShip,
   recordFlaky,
+  refusedAdds,
+  refusedInPush,
+  refusedUntracked,
   releaseWork,
   runLanes,
   runLoggedRetry,
@@ -501,6 +504,212 @@ describe('the release commit is exactly the gated tree', { timeout: 30_000 }, ()
     const theirs = git('rev-parse', 'HEAD')
     expect(() => commitExactTree(gated, 'release', { parent: head, cwd: dir })).toThrow()
     expect(git('rev-parse', 'HEAD')).toBe(theirs)
+  })
+})
+
+// ⛔ THE RELEASE TOOK HIS PROJECT FILES AND HIS MEDIA FOLDER (2026-10-25). `treeHash` adds every
+// new file nothing ignores, and the commit took the tree as gated: three `.olstudio` files and a
+// media folder, 4.3 GB, and the push hung packing. New files are normal in a release (fonts,
+// sources, sounds), so only his project files and anything of 50 MB or more are refused.
+const LIMIT = 50 * 1024 * 1024
+const names = (list) => list.map((r) => r.path).sort()
+/** A file of exactly `bytes`, made by extending an empty one, so a big one costs nothing to write. */
+function sparse(dir, name, bytes) {
+  const file = join(dir, name)
+  writeFileSync(file, '')
+  truncateSync(file, bytes)
+}
+
+describe('a release refuses his project files and files of 50 MB or more', { timeout: 60_000 }, () => {
+  it('refuses a new .olstudio file, in any folder and in any case', () => {
+    const { dir, write } = scratchRepo()
+    write('My Edit - 44 clips.olstudio', 'abcd')
+    mkdirSync(join(dir, 'old projects'))
+    write('old projects/Take Two.OLStudio', 'x')
+    write('notes.txt', 'not a project')
+    const tree = treeHash(dir)
+    const refused = refusedAdds(tree, 'HEAD', dir)
+    expect(names(refused)).toEqual(['My Edit - 44 clips.olstudio', 'old projects/Take Two.OLStudio'])
+    expect(refused.map((r) => r.bytes).sort()).toEqual([1, 4])
+    for (const r of refused) expect(r.why).toBe('his project file')
+    // A tree or a commit both work as the base.
+    expect(refusedAdds(tree, 'HEAD^{tree}', dir)).toEqual(refused)
+  })
+
+  it('refuses a new file of 50 MB or more, and lets one byte less through', () => {
+    const { dir, write } = scratchRepo()
+    write('over.bin', Buffer.alloc(LIMIT + 1))
+    write('exactly.bin', Buffer.alloc(LIMIT))
+    write('under.bin', Buffer.alloc(LIMIT - 1))
+    const refused = refusedAdds(treeHash(dir), 'HEAD', dir)
+    expect(names(refused)).toEqual(['exactly.bin', 'over.bin'])
+    expect(refused.find((r) => r.path === 'over.bin').bytes).toBe(LIMIT + 1)
+    expect(refused.find((r) => r.path === 'over.bin').why).toMatch(/100 MB/)
+  })
+
+  it('lets a small new source file through, and a change to a small one', () => {
+    const { dir, write } = scratchRepo()
+    mkdirSync(join(dir, 'src'))
+    write('src/new file.ts', 'export const x = 1')
+    write('a.txt', 'a2')
+    expect(refusedAdds(treeHash(dir), 'HEAD', dir)).toEqual([])
+  })
+
+  it('does not refuse a big file that is already in base and unchanged, but does once it changes', () => {
+    const { dir, git, write } = scratchRepo()
+    write('already.bin', Buffer.alloc(LIMIT + 1))
+    git('add', '-A')
+    git('commit', '-q', '-m', 'a big file that was already there')
+    write('small.txt', 'new and small')
+    expect(refusedAdds(treeHash(dir), 'HEAD', dir)).toEqual([])
+    write('already.bin', Buffer.alloc(LIMIT + 2))
+    expect(names(refusedAdds(treeHash(dir), 'HEAD', dir))).toEqual(['already.bin'])
+  })
+
+  it('returns the exact path of a project file with a non-ASCII name', () => {
+    const { dir, write } = scratchRepo()
+    write('é-日本 project.olstudio', 'abcd')
+    write('é-日本 notes.txt', 'not a project')
+    const refused = refusedAdds(treeHash(dir), 'HEAD', dir)
+    expect(refused.map((r) => r.path)).toEqual(['é-日本 project.olstudio'])
+    expect(refused[0].why).toBe('his project file')
+  })
+
+  it('counts a big file already in base that is moved as an add, and refuses it', () => {
+    const { dir, git } = scratchRepo()
+    sparse(dir, 'already.bin', LIMIT + 1)
+    git('add', '-A')
+    git('commit', '-q', '-m', 'a big file that was already there')
+    git('mv', 'already.bin', 'moved.bin')
+    // git sees a rename here; without --no-renames the AM filter would never see it.
+    expect(git('status', '--porcelain')).toMatch(/^R {2}already\.bin -> moved\.bin$/)
+    expect(names(refusedAdds(treeHash(dir), 'HEAD', dir))).toEqual(['moved.bin'])
+  })
+
+  it('refuses a symlink replaced by a regular file of 50 MB or more (a type change)', () => {
+    const { dir, git } = scratchRepo()
+    const tree = (input) => execFileSync('git', ['mktree'], { cwd: dir, input, encoding: 'utf8', windowsHide: true }).trim()
+    // Trees built by hand, because a Windows box without symlinks cannot make the link.
+    writeFileSync(join(dir, 'target.txt'), 'a.txt')
+    const linkBlob = git('hash-object', '-w', 'target.txt')
+    sparse(dir, 'big.bin', LIMIT)
+    const bigBlob = git('hash-object', '-w', 'big.bin')
+    const base = tree(`120000 blob ${linkBlob}\tlink\n`)
+    const next = tree(`100644 blob ${bigBlob}\tlink\n`)
+    // Git calls this T, which `--diff-filter=AM` drops.
+    expect(git('diff-tree', '-r', '--no-renames', base, next)).toMatch(/ T\tlink$/)
+    expect(git('diff-tree', '-r', '--no-renames', '--diff-filter=AM', base, next)).toBe('')
+    expect(names(refusedAdds(next, base, dir))).toEqual(['link'])
+    // A small regular file in its place is fine.
+    const small = tree(`100644 blob ${git('hash-object', '-w', 'target.txt')}\tlink\n`)
+    expect(refusedAdds(small, base, dir)).toEqual([])
+  })
+
+  it('allows deleting a big file that is committed', () => {
+    const { dir, git } = scratchRepo()
+    sparse(dir, 'already.bin', LIMIT + 1)
+    git('add', '-A')
+    git('commit', '-q', '-m', 'a big file that was already there')
+    rmSync(join(dir, 'already.bin'))
+    expect(refusedAdds(treeHash(dir), 'HEAD', dir)).toEqual([])
+  })
+})
+
+// ⛔ THE PUSH WAS THE ONE THING NOTHING CHECKED (2026-10-25). A commit that already exists under HEAD
+// (the undone release commit put back, a reset to it, a push-only retry) never meets the checks that
+// run before a commit is made, and the push sends every commit and every file in it, so one that a
+// later commit deleted again is still sent. The range is read from git's own object list.
+describe('a push refuses his project files and files of 50 MB or more in the commits it sends', { timeout: 60_000 }, () => {
+  it('refuses a big file and a project file that a middle commit added and a later commit deleted', () => {
+    const { dir, git, write } = scratchRepo()
+    const pushed = git('rev-parse', 'HEAD')
+    write('small1.txt', 'one')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'small')
+    sparse(dir, 'media.bin', LIMIT + 1)
+    write('é-日本 project.olstudio', 'abcd')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'the middle commit takes the big file and the project file')
+    git('rm', '-q', 'media.bin', 'é-日本 project.olstudio')
+    git('commit', '-q', '-m', 'and the next one removes them again')
+    // Gone from the tree at HEAD, still in the commits the push would send.
+    expect(git('ls-tree', '-r', '--name-only', 'HEAD')).not.toMatch(/media\.bin|olstudio/)
+    const refused = refusedInPush(`${pushed}..HEAD`, dir)
+    expect(names(refused)).toEqual(['media.bin', 'é-日本 project.olstudio'])
+    expect(refused.find((r) => r.path === 'media.bin')).toMatchObject({ bytes: LIMIT + 1 })
+    expect(refused.find((r) => r.path === 'media.bin').why).toMatch(/100 MB/)
+    expect(refused.find((r) => r.path.endsWith('.olstudio')).why).toBe('his project file')
+    // With nothing to compare against, the whole history is the range.
+    expect(names(refusedInPush('HEAD', dir))).toEqual(['media.bin', 'é-日本 project.olstudio'])
+    // What an earlier push already sent is not looked at again.
+    expect(refusedInPush('HEAD~1..HEAD', dir)).toEqual([])
+  })
+
+  it('returns nothing for a range of small commits', () => {
+    const { dir, git, write } = scratchRepo()
+    const pushed = git('rev-parse', 'HEAD')
+    mkdirSync(join(dir, 'src'))
+    write('src/new file.ts', 'export const x = 1')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'one')
+    write('a.txt', 'a2')
+    sparse(dir, 'just-under.bin', LIMIT - 1)
+    git('commit', '-q', '-am', 'two')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'three, a file one byte under the limit')
+    expect(refusedInPush(`${pushed}..HEAD`, dir)).toEqual([])
+    // Nothing to send at all.
+    expect(refusedInPush('HEAD..HEAD', dir)).toEqual([])
+  })
+})
+
+// ⛔ THE CHECK ON THE TREE CAME AFTER `git add -A` (2026-10-25), which reads every new file and writes
+// it into .git/objects first: minutes and gigabytes for a 1.4 GB project file. The new files are
+// looked at before that, by name and by size on disk.
+describe('new files are refused before anything is hashed', { timeout: 60_000 }, () => {
+  it('refuses an untracked .olstudio and an untracked file of 50 MB or more, and nothing else', () => {
+    const { dir, write } = scratchRepo()
+    write('.gitignore', 'ignored.bin\n')
+    write('My Edit.olstudio', 'abcd')
+    mkdirSync(join(dir, 'old projects'))
+    write('old projects/Take Two.OLStudio', 'x')
+    sparse(dir, 'over.bin', LIMIT)
+    sparse(dir, 'under.bin', LIMIT - 1)
+    sparse(dir, 'ignored.bin', LIMIT * 2)
+    write('small.txt', 'a small new file')
+    const refused = refusedUntracked(dir)
+    expect(names(refused)).toEqual(['My Edit.olstudio', 'old projects/Take Two.OLStudio', 'over.bin'])
+    expect(refused.find((r) => r.path === 'over.bin')).toMatchObject({ bytes: LIMIT })
+    expect(refused.find((r) => r.path === 'over.bin').why).toMatch(/100 MB/)
+    expect(refused.find((r) => r.path === 'My Edit.olstudio')).toMatchObject({ bytes: 4, why: 'his project file' })
+  })
+
+  it('returns the exact path of a project file with a non-ASCII name', () => {
+    const { dir, write } = scratchRepo()
+    write('é-日本 project.olstudio', 'abcd')
+    expect(refusedUntracked(dir).map((r) => r.path)).toEqual(['é-日本 project.olstudio'])
+  })
+
+  it('lets through a repo with only small new files, an ignored big file, and a tracked big file', () => {
+    const { dir, git, write } = scratchRepo()
+    sparse(dir, 'tracked.bin', LIMIT + 1)
+    git('add', '-A')
+    git('commit', '-q', '-m', 'a big file that was already there')
+    write('.gitignore', '*.olstudio\n/OLP-MEDIA/\n')
+    write('Mine.olstudio', 'ignored by name')
+    mkdirSync(join(dir, 'OLP-MEDIA'))
+    sparse(dir, 'OLP-MEDIA/clip.mp4', LIMIT * 2)
+    write('small.txt', 'new and small')
+    expect(refusedUntracked(dir)).toEqual([])
+  })
+
+  it('writes nothing into .git/objects', () => {
+    const { dir, git, write } = scratchRepo()
+    sparse(dir, 'over.bin', LIMIT + 1)
+    write('small.txt', 'new and small')
+    const before = git('count-objects', '-v')
+    expect(names(refusedUntracked(dir))).toEqual(['over.bin'])
+    expect(git('count-objects', '-v')).toBe(before)
   })
 })
 
@@ -1009,6 +1218,54 @@ describe('patch.mjs is wired to them', () => {
     expect(code).toMatch(/versionInTree\(gatedTree\)/)
     expect(code).toMatch(/manifestsBeyondVersion\(gatedTree, version\)/)
     expect(code).not.toMatch(/const current = JSON\.parse\(readFileSync/)
+  })
+
+  it('refuses his files and huge files before the gate starts, and again before the commit', () => {
+    const startAt = code.indexOf('stopIfRefusedAtStart(refusedAdds(startTree, headAtStart))')
+    expect(code).toMatch(/const headAtStart = git\('rev-parse', 'HEAD'\)/)
+    expect(code.indexOf('const startTree = treeHash()')).toBeLessThan(code.indexOf('const headAtStart'))
+    expect(code.indexOf('const headAtStart')).toBeLessThan(startAt)
+    // Before the --verify gate and before the ship's gate, which is the first `await gate(startTree)`.
+    expect(startAt).toBeGreaterThan(-1)
+    expect(startAt).toBeLessThan(code.indexOf('await gate(startTree)'))
+    // A refusal prints, waits for the ship log to take it, and exits 1.
+    expect(code).toMatch(/const stopRefused = async \(say\) => \{[^}]*shipLog\.write\(say, resolve\)[^}]*process\.exit\(1\)/)
+    expect(code).toMatch(/const stopIfRefusedAtStart = async \(refused\) => \{\s*if \(!refused\.length\) return\s*await stopRefused\(/)
+    // The backstop sits between building the release tree and committing it.
+    const backstopAt = code.indexOf('refusedAdds(releaseTree, headAtStart)')
+    expect(code.indexOf('const releaseTree = treeWith(')).toBeLessThan(backstopAt)
+    expect(backstopAt).toBeLessThan(code.indexOf('commitExactTree(releaseTree'))
+    expect(code).toMatch(/if \(refusedAtCommit\.length\) \{\s*refuse\(/)
+  })
+
+  it('looks at the new files BEFORE the tree is hashed, because hashing reads and writes every one', () => {
+    const untrackedAt = code.indexOf('await stopIfRefusedAtStart(refusedUntracked())')
+    expect(untrackedAt).toBeGreaterThan(-1)
+    // The first treeHash( in the code is the start tree, so nothing hashes before the listing.
+    expect(code.indexOf('treeHash(')).toBe(code.indexOf('const startTree = treeHash()') + 'const startTree = '.length)
+    expect(untrackedAt).toBeLessThan(code.indexOf('const startTree = treeHash()'))
+    expect(code.match(/\brefusedUntracked\(/g)).toHaveLength(1)
+  })
+
+  it('checks the commits for his files and huge files before pushMain sends anything', () => {
+    const pushMainAt = code.indexOf('const pushMain = async')
+    expect(pushMainAt).toBeGreaterThan(-1)
+    const checkAt = code.indexOf('refusedInPush(', pushMainAt)
+    expect(checkAt).toBeGreaterThan(pushMainAt)
+    // pushMain is the only caller of pushOnce, and every push command lives in pushOnce above it.
+    expect(code.match(/\bpushOnce\(/g)).toHaveLength(1)
+    expect(code.indexOf('pushOnce(token)')).toBeGreaterThan(checkAt)
+    const pushOnceAt = code.indexOf('const pushOnce =')
+    const pushCommands = [...code.matchAll(/git push|'push'/g)].map((m) => m.index)
+    expect(pushCommands.length).toBeGreaterThan(0)
+    for (const at of pushCommands) {
+      expect(at).toBeGreaterThan(pushOnceAt)
+      expect(at).toBeLessThan(pushMainAt)
+    }
+    // It compares against the remote branch when there is one, and refuses through the ship log.
+    expect(code.slice(pushMainAt, checkAt)).toMatch(/'rev-parse', '--verify', '-q', 'origin\/main'/)
+    expect(code.slice(pushMainAt, checkAt)).toMatch(/range = 'origin\/main\.\.HEAD'/)
+    expect(code.slice(checkAt, code.indexOf('pushOnce(token)'))).toMatch(/await stopRefused\(/)
   })
 })
 

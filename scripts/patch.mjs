@@ -71,6 +71,9 @@ import {
   openShipLog,
   planShip,
   recordFlaky,
+  refusedAdds,
+  refusedInPush,
+  refusedUntracked,
   runLanes,
   runLogged,
   SHIP_LOG,
@@ -146,6 +149,33 @@ const stampedTree = () => {
 }
 const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new Date().toISOString() }))
 
+// ⛔ HIS OWN FILES AND HUGE FILES STOP THE RUN, BEFORE THE GATE (2026-10-25). A commit
+// takes every new file that is not ignored, so a project file or a media folder that nothing
+// ignored went into a release commit, 4.3 GB of it, and the push hung packing. A release does
+// add files on purpose (fonts, sources, sounds), so new files are fine; his `.olstudio` files
+// and anything of 50 MB or more are not. A refusal prints, goes into the ship log, and exits 1.
+const refusedSay = (refused) =>
+  refused.map((r) => `   ${r.path}  (${(r.bytes / (1024 * 1024)).toFixed(1)} MB)  ${r.why}\n`).join('')
+const stopRefused = async (say) => {
+  console.error(say)
+  await new Promise((resolve) => (shipLog ? shipLog.write(say, resolve) : resolve()))
+  process.exit(1)
+}
+const stopIfRefusedAtStart = async (refused) => {
+  if (!refused.length) return
+  await stopRefused(
+    '\n❌ This release would take files that must never be in it, so NOTHING was checked, committed or pushed.\n' +
+      refusedSay(refused) +
+      '   The files on disk were not touched.\n' +
+      '   The way out: add the path to .gitignore, or move it out of this folder. Then run the same command again.\n',
+  )
+}
+
+// First check, BEFORE anything is hashed. Hashing runs `git add -A`, which reads every new
+// file and writes it into .git/objects, minutes and gigabytes for a 1.4 GB project file, so
+// the new files are only listed and measured here, which takes a moment.
+await stopIfRefusedAtStart(refusedUntracked())
+
 // ⛔ THE TREE IS HASHED ONCE, HERE (2026-10-08). `--fast` hashed it for its docs only
 // check and the gate hashed it again a moment later, so a code file saved between the
 // two was never seen by the docs only check and became the gate's own baseline: it
@@ -153,6 +183,15 @@ const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new
 // THIS one, and the gate's check at its end (below) covers all three. Nothing else in
 // this file may hash the tree for a verdict at the start of a run.
 const startTree = treeHash()
+
+// The commit the release goes on top of, taken BEFORE the gate. If the branch
+// moves while the gate runs, the commit below refuses rather than land the gated
+// tree over somebody else's work.
+const headAtStart = git('rev-parse', 'HEAD')
+
+// Second check, on the tree itself, still before the gate. It covers what the first cannot
+// see: a file that is already tracked or staged and has changed, or changed type.
+await stopIfRefusedAtStart(refusedAdds(startTree, headAtStart))
 
 // The gate, in one place, for a ship and for --verify alike. There are two (see the header):
 // `fullGate` (--verify) is every check, and the release gate (a plain ship) is the lanes and
@@ -370,6 +409,28 @@ const pushOnce = (token) => {
 }
 
 const pushMain = async () => {
+  // ⛔ NOTHING IS SENT BEFORE THE COMMITS ARE LOOKED AT (2026-10-25). This is the only push, and
+  // a commit that already exists under HEAD is not caught by the checks that run before a commit
+  // is made: a release commit that was undone and put back, a reset to it, a push-only retry.
+  // So the commits not yet on the remote are checked for his files and huge files, including
+  // one that a later commit removed again, because the push sends every blob in every commit.
+  let range = 'HEAD'
+  try {
+    git('rev-parse', '--verify', '-q', 'origin/main')
+    range = 'origin/main..HEAD'
+  } catch {
+    // No remote branch to compare with, so every commit under HEAD counts as unpushed.
+  }
+  const refusedInRange = refusedInPush(range)
+  if (refusedInRange.length) {
+    await stopRefused(
+      '\n❌ A commit that is about to be pushed carries files that must never be in a release, so NOTHING was pushed.\n' +
+        refusedSay(refusedInRange) +
+        '   The commit already exists on this machine and stays there. The files on disk were not touched.\n' +
+        '   The way out: a plain `git reset` to the last pushed commit (never --hard) takes the commits back and keeps every file on disk.\n' +
+        '   Then add the path to .gitignore, or move it out of this folder, and run the same command again.\n',
+    )
+  }
   const token = loadToken()
   process.stdout.write('\n▶ push\n')
   for (let attempt = 1; ; attempt++) {
@@ -414,11 +475,6 @@ if (!plan) {
   process.exit(0)
 }
 console.log(`Releasing, because there is ${plan.why}.`)
-
-// The commit the release goes on top of, taken BEFORE the gate. If the branch
-// moves while the gate runs, the commit below refuses rather than land the gated
-// tree over somebody else's work.
-const headAtStart = git('rev-parse', 'HEAD')
 
 // --- 0b. --fast keeps its own contract ---------------------------------------
 // Only when it would actually skip something: a verified tree already passed the
@@ -519,6 +575,18 @@ if (beyond.length) {
 // `git add -A`, which took whatever was on disk at this moment, gated or not.
 // Anything saved after the gate stays an ordinary uncommitted change.
 const releaseTree = treeWith(gatedTree, ['package.json', 'package-lock.json'])
+// The same check as at the start, again on the tree about to be committed. Defence in depth:
+// the gated tree is the start tree or a stamped one that matched it, so only the two
+// manifests, which the bump rewrites, can differ from what the start check looked at.
+const refusedAtCommit = refusedAdds(releaseTree, headAtStart)
+if (refusedAtCommit.length) {
+  refuse(
+    '\n❌ This release would take files that must never be in it, so NOTHING was committed or pushed.\n' +
+      refusedSay(refusedAtCommit) +
+      '   His files on disk were not touched. The version bump is on disk and uncommitted.\n' +
+      '   The way out: add the path to .gitignore, or move it out of this folder. Then run the same command again.\n',
+  )
+}
 const body = [
   `Released as v${version} by scripts/patch.mjs.`,
   ...(skippingE2e ? [`${FAST_MARK}: docs only, so the browser suite did not run on this release.`] : []),
