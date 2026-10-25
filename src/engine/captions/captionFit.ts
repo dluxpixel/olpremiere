@@ -49,6 +49,21 @@ const ESTIMATE: FontMetrics = { advance: ESTIMATE_ADVANCE }
 /** A character outside the table and with no plain letter under it: about a capital's width. */
 const OTHER = 720
 
+/**
+ * What one emoji is reserved, per 1000 em. An emoji is drawn from the emoji face
+ * (the Apple set first, emojiFont.ts), never the title's own font, and is about
+ * an em wide there, so 1.1 em keeps the fitter on the safe side of it. Counted per
+ * GRAPHEME: a skin tone (👍🏽) or a ZWJ family is several code points drawn as
+ * one picture, and code point by code point it read as two to seven unknown
+ * characters, up to five times too wide.
+ */
+const EMOJI = 1100
+
+/** Any emoji at all; the fast path skips the grapheme split for plain text. */
+const HAS_PICTOGRAPH = /\p{Extended_Pictographic}/u
+
+let graphemes: Intl.Segmenter | null = null
+
 /** A font stack that starts with this family (quoted or not), as the title fonts spell it. */
 const leading = (family: string): RegExp => new RegExp(`^\\s*['"]?${family}['"]?\\s*(,|$)`, 'i')
 const LEADS_MONTSERRAT = leading('Montserrat')
@@ -124,14 +139,30 @@ export function captionTextWidthPx(text: string, fontSizePx: number, fontFamily?
   if (c.fuse && ligatures) shaped = shaped.replace(c.fuse, (m) => ligatures[m] ?? m)
   let units = 0
   let prev = ''
-  for (const ch of shaped) {
-    units += advance(ch, metrics)
-    if (prev) {
-      const l = c.left.get(prev)
-      const r = c.right.get(ch)
-      if (l !== undefined && r !== undefined) units += c.units.get(l * c.stride + r) ?? 0
+  const add = (run: string): void => {
+    for (const ch of run) {
+      units += advance(ch, metrics)
+      if (prev) {
+        const l = c.left.get(prev)
+        const r = c.right.get(ch)
+        if (l !== undefined && r !== undefined) units += c.units.get(l * c.stride + r) ?? 0
+      }
+      prev = ch
     }
-    prev = ch
+  }
+  if (!HAS_PICTOGRAPH.test(shaped)) {
+    add(shaped)
+  } else {
+    graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    for (const { segment } of graphemes.segment(shaped)) {
+      if (HAS_PICTOGRAPH.test(segment)) {
+        // Another face draws it, so nothing kerns across it.
+        units += EMOJI
+        prev = ''
+      } else {
+        add(segment)
+      }
+    }
   }
   return (units / 1000) * fontSizePx
 }

@@ -197,3 +197,37 @@ describe('a hard line break in the text', () => {
     expect(captionFitter(def, 1080, 3)('MMMM WWWW MMMM WWWW\nIII')).toBe(true)
   })
 })
+
+describe('an emoji', () => {
+  // The emoji face draws it, not the caption's font, about an em wide: 1.1 em is reserved for
+  // each picture, counted by grapheme, so a skin tone or a family joined with ZWJ is one picture.
+  const FIRE = '\u{1F525}'
+  const THUMBS_MEDIUM = '\u{1F44D}\u{1F3FD}'
+  const FAMILY = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}'
+  const HEART = '\u2764\uFE0F'
+
+  it('is reserved 1.1 em, once per picture, however many code points draw it', () => {
+    expect([...THUMBS_MEDIUM]).toHaveLength(2)
+    expect([...FAMILY]).toHaveLength(7)
+    for (const stack of [OSWALD_STACK, CAPTION_FONT_STACK, COMIC_STACK, undefined]) {
+      for (const emoji of [FIRE, THUMBS_MEDIUM, FAMILY, HEART]) {
+        expect(captionTextWidthPx(emoji, 100, stack), `${stack} ${emoji}`).toBeCloseTo(110, 6)
+      }
+      expect(captionTextWidthPx(FIRE + THUMBS_MEDIUM + FAMILY, 100, stack)).toBeCloseTo(330, 6)
+    }
+  })
+
+  it('adds to the words around it, and nothing kerns across it', () => {
+    const wide = (t: string): number => captionTextWidthPx(t, 100, OSWALD_STACK)
+    expect(wide(`AWAKE ${FIRE} REALLY`)).toBeCloseTo(wide('AWAKE ') + 110 + wide(' REALLY'), 6)
+    // A and W kern in Oswald; with a picture between them they do not.
+    expect(wide(`A${THUMBS_MEDIUM}W`)).toBeCloseTo(wide('A') + 110 + wide('W'), 6)
+    expect(wide('AW')).toBeLessThan(wide('A') + wide('W'))
+  })
+
+  it('makes the fitter refuse a line the pictures push past the edge', () => {
+    const fits = captionFitter({ fontSizePx: 100, textCase: 'upper', fontFamily: OSWALD_STACK }, 1080, 1)
+    expect(fits("awake doesn't really")).toBe(true)
+    expect(fits(`awake doesn't really ${FAMILY}`)).toBe(false)
+  })
+})
