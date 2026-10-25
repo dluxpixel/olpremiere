@@ -45,7 +45,7 @@ import {
   type CaptionWord,
   type ChunkOptions,
 } from './captions'
-import { captionFitter, fitWordsToFrame } from './captionFit'
+import { captionFitter, captionTextWidthPx, fitWordsToFrame } from './captionFit'
 import { WORD_POP_SIZE } from './wordPop'
 
 export type { CaptionShape } from '../types'
@@ -337,27 +337,48 @@ export function captionFitterFor(
   prepare?: (text: string) => string,
 ): (text: string) => boolean {
   const lines = style.shape.length === 'fixed' ? style.shape.lines : 1
-  const shown = (text: string): string => breakLines(prepare ? prepare(text) : text, style.shape)
-  return captionFitter(captionDefFor(style, '', seq.height), seq.width, lines, shown)
+  const def = captionDefFor(style, '', seq.height)
+  const shown = (text: string): string => breakLines(prepare ? prepare(text) : text, style.shape, def)
+  return captionFitter(def, seq.width, lines, shown)
+}
+
+/** The face and case a two line break is balanced in. */
+export type CaptionLineFont = Partial<Pick<TitleDef, 'fontFamily' | 'textCase'>>
+
+/** The face and case a style draws its captions in, which is all breakLines needs to know of it. */
+export function captionFontFor(style: Pick<CaptionStyle, 'look' | 'refHeight' | 'emphasisColor'>): CaptionLineFont {
+  const { fontFamily, textCase } = captionDefFor(style, '', style.refHeight ?? CAPTION_REF_HEIGHT)
+  return { fontFamily, textCase }
 }
 
 /**
  * Two lines, balanced: the break goes at the space that makes the longer line
  * as short as it can be, the way a subtitle is set. One line, auto length, or a
  * caption that already fits on one line is returned as it came.
+ *
+ * Balanced by how wide the lines DRAW in `font` (captionTextWidthPx), not by
+ * how many letters they hold: "mmm" is wider than "iiiii", and counting letters
+ * could put a short word with wide letters on the line that was already the
+ * wider one, so the longer line was longer than it had to be and could wrap.
+ * The letter count still decides whether the caption needs two lines at all,
+ * because that is the length he set on the style.
  */
-export function breakLines(text: string, shape: CaptionShape): string {
+export function breakLines(text: string, shape: CaptionShape, font: CaptionLineFont = {}): string {
   if (shape.length !== 'fixed' || shape.lines !== 2) return text
   const words = text.split(/\s+/).filter(Boolean)
   if (words.length < 2 || words.join(' ').length <= shape.charsPerLine) return words.join(' ')
+  const cased = (t: string): string =>
+    font.textCase === 'upper' ? t.toUpperCase() : font.textCase === 'lower' ? t.toLowerCase() : t
+  // Per 1000 px of font: only which line is wider matters, not the size.
+  const wide = (part: readonly string[]): number => captionTextWidthPx(cased(part.join(' ')), 1000, font.fontFamily)
   let best = 1
-  let bestLen = Infinity
+  let bestW = Infinity
   for (let i = 1; i < words.length; i++) {
-    const longer = Math.max(words.slice(0, i).join(' ').length, words.slice(i).join(' ').length)
+    const longer = Math.max(wide(words.slice(0, i)), wide(words.slice(i)))
     // Ties go to the shorter top line, which reads as the natural pyramid.
-    if (longer < bestLen) {
+    if (longer < bestW - 1e-9) {
       best = i
-      bestLen = longer
+      bestW = longer
     }
   }
   return `${words.slice(0, best).join(' ')}\n${words.slice(best).join(' ')}`
@@ -437,7 +458,10 @@ export function dressCaption(clip: Clip, style: CaptionStyle, seqWidth: number, 
  * still reads exactly as either rule wrote it can be written again in the
  * other. A caption he retyped is his, and stays as he typed it.
  */
-function inStyleCase(clip: Clip, style: Pick<CaptionStyle, 'caseRule' | 'shape'>): { text: string; words?: Clip['captionWords'] } {
+function inStyleCase(
+  clip: Clip,
+  style: Pick<CaptionStyle, 'caseRule' | 'shape' | 'look' | 'refHeight' | 'emphasisColor'>,
+): { text: string; words?: Clip['captionWords'] } {
   const text = clip.title?.text ?? ''
   const origin = clip.captionOrigin?.text
   if (origin === undefined) return { text }
@@ -445,11 +469,19 @@ function inStyleCase(clip: Clip, style: Pick<CaptionStyle, 'caseRule' | 'shape'>
   const rule = style.caseRule ?? 'house'
   const want = captionCase(origin, rule)
   if (flat === want || (flat !== captionCase(origin, 'house') && flat !== captionCase(origin, 'spoken'))) return { text }
-  const next = text.includes('\n') ? breakLines(want, style.shape) : want
+  const next = text.includes('\n') ? breakLines(want, style.shape, captionFontFor(style)) : want
   const tokens = want.split(' ')
   const kept = clip.captionWords
   const words = kept && kept.length === tokens.length ? kept.map((w, i) => ({ ...w, text: tokens[i]! })) : undefined
   return { text: next, words }
+}
+
+/** The clip with its words in the style's case rule (inStyleCase), the same clip when nothing changes. */
+function inStyleClip(clip: Clip, style: CaptionStyle): Clip {
+  if (!clip.title) return clip
+  const cased = inStyleCase(clip, style)
+  if (cased.text === clip.title.text) return clip
+  return { ...clip, title: { ...clip.title, text: cased.text }, ...(cased.words ? { captionWords: cased.words } : {}) }
 }
 
 /** One word read back off a caption clip, and which clip it came from. */
@@ -589,8 +621,21 @@ export function recutCaptions(
   style: CaptionStyle,
   seq: { width: number; height: number; fps: number },
 ): Clip[] {
-  const sorted = clips.filter((c) => c.title).slice().sort((a, b) => a.startS - b.startS)
+  // Each caption in the case the style draws it in BEFORE it is cut, so the
+  // fitter measures the letters that will be drawn. dressCaption puts a style's
+  // case rule on every caption it can (inStyleCase), so "As spoken" on house
+  // captions draws the speech model's capitals, and those are wider: measured
+  // lowercase, a cut that fit could wrap onto a line the style does not have.
+  // Not captionCase on the text, the way a fresh run prepares its words: that
+  // would lowercase a caption he retyped (which keeps his capitals) and could
+  // not bring back capitals the house case already took away.
+  const sorted = clips
+    .filter((c) => c.title)
+    .slice()
+    .sort((a, b) => a.startS - b.startS)
+    .map((c) => inStyleClip(c, style))
   if (sorted.length === 0) return []
+  const font = captionFontFor(style)
   const options = chunkOptionsFor(style.shape, seq.fps, captionFitterFor(style, seq))
   const words = wordsOnScreen(sorted, AUTO_CAPTION_OPTIONS.holdS, options.maxGapS ?? AUTO_CAPTION_OPTIONS.maxGapS)
   const chunks = chunkWords(words, options)
@@ -607,7 +652,7 @@ export function recutCaptions(
     const keepsOrigin = whole && model !== undefined && origins.every((o) => o?.model === model)
     const first = sorted[sources[0] ?? 0]!
     let clip = newTitleClip(
-      captionDefFor(style, breakLines(chunk.text, style.shape), seq.height, chunk.emphasis),
+      captionDefFor(style, breakLines(chunk.text, style.shape, font), seq.height, chunk.emphasis),
       chunk.startS,
       chunk.endS - chunk.startS,
     )

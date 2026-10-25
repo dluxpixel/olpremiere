@@ -78,7 +78,7 @@ function rasterizeTitleForExport(
   outH: number,
 ): OffscreenCanvas {
   if (outH === seqH && outW === seqW) return rasterizeTitle(title, seqW, seqH)
-  return rasterizeTitle(title, outW, outH, outH / seqH)
+  return rasterizeTitle(title, outW, outH, outH / seqH, seqW)
 }
 
 type Accel = 'prefer-hardware' | 'prefer-software' | 'no-preference'

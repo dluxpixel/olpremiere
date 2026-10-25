@@ -7,6 +7,7 @@ import {
   AUTO_SHAPE,
   BUILTIN_CAPTION_STYLES,
   breakLines,
+  captionFontFor,
   captionFitterFor,
   chunkOptionsFor,
   dressCaption,
@@ -238,7 +239,7 @@ export function addCaptionsFromWords(
   // word, and paints it in the style's highlight colour instead.
   clips = clips.map((c) => {
     if (!c.title) return c
-    const lined = breakLines(c.title.text, style.shape)
+    const lined = breakLines(c.title.text, style.shape, captionFontFor(style))
     const withLines = lined === c.title.text ? c : { ...c, title: { ...c.title, text: lined } }
     return dressCaption(withLines, style, seq.width, seq.height)
   })
@@ -404,7 +405,7 @@ function respellCaption(clip: Clip, once: readonly Rewrite[], caseOf: (t: string
   if (!clip.title || !said || said.length !== tokens.length || said.some((w, i) => w.text !== tokens[i])) return null
   const next = respellWords(said, once, caseOf)
   if (!next) return null
-  const text = breakLines(next.map((w) => w.text).join(' '), style.shape)
+  const text = breakLines(next.map((w) => w.text).join(' '), style.shape, clip.title)
   return { ...clip, title: { ...clip.title, text }, captionWords: next }
 }
 
@@ -595,7 +596,7 @@ export function setCaptionText(clipId: string, text: string): boolean {
   if (!track || !clip?.title) return false
   // The panel edits on one line. A caption that was set on two goes back on
   // two, balanced again around what he typed.
-  const next = clip.title.text.includes('\n') && track.captionShape ? breakLines(typed, track.captionShape) : typed
+  const next = clip.title.text.includes('\n') && track.captionShape ? breakLines(typed, track.captionShape, clip.title) : typed
   if (clip.title.text === next) return false
   if (track.locked) {
     useToasts.getState().show('That caption is on a locked track', 'danger')
@@ -663,7 +664,7 @@ export function replaceInCaptions(find: string, replace: string): { replaced: nu
           if (!c.title || next === null) return c
           replaced++
           // A caption set on two lines goes back on two, balanced around the new words.
-          const text = c.title.text.includes('\n') && t.captionShape ? breakLines(next, t.captionShape) : next
+          const text = c.title.text.includes('\n') && t.captionShape ? breakLines(next, t.captionShape, c.title) : next
           return { ...c, title: { ...c.title, text } }
         }),
       }

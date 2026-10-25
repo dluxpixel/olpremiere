@@ -110,6 +110,12 @@ export function titleLayout(
   width: number,
   height: number,
   measure: (s: string) => number,
+  /**
+   * Lines already decided elsewhere, used as they are instead of wrapping here.
+   * rasterizeTitle passes the lines it decided at the SEQUENCE geometry when it
+   * draws at another scale (titleLinesAt), so a preview raster never re-wraps.
+   */
+  given?: readonly string[],
 ): TitleLayout {
   const sidePad = Math.round(width * 0.06)
   const padPx = Math.round(height * 0.06)
@@ -117,10 +123,8 @@ export function titleLayout(
 
   const fontSizeOk = def.fontSizePx > 0
 
-  // Non-destructive case: the typed text stays put; only the drawn glyphs change.
-  const shownText =
-    def.textCase === 'upper' ? def.text.toUpperCase() : def.textCase === 'lower' ? def.text.toLowerCase() : def.text
-  const lines = fontSizeOk ? wrapLinesWith(measure, shownText, maxWidth) : ['']
+  const shownText = shownTextOf(def)
+  const lines = !fontSizeOk ? [''] : given ? [...given] : wrapLinesWith(measure, shownText, maxWidth)
   const hasText = fontSizeOk && shownText !== '' && lines.some((l) => l !== '')
   const lineHeightPx = fontSizeOk ? def.fontSizePx * def.lineHeight : 0
 
@@ -153,6 +157,51 @@ export function titleLayout(
   }
 
   return { sidePad, padPx, maxWidth, lines, hasText, lineHeightPx, firstBaselineY, blockTop, blockH, textW, anchorX }
+}
+
+/** Non-destructive case: the typed text stays put; only the drawn glyphs change. */
+function shownTextOf(def: TitleDef): string {
+  return def.textCase === 'upper' ? def.text.toUpperCase() : def.textCase === 'lower' ? def.text.toLowerCase() : def.text
+}
+
+/**
+ * The lines a title drawn at `scale` into a `width` px raster shows, decided
+ * ONCE at the sequence geometry with the unscaled def, which is exactly what the
+ * export at scale 1 and the caption fitter decide. Undefined at scale 1 on a raster
+ * of the sequence's own width (the raster IS the sequence geometry, so its own wrap
+ * is already that answer) and where there is no measurer.
+ *
+ * Why: scaleTitleDef rounds the font size and titleLayout rounds the side pad in
+ * SCALED px, so a line that just fits at the sequence size (Oswald "AWAKE
+ * DOESN'T REALLY" in the Word box style is 948.7 px on a 950 px Phone line) can
+ * wrap at 0.875 or 0.375 in the monitor and not in the export. Deciding the
+ * breaks here makes the two agree by construction at every scale.
+ *
+ * `seqWidth` is the sequence's own width, which both callers have and pass
+ * (preview.ts frameW, exportWorker.ts seqW). It has to be passed: from the
+ * raster alone the width can only be guessed as round(width / scale), and the
+ * guess is exact only when the raster is a whole number of scale steps wide.
+ * It is off by 1 to 2 px on a width such as 1350 at 0.375 (506 px wide, read
+ * back as 1349), 1366 or 1081, and where an odd sequence height makes the
+ * export scale outH / seqH rather than 1 (1920x1079 read back as 1918). One
+ * px of line width is enough to wrap a caption that sits at the limit. The
+ * guess stays as the fallback for a caller that does not know the width.
+ */
+export function titleLinesAt(
+  def: TitleDef,
+  width: number,
+  scale: number,
+  measureFor: (def: TitleDef) => ((s: string) => number) | null,
+  seqWidth?: number,
+): string[] | undefined {
+  if (!(scale > 0) || !(def.fontSizePx > 0)) return undefined
+  // At scale 1 the raster is the sequence only when it has the sequence's width (evenFit makes 1081 into 1082).
+  if (Math.abs(scale - 1) < 1e-6 && (seqWidth === undefined || seqWidth === width)) return undefined
+  const measure = measureFor(def)
+  if (!measure) return undefined
+  const seqW = seqWidth ?? Math.max(1, Math.round(width / scale))
+  const maxWidth = Math.max(1, seqW - 2 * Math.round(seqW * 0.06))
+  return wrapLinesWith(measure, shownTextOf(def), maxWidth)
 }
 
 /** Left edge of the text block for the current alignment. */
@@ -736,7 +785,7 @@ let cacheBytes = 0
 // eviction from the bounded list MUST delete the matching identity entry, or a
 // word-caption timeline (one title clip per word) retains one canvas per word and
 // CACHE_LIMIT bounds nothing.
-let identityCache = new WeakMap<TitleDef, { w: number; h: number; entry: CacheEntry }>()
+let identityCache = new WeakMap<TitleDef, { w: number; h: number; seqW: number | undefined; entry: CacheEntry }>()
 
 /** Frames counted by beginTitleFrame(). 0 until the first call, which is the preview's case. */
 let frameNo = 0
@@ -800,16 +849,29 @@ export function rasterizeTitle(
    * 1 keeps the old behaviour byte for byte.
    */
   scale = 1,
+  /**
+   * The SEQUENCE width, for a `scale` other than 1 or a raster that is not the
+   * sequence's width (1082 px for a 1081 px sequence): the line width the breaks
+   * are decided at (titleLinesAt) is the sequence's, and a raster of another size
+   * cannot give it back exactly. Both callers know it and pass it.
+   */
+  seqWidth?: number,
 ): OffscreenCanvas {
   const fast = identityCache.get(defIn)
-  if (fast && fast.w === width && fast.h === height) {
+  if (fast && fast.w === width && fast.h === height && fast.seqW === seqWidth) {
     fast.entry.frame = frameNo
     return fast.entry.canvas
   }
   // Everything below reads the SCALED def; the identity cache stays keyed on the
   // caller's original object, which is the one the store holds.
   const def = scaleTitleDef(defIn, scale)
-  const key = cacheKey(def, width, height)
+  // The breaks come from the sequence geometry, not from this raster's rounded
+  // font and pad (titleLinesAt), so the monitor never wraps where the export
+  // does not. They join the key: the same scaled def can only break one way here.
+  // Asked at scale 1 too: an export at 1082 px of a 1081 px sequence has scale 1
+  // and not the sequence's width, and it still has to break at the sequence's.
+  const seqLines = titleLinesAt(defIn, width, scale, canvasMeasurer, seqWidth)
+  const key = seqLines ? `${cacheKey(def, width, height)}|${JSON.stringify(seqLines)}` : cacheKey(def, width, height)
   const hitIdx = cache.findIndex((e) => e.key === key)
   if (hitIdx !== -1) {
     const [hit] = cache.splice(hitIdx, 1)
@@ -819,7 +881,7 @@ export function rasterizeTitle(
     hit.def = defIn
     hit.frame = frameNo
     cache.push(hit) // touch → most-recently-used
-    identityCache.set(defIn, { w: width, h: height, entry: hit })
+    identityCache.set(defIn, { w: width, h: height, seqW: seqWidth, entry: hit })
     return hit.canvas
   }
 
@@ -835,6 +897,7 @@ export function rasterizeTitle(
     width,
     height,
     (str) => ctx.measureText(str).width,
+    seqLines,
   )
 
   // BOX: drawn behind the text. If there is no text but a box is set, draw a
@@ -1044,7 +1107,7 @@ export function rasterizeTitle(
     cacheBytes -= canvasBytes(e.canvas)
     identityCache.delete(e.def)
   }
-  identityCache.set(defIn, { w: width, h: height, entry })
+  identityCache.set(defIn, { w: width, h: height, seqW: seqWidth, entry })
   return canvas
 }
 
