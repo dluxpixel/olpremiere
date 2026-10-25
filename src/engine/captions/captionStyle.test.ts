@@ -3,7 +3,7 @@
 // exactly the captions it made then.
 
 import { describe, expect, it } from 'vitest'
-import { newTitleClip, type Clip, type TitleDef } from '../types'
+import { newTitleClip, scaleTitleDef, type Clip, type TitleDef } from '../types'
 import {
   AUTO_CAPTION_OPTIONS,
   CAPTION_POP_DUR_S,
@@ -20,6 +20,7 @@ import {
   breakLines,
   captionDefFor,
   captionFitterFor,
+  captionFontFor,
   chunkOptionsFor,
   cleanShape,
   cleanStyle,
@@ -33,8 +34,9 @@ import {
   type CaptionStyle,
 } from './captionStyle'
 import { captionLineWidthPx, captionTextWidthPx } from './captionFit'
-import { titleLayout } from '../render/titleRaster'
-import { COMIC_STACK, OSWALD_STACK } from '../render/titleFonts'
+import { titleLayout, titleLinesAt } from '../render/titleRaster'
+import { exportRaster } from '../export/exportPlan'
+import { CAPTION_FONT_STACK, COMIC_STACK, OSWALD_STACK } from '../render/titleFonts'
 import { WORD_POP_COLOR, WORD_POP_SIZE, wordPopTitle } from './wordPop'
 
 const HOUSE = BUILTIN_CAPTION_STYLES[0]!
@@ -127,6 +129,31 @@ describe('two lines', () => {
     expect(breakLines('so i went to the store today', fixed({ charsPerLine: 16, lines: 2 }))).toBe('so i went to\nthe store today')
   })
 
+  it('balances the lines by how wide they draw, so a short word with wide letters goes on the narrower side', () => {
+    const shape = fixed({ charsPerLine: 16, lines: 2 })
+    const text = 'ill ill ill ill MMM'
+    for (const fontFamily of [OSWALD_STACK, CAPTION_FONT_STACK]) {
+      const wide = (t: string): number => captionTextWidthPx(t, 100, fontFamily)
+      // Counted in letters the two best breaks tie at 11 and the tie goes to the shorter top
+      // line, "ill ill" over "ill ill MMM", which puts MMM on the side that was already wider.
+      expect(breakLines(text, shape, { fontFamily }), fontFamily).toBe('ill ill ill\nill MMM')
+      expect(Math.max(wide('ill ill ill'), wide('ill MMM'))).toBeLessThan(Math.max(wide('ill ill'), wide('ill ill MMM')))
+    }
+  })
+
+  it('measures the lines in the case they are drawn in', () => {
+    // In lowercase "mom" is the wide word and goes alone; in capitals ILL is wide too.
+    const shape = fixed({ charsPerLine: 10, lines: 2 })
+    const lower = breakLines('mom ill ill il', shape, { fontFamily: CAPTION_FONT_STACK })
+    const upper = breakLines('mom ill ill il', shape, { fontFamily: CAPTION_FONT_STACK, textCase: 'upper' })
+    expect(lower).toBe('mom\nill ill il')
+    expect(upper).toBe('mom ill\nill il')
+    const widest = (t: string, up: boolean): number =>
+      Math.max(...t.split('\n').map((l) => captionTextWidthPx(up ? l.toUpperCase() : l, 100, CAPTION_FONT_STACK)))
+    expect(widest(upper, true)).toBeLessThan(widest(lower, true))
+    expect(widest(lower, false)).toBeLessThan(widest(upper, false))
+  })
+
   it('leaves one line, a short caption, and the auto length alone', () => {
     expect(breakLines('so i went to the store today', fixed({ charsPerLine: 16, lines: 1 }))).toBe('so i went to the store today')
     expect(breakLines('short one', fixed({ charsPerLine: 16, lines: 2 }))).toBe('short one')
@@ -210,6 +237,35 @@ describe('cutting finished captions again', () => {
     const origins = after.map((c) => c.captionOrigin)
     expect(origins.every((o) => o?.model === 'whisper-small')).toBe(true)
     expect(origins.map((o) => o!.text).join(' ')).toBe(before.map((c) => c.captionOrigin!.text).join(' '))
+  })
+
+  it('measures the capitals an As spoken style puts back, so a recut caption never wraps', () => {
+    const spoken = style({ caseRule: 'spoken', shape: fixed({ maxWords: 3, charsPerLine: 40 }) })
+    const SPEECH = 'Wow We Won'
+    const height = 1920
+    const def = captionDefFor(spoken, '', height)
+    const wide = (t: string): number => captionTextWidthPx(t, def.fontSizePx, def.fontFamily)
+    // The narrowest frame the house lowercase fits across on one line. The capitals do not.
+    let width = 200
+    while (captionLineWidthPx(width) < wide('wow we won')) width++
+    expect(wide(SPEECH)).toBeGreaterThan(captionLineWidthPx(width))
+    const before = captionClips(chunkWords(said(SPEECH), AUTO_CAPTION_OPTIONS), {
+      seqWidth: width,
+      seqHeight: height,
+      model: 'whisper-small',
+    })
+    expect(before.map((c) => c.title!.text).join(' ')).toBe('wow we won')
+
+    const after = recutCaptions(before, spoken, { width, height, fps: 30 })
+    // The style's capitals are what is drawn,
+    expect(after.map((c) => c.title!.text).join(' ')).toBe(SPEECH)
+    // and the cut was made on them, so none of it wraps onto a second line.
+    expect(after.length).toBeGreaterThan(1)
+    for (const c of after) {
+      const t = c.title!
+      const measure = (str: string): number => captionTextWidthPx(str, t.fontSizePx, t.fontFamily)
+      expect(titleLayout(t, width, height, measure).lines, t.text).toHaveLength(1)
+    }
   })
 
   it('cut twice at the same length lands the same captions, not ones that creep later', () => {
@@ -602,6 +658,12 @@ describe('the word pop in a saved look', () => {
 // (captionActions.ts): chunk with the fitter, make the clips, break two line captions, dress
 // them. The width is measured by captionTextWidthPx on both sides, so this test is about
 // where the line breaks; the widths themselves are pinned to Chromium in captionFit.test.ts.
+//
+// The drawn side is drawn the way rasterizeTitle draws it at each scale the monitor and the
+// export use: the def scaled (scaleTitleDef rounds the font), laid out in the scaled raster
+// (titleLayout rounds the side pad), with the breaks titleLinesAt decides at the sequence size.
+// Measured at scale 1 only, the old version of this test could not see the monitor wrap
+// "AWAKE DOESN'T REALLY" in the Word box on the Phone frame while the export kept it on one line.
 describe('what the fitter accepts is what is drawn', () => {
   const FRAMES = [
     { width: 1920, height: 1080, fps: 30 },
@@ -632,12 +694,37 @@ describe('what the fitter accepts is what is drawn', () => {
     }))
   }
 
+  // Every scale a title is rasterized at: the sequence size, the monitor's eighths
+  // (titleRasterScale in preview.ts never goes under 0.25 and is 1 once it would reach it),
+  // and an export at another size (2/3 is 720p from 1080p, 4/3 a larger one).
+  const SCALES = [1, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 2 / 3, 4 / 3]
+  const measureOf =
+    (d: Pick<TitleDef, 'fontSizePx' | 'fontFamily'>) =>
+    (str: string): number =>
+      captionTextWidthPx(str, d.fontSizePx, d.fontFamily)
+
+  /** The lines rasterizeTitle draws this title on in a raster of this size and scale, as preview.ts and exportWorker.ts call it. */
+  const linesIn = (def: TitleDef, seqWidth: number, raster: { width: number; height: number; scale: number }): string[] => {
+    const scaled = scaleTitleDef(def, raster.scale)
+    return titleLayout(scaled, raster.width, raster.height, measureOf(scaled), titleLinesAt(def, raster.width, raster.scale, measureOf, seqWidth)).lines
+  }
+
+  /** The same for a raster sized round(seq * scale), which is how the monitor and a same shape export size it. */
+  const linesAt = (def: TitleDef, seq: { width: number; height: number }, scale: number): string[] =>
+    linesIn(def, seq.width, { width: Math.round(seq.width * scale), height: Math.round(seq.height * scale), scale })
+
+  /** The same, wrapped in the scaled raster itself, which is what the monitor did before. */
+  const rewrappedAt = (def: TitleDef, seq: { width: number; height: number }, scale: number): string[] => {
+    const scaled = scaleTitleDef(def, scale)
+    return titleLayout(scaled, Math.round(seq.width * scale), Math.round(seq.height * scale), measureOf(scaled)).lines
+  }
+
   /** The captions a run makes in this style on this frame, as the title each is drawn from. */
   const drawnTitles = (s: CaptionStyle, seq: { width: number; height: number; fps: number }, words: CaptionWord[]): TitleDef[] => {
     const caseRule = s.caseRule ?? 'house'
     const chunks = chunkWords(words, chunkOptionsFor(s.shape, seq.fps, captionFitterFor(s, seq, (t) => captionCase(t, caseRule))))
     return captionClips(chunks, { seqWidth: seq.width, seqHeight: seq.height, caseRule }).map((c) => {
-      const lined = breakLines(c.title!.text, s.shape)
+      const lined = breakLines(c.title!.text, s.shape, captionFontFor(s))
       const withLines = lined === c.title!.text ? c : { ...c, title: { ...c.title!, text: lined } }
       return dressCaption(withLines, s, seq.width, seq.height).title!
     })
@@ -645,16 +732,18 @@ describe('what the fitter accepts is what is drawn', () => {
 
   for (const s of BUILTIN_CAPTION_STYLES) {
     for (const seq of FRAMES) {
-      it(`${s.name} on ${seq.width}x${seq.height} never draws a caption on more lines than it allows, or past the line`, () => {
+      it(`${s.name} on ${seq.width}x${seq.height} never draws a caption on more lines than it allows, or past the line, at any scale`, () => {
         const allowed = s.shape.length === 'fixed' ? s.shape.lines : 1
         const maxW = captionLineWidthPx(seq.width)
         const titles = drawnTitles(s, seq, speech(300))
         expect(titles.length).toBeGreaterThan(20)
         for (const def of titles) {
-          const measure = (str: string): number => captionTextWidthPx(str, def.fontSizePx, def.fontFamily)
-          const layout = titleLayout(def, seq.width, seq.height, measure)
-          expect(layout.lines.length, JSON.stringify(def.text)).toBeLessThanOrEqual(allowed)
-          for (const line of layout.lines) expect(measure(line), JSON.stringify(line)).toBeLessThanOrEqual(maxW + 1e-6)
+          const measure = measureOf(def)
+          const exported = linesAt(def, seq, 1)
+          expect(exported.length, JSON.stringify(def.text)).toBeLessThanOrEqual(allowed)
+          for (const line of exported) expect(measure(line), JSON.stringify(line)).toBeLessThanOrEqual(maxW + 1e-6)
+          // The monitor and an export at another size break it exactly where the export does.
+          for (const scale of SCALES) expect(linesAt(def, seq, scale), `${JSON.stringify(def.text)} at ${scale}`).toEqual(exported)
         }
       })
     }
@@ -668,27 +757,148 @@ describe('what the fitter accepts is what is drawn', () => {
     }
   })
 
+  it("draws AWAKE DOESN'T REALLY in the Word box on one line in the Phone monitor at every scale, as the export does", () => {
+    const WORD_BOX = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-word-box')!
+    const PHONE = FRAMES[2]!
+    expect(PHONE).toMatchObject({ width: 1080, height: 2112 })
+    const titles = drawnTitles(WORD_BOX, PHONE, said("awake doesn't really"))
+    expect(titles.map((t) => t.text)).toEqual(["awake doesn't really"])
+    for (const scale of SCALES) expect(linesAt(titles[0]!, PHONE, scale), `at ${scale}`).toEqual(["AWAKE DOESN'T REALLY"])
+    // Wrapped in the scaled raster with its rounded font and pad, as the monitor used to,
+    // REALLY went onto a second line at some of these: 948.7 px of the 950 px line is that tight.
+    expect(SCALES.filter((scale) => rewrappedAt(titles[0]!, PHONE, scale).length > 1).length).toBeGreaterThan(0)
+  })
+
+  it('keeps a hard line break at every scale, and wraps nothing more around it', () => {
+    const SUBTITLES = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
+    for (const seq of FRAMES) {
+      const def = captionDefFor(SUBTITLES, 'so i went\nto the store', seq.height)
+      for (const scale of SCALES) expect(linesAt(def, seq, scale), `${seq.width}x${seq.height} at ${scale}`).toEqual(['so i went', 'to the store'])
+    }
+  })
+
+  // The sequence width is passed to titleLinesAt, not read back from the raster. Read back as
+  // round(width / scale) it is off by 1 to 2 px wherever the raster is not a whole number of scale
+  // steps wide (1350 at 0.375 is 506 px, which reads back as 1349; 1366 and 1081 at several scales),
+  // and wherever an odd sequence height makes the export scale outH / seqH (1920x1079 read back as
+  // 1918), and wherever an odd width is exported one px wider at a scale of exactly 1 (1081x1350 is
+  // exported at 1082x1350, which titleLinesAt used to take for the sequence itself). A caption that
+  // sits within those px of the limit then wrapped in the monitor and not in the export, or the
+  // other way about. The export raster is always the one exportRaster gives, for every sequence.
+  describe('a caption at the limit, on a sequence whose width the raster cannot give back', () => {
+    const CAPTION = "AWAKE DOESN'T REALLY"
+    const HOUSE_STYLE = BUILTIN_CAPTION_STYLES[0]!
+    const SEQUENCES = [
+      { width: 1350, height: 1080 },
+      { width: 1366, height: 768 },
+      { width: 1081, height: 1350 },
+      // An odd width with an even height: the export raster is 1082 wide at a scale of exactly 1.
+      { width: 1081, height: 1080 },
+      { width: 1921, height: 1080 },
+      // An odd height: the export raster is the next even height, so its scale is outH / seqH.
+      { width: 1920, height: 1079 },
+      { width: 1366, height: 767 },
+      { width: 1080, height: 2111 },
+    ]
+    /** The scale the old guess read the width back with: round(raster width / scale). */
+    const guessedWidth = (r: { width: number; scale: number }): number => Math.max(1, Math.round(r.width / r.scale))
+
+    for (const seq of SEQUENCES) {
+      it(`${seq.width}x${seq.height}: the monitor and the export break it on the same lines at every raster`, () => {
+        const rasters = SCALES.filter((scale) => scale !== 1).map((scale) => ({
+          label: `monitor at ${scale}`,
+          width: Math.round(seq.width * scale),
+          height: Math.round(seq.height * scale),
+          scale,
+        }))
+        // The export raster, whatever shape it takes: exportRaster rounds the width and the height to
+        // even separately, so 1081x1350 is exported at 1082x1350 with a scale of exactly 1.
+        const out = exportRaster(seq.width, seq.height)
+        rasters.push({ label: `export ${out.width}x${out.height}`, width: out.width, height: out.height, scale: out.height / seq.height })
+
+        let misread = 0
+        for (const raster of rasters) {
+          const trueLimit = captionLineWidthPx(seq.width)
+          const guessedLimit = captionLineWidthPx(guessedWidth(raster))
+          // The caption is sized to draw halfway between the two limits, so it fits one and not
+          // the other (a size such as 71.3 px is fine here: only the break is under test). When
+          // the guess happens to be right it sits just inside the true limit instead.
+          const target = guessedLimit === trueLimit ? trueLimit - 0.5 : (guessedLimit + trueLimit) / 2
+          const base = captionDefFor(HOUSE_STYLE, CAPTION, seq.height)
+          const def: TitleDef = { ...base, fontSizePx: target / captionTextWidthPx(CAPTION, 1, base.fontFamily) }
+          expect(measureOf(def)(CAPTION), raster.label).toBeCloseTo(target, 6)
+
+          // What the export at the sequence size draws, which is also what the fitter decided.
+          const exported = titleLayout(def, seq.width, seq.height, measureOf(def)).lines
+          expect(linesIn(def, seq.width, raster), `${seq.width}x${seq.height}, ${raster.label}`).toEqual(exported)
+
+          if (guessedLimit !== trueLimit) {
+            misread++
+            // Not a test that cannot fail: the guess alone breaks this caption somewhere else.
+            const guessed = scaleTitleDef(def, raster.scale)
+            const guessedLines = titleLayout(guessed, raster.width, raster.height, measureOf(guessed), titleLinesAt(def, raster.width, raster.scale, measureOf)).lines
+            expect(guessedLines, `the guess at ${raster.label}`).not.toEqual(exported)
+          }
+        }
+        // Every one of these sequences has a raster the width is misread on.
+        expect(misread).toBeGreaterThan(0)
+      })
+    }
+  })
+
   describe('a two line caption', () => {
     const SUBTITLES = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
     const SHORT = { width: 1080, height: 1920, fps: 30 }
-    // Flowed as one paragraph these eight words fit two lines, but the balanced break puts
-    // "ody home WWW ody doesn't" (733 px and 252 px) on one side, which wraps when drawn.
+    const font = captionFontFor(SUBTITLES)
+    // Counted in letters, the balanced break of these eight words put "ódy home WWW ódy doesn't"
+    // on one side, which wraps when drawn, so the run had to cut them shorter. Balanced by how
+    // wide the halves draw, both are inside the line.
     const RUN = "diamonds MAMA office ódy home WWW ódy doesn't"
+    const drawnLines = (text: string): string[] => {
+      const def = captionDefFor(SUBTITLES, text, SHORT.height)
+      return titleLayout(def, SHORT.width, SHORT.height, measureOf(def)).lines
+    }
 
-    it('is judged on the two halves that are drawn, not on the words flowed together', () => {
+    it('is broken where both halves draw inside the line', () => {
       expect(SUBTITLES.shape).toMatchObject({ length: 'fixed', lines: 2 })
-      const lined = breakLines(RUN, SUBTITLES.shape)
-      expect(lined).toBe("diamonds MAMA office\nódy home WWW ódy doesn't")
-      const def = captionDefFor(SUBTITLES, lined, SHORT.height)
-      const measure = (str: string): number => captionTextWidthPx(str, def.fontSizePx, def.fontFamily)
-      expect(titleLayout(def, SHORT.width, SHORT.height, measure).lines).toHaveLength(3)
-      expect(captionFitterFor(SUBTITLES, SHORT)(RUN)).toBe(false)
+      const lined = breakLines(RUN, SUBTITLES.shape, font)
+      expect(lined).toBe("diamonds MAMA office ódy\nhome WWW ódy doesn't")
+      expect(drawnLines(lined)).toHaveLength(2)
+      // Where the letter count broke the same words, they draw on three.
+      expect(drawnLines("diamonds MAMA office\nódy home WWW ódy doesn't")).toHaveLength(3)
+      expect(captionFitterFor(SUBTITLES, SHORT)(RUN)).toBe(true)
     })
 
-    it('is cut shorter by the chunker when its halves do not fit, instead of drawn on three lines', () => {
-      const chunks = chunkWords(said(RUN, 0, 0.25), chunkOptionsFor(SUBTITLES.shape, SHORT.fps, captionFitterFor(SUBTITLES, SHORT)))
+    it('is cut shorter by the chunker when it still does not fit once balanced, with no word lost', () => {
+      // Six wide words: the best two way break, "MMMMMM WWWWWW MMMMMM" and "WWWWWW MMMMMM WWWWWW",
+      // is still 1225 and 1313 px a side on a 950 px line, so it would draw on four lines.
+      const WIDE = 'MMMMMM WWWWWW MMMMMM WWWWWW MMMMMM WWWWWW'
+      const fits = captionFitterFor(SUBTITLES, SHORT)
+      expect(drawnLines(breakLines(WIDE, SUBTITLES.shape, font)).length).toBeGreaterThan(2)
+      expect(fits(WIDE)).toBe(false)
+      const chunks = chunkWords(said(WIDE, 0, 0.25), chunkOptionsFor(SUBTITLES.shape, SHORT.fps, fits))
       expect(chunks.length).toBeGreaterThan(1)
-      expect(wordsIn(chunks)).toEqual(RUN.split(' '))
+      expect(wordsIn(chunks)).toEqual(WIDE.split(' '))
+      for (const c of chunks) expect(c.text.trim(), JSON.stringify(c)).not.toBe('')
+    })
+
+    it('never needs more lines than the same words flowed as one paragraph', () => {
+      // Two lines the words flow onto are one of the breaks breakLines weighs, so its pick is
+      // never wider than they are. Counted in letters, that did not hold (the run above).
+      const maxW = captionLineWidthPx(SHORT.width)
+      const words = speech(400).map((w) => w.text)
+      let flowedInTwo = 0
+      for (let at = 0; at + 8 <= words.length; at += 3) {
+        for (let n = 3; n <= 8; n++) {
+          const run = words.slice(at, at + n).join(' ')
+          const def = captionDefFor(SUBTITLES, run, SHORT.height)
+          const flowed = titleLayout(def, SHORT.width, SHORT.height, measureOf(def)).lines
+          if (flowed.length > 2 || flowed.some((l) => measureOf(def)(l) > maxW)) continue
+          flowedInTwo++
+          expect(drawnLines(breakLines(run, SUBTITLES.shape, font)).length, run).toBeLessThanOrEqual(2)
+        }
+      }
+      expect(flowedInTwo).toBeGreaterThan(50)
     })
   })
 })

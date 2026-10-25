@@ -123,8 +123,6 @@ export function stretchPicks(factor: number): void {
  */
 let picked: { channel: AnimChannel; kf: Keyframe }[] | null = null
 
-export const hasCopiedKeyframes = (): boolean => picked !== null
-
 /**
  * Copy the picked diamonds, shape and all.
  *

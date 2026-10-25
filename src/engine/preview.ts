@@ -1264,7 +1264,7 @@ function makeTextureSource(
       const scale = titleRasterScale(frameH)
       return scale === 1
         ? rasterizeTitle(layer.title, frameW, frameH)
-        : rasterizeTitle(layer.title, Math.round(frameW * scale), Math.round(frameH * scale), scale)
+        : rasterizeTitle(layer.title, Math.round(frameW * scale), Math.round(frameH * scale), scale, frameW)
     }
     const asset = assets[layer.assetId]
     if (!asset) return null

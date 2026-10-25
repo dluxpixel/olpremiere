@@ -11,17 +11,6 @@
 // every load would reload forever, burning his machine, so a third death inside a few
 // minutes stops and says so instead.
 
-/** Why Electron says a page's process went away (its `RenderProcessGoneDetails.reason`). */
-export type GoneReason =
-  | 'clean-exit'
-  | 'abnormal-exit'
-  | 'killed'
-  | 'crashed'
-  | 'oom'
-  | 'launch-failed'
-  | 'integrity-failure'
-  | 'memory-eviction'
-
 /** Reloads allowed inside CRASH_WINDOW_MS before the app gives up and says so. */
 export const MAX_RELOADS = 2
 

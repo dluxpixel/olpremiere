@@ -16,7 +16,9 @@
 //
 //   the word being said     its white letters are about 15 percent wider and
 //                           taller at the top of the pop than settled
-//   the words around it     every pixel across their columns is the same in both
+//   the words around it     their white letters are the same pixels in both, with the
+//                           word box ON: its swollen box may sit under them, and the
+//                           letters of every word are drawn over it
 //   the edge of the picture a word pushed against the edge is held back instead of
 //                           growing out of the picture
 //
@@ -47,8 +49,12 @@ type PopReading = {
   words: { a: number; b: number }[]
   /** The popping word's white letters: the box they fill, at the top of the pop and settled. */
   popped: { peak: Ink; settled: Ink }
-  /** For each other word: pixels it holds in its columns, and how many of them differ between the two frames. */
-  neighbours: { index: number; opaque: number; changed: number }[]
+  /**
+   * For each other word, across its columns: the white letter pixels it holds on the settled frame,
+   * how many of them are not the very same pixel on the peak frame (a white pixel that went, came, or
+   * changed colour), and how many other pixels differ (the box swelling under it, which is allowed).
+   */
+  neighbours: { index: number; white: number; changed: number; under: number }[]
   /** Opaque white pixels on the outermost ring of the picture, on each frame. */
   ring: { peak: number; settled: number }
 }
@@ -83,10 +89,11 @@ async function captionTexts(page: Page): Promise<string[]> {
 }
 
 /**
- * Three words on one caption, in white letters with no box, popping 15 percent:
- * the Word box look with its box switched off (the box is drawn over a neighbour
- * at the top of the pop, by design, and this file is about the letters), then the
- * "Pop the word" row switched off and on again so it comes back at its own default.
+ * Three words on one caption, in white letters on the Word box look with its box
+ * left ON, popping 15 percent: at the top of the pop the box swells and reaches
+ * under the words beside it, and the letters of every word are drawn over it. Then
+ * the "Pop the word" row is switched off and on again so it comes back at its own
+ * default.
  */
 async function setUpPopCaption(page: Page): Promise<void> {
   await page.goto('/')
@@ -98,7 +105,8 @@ async function setUpPopCaption(page: Page): Promise<void> {
   await page.getByTestId('captions-style-fold').click()
   await expect(page.getByTestId('caption-style-select')).toBeVisible()
   await page.getByTestId('caption-style-select').selectOption('builtin-word-box')
-  await page.getByTestId('caption-style-word-box').uncheck()
+  // The box stays on: the look as he gets it, and the case this file must prove.
+  await expect(page.getByTestId('caption-style-word-box')).toBeChecked()
 
   await page.getByTestId('caption-style-word-pop-size').uncheck()
   await expect(page.getByTestId('caption-style-word-pop-size-value')).toHaveCount(0)
@@ -223,21 +231,30 @@ async function readPop(
         return ink
       }
 
-      const neighbours: { index: number; opaque: number; changed: number }[] = []
+      // A neighbour's letters are its white pixels. The box of the popping word may sit under them, so a
+      // pixel that is not white on either frame is only counted as "under"; a pixel that is white on
+      // either frame must be the very same white on both.
+      const neighbours: { index: number; white: number; changed: number; under: number }[] = []
       for (let k = 0; k < WORDS; k++) {
         if (k === popIndex) continue
-        let opaque = 0
+        let white = 0
         let changed = 0
+        let under = 0
         for (let y = 0; y < H; y++) {
           for (let x = words[k]!.a; x <= words[k]!.b; x++) {
             const i = (y * W + x) * 4
-            if (settled[i + 3]! > 240) opaque += 1
-            if (peak[i] !== settled[i] || peak[i + 1] !== settled[i + 1] || peak[i + 2] !== settled[i + 2] || peak[i + 3] !== settled[i + 3]) {
-              changed += 1
+            const wp = isWhite(peak, i)
+            const ws = isWhite(settled, i)
+            if (ws) white += 1
+            const same = peak[i] === settled[i] && peak[i + 1] === settled[i + 1] && peak[i + 2] === settled[i + 2] && peak[i + 3] === settled[i + 3]
+            if (wp || ws) {
+              if (wp !== ws || !same) changed += 1
+            } else if (!same) {
+              under += 1
             }
           }
         }
-        neighbours.push({ index: k, opaque, changed })
+        neighbours.push({ index: k, white, changed, under })
       }
 
       const ringWhite = (d: Uint8ClampedArray): number => {
@@ -313,7 +330,7 @@ test('the word being said grows about 15 percent at the top of the pop and every
   console.log(
     `[word pop] ${r.W}x${r.H}, scale ${r.peak.scale} then ${r.settled.scale}, letters ${widthOf(r.popped.settled)}x${heightOf(r.popped.settled)} ` +
       `grow to ${widthOf(r.popped.peak)}x${heightOf(r.popped.peak)} (x${wide.toFixed(3)} wide, x${tall.toFixed(3)} tall), ` +
-      `neighbours ${r.neighbours.map((n) => `${n.index}: ${n.changed} of ${n.opaque} changed`).join(', ')}, ring ${r.ring.peak}/${r.ring.settled}`,
+      `neighbours ${r.neighbours.map((n) => `${n.index}: ${n.changed} of ${n.white} white changed, ${n.under} under`).join(', ')}, ring ${r.ring.peak}/${r.ring.settled}`,
   )
 
   expectRealFont(r)
@@ -329,11 +346,14 @@ test('the word being said grows about 15 percent at the top of the pop and every
   expect(tall, 'the popping word is not about 15 percent taller').toBeGreaterThan(POP - 0.04)
   expect(tall).toBeLessThan(POP + 0.04)
 
-  // And the words either side are the very same pixels in both: only the popping word moved.
+  // And the letters of the words either side are the very same white pixels in both: only the popping
+  // word moved. The box is ON here, so its swollen shape is allowed under them, never over them.
   expect(r.neighbours.map((n) => n.index)).toEqual([0, 2])
   for (const n of r.neighbours) {
-    expect(n.opaque, `word ${n.index} has nothing on the settled frame`).toBeGreaterThan(500)
-    expect(n.changed, `word ${n.index} changed while its neighbour popped`).toBe(0)
+    expect(n.white, `word ${n.index} has no white letters on the settled frame`).toBeGreaterThan(500)
+    expect(n.changed, `a white letter of word ${n.index} changed while its neighbour popped, so the box is drawn over it`).toBe(0)
+    // The box really did swell under this word, or the line above would pass for nothing.
+    expect(n.under, `the swollen box never reached under word ${n.index}`).toBeGreaterThan(0)
   }
 
   // Nothing of the picture is cut at the edge on either frame.

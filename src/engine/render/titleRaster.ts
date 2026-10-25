@@ -110,6 +110,12 @@ export function titleLayout(
   width: number,
   height: number,
   measure: (s: string) => number,
+  /**
+   * Lines already decided elsewhere, used as they are instead of wrapping here.
+   * rasterizeTitle passes the lines it decided at the SEQUENCE geometry when it
+   * draws at another scale (titleLinesAt), so a preview raster never re-wraps.
+   */
+  given?: readonly string[],
 ): TitleLayout {
   const sidePad = Math.round(width * 0.06)
   const padPx = Math.round(height * 0.06)
@@ -117,10 +123,8 @@ export function titleLayout(
 
   const fontSizeOk = def.fontSizePx > 0
 
-  // Non-destructive case: the typed text stays put; only the drawn glyphs change.
-  const shownText =
-    def.textCase === 'upper' ? def.text.toUpperCase() : def.textCase === 'lower' ? def.text.toLowerCase() : def.text
-  const lines = fontSizeOk ? wrapLinesWith(measure, shownText, maxWidth) : ['']
+  const shownText = shownTextOf(def)
+  const lines = !fontSizeOk ? [''] : given ? [...given] : wrapLinesWith(measure, shownText, maxWidth)
   const hasText = fontSizeOk && shownText !== '' && lines.some((l) => l !== '')
   const lineHeightPx = fontSizeOk ? def.fontSizePx * def.lineHeight : 0
 
@@ -155,6 +159,51 @@ export function titleLayout(
   return { sidePad, padPx, maxWidth, lines, hasText, lineHeightPx, firstBaselineY, blockTop, blockH, textW, anchorX }
 }
 
+/** Non-destructive case: the typed text stays put; only the drawn glyphs change. */
+function shownTextOf(def: TitleDef): string {
+  return def.textCase === 'upper' ? def.text.toUpperCase() : def.textCase === 'lower' ? def.text.toLowerCase() : def.text
+}
+
+/**
+ * The lines a title drawn at `scale` into a `width` px raster shows, decided
+ * ONCE at the sequence geometry with the unscaled def, which is exactly what the
+ * export at scale 1 and the caption fitter decide. Undefined at scale 1 on a raster
+ * of the sequence's own width (the raster IS the sequence geometry, so its own wrap
+ * is already that answer) and where there is no measurer.
+ *
+ * Why: scaleTitleDef rounds the font size and titleLayout rounds the side pad in
+ * SCALED px, so a line that just fits at the sequence size (Oswald "AWAKE
+ * DOESN'T REALLY" in the Word box style is 948.7 px on a 950 px Phone line) can
+ * wrap at 0.875 or 0.375 in the monitor and not in the export. Deciding the
+ * breaks here makes the two agree by construction at every scale.
+ *
+ * `seqWidth` is the sequence's own width, which both callers have and pass
+ * (preview.ts frameW, exportWorker.ts seqW). It has to be passed: from the
+ * raster alone the width can only be guessed as round(width / scale), and the
+ * guess is exact only when the raster is a whole number of scale steps wide.
+ * It is off by 1 to 2 px on a width such as 1350 at 0.375 (506 px wide, read
+ * back as 1349), 1366 or 1081, and where an odd sequence height makes the
+ * export scale outH / seqH rather than 1 (1920x1079 read back as 1918). One
+ * px of line width is enough to wrap a caption that sits at the limit. The
+ * guess stays as the fallback for a caller that does not know the width.
+ */
+export function titleLinesAt(
+  def: TitleDef,
+  width: number,
+  scale: number,
+  measureFor: (def: TitleDef) => ((s: string) => number) | null,
+  seqWidth?: number,
+): string[] | undefined {
+  if (!(scale > 0) || !(def.fontSizePx > 0)) return undefined
+  // At scale 1 the raster is the sequence only when it has the sequence's width (evenFit makes 1081 into 1082).
+  if (Math.abs(scale - 1) < 1e-6 && (seqWidth === undefined || seqWidth === width)) return undefined
+  const measure = measureFor(def)
+  if (!measure) return undefined
+  const seqW = seqWidth ?? Math.max(1, Math.round(width / scale))
+  const maxWidth = Math.max(1, seqW - 2 * Math.round(seqW * 0.06))
+  return wrapLinesWith(measure, shownTextOf(def), maxWidth)
+}
+
 /** Left edge of the text block for the current alignment. */
 function textLeftOf(anchorX: number, textW: number, align: TitleDef['align']): number {
   if (align === 'left') return anchorX
@@ -167,8 +216,18 @@ function textLeftOf(anchorX: number, textW: number, align: TitleDef['align']): n
  * screen. A word with none (an emoji, "!!") is matched as itself, lowercased and
  * trimmed, so it still gets its box, its pop and its colour. Empty only when the
  * word itself is empty, and an empty word is skipped.
+ *
+ * Two emoji details. The text and emoji presentation selectors (U+FE0E, U+FE0F)
+ * are dropped, so a heart typed with one and a heart typed without are the same
+ * word. And a keycap (1 then U+FE0F then U+20E3) is its own word and never the
+ * digit it wraps, or a lit 1 would light every keycap and the other way round.
  */
-const bareWord = (w: string): string => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '') || w.toLowerCase().trim()
+const bareWord = (w: string): string => {
+  const lower = w.toLowerCase()
+  const plain = lower.replace(/[\uFE0E\uFE0F]/g, '').trim()
+  if (plain.includes('\u20E3')) return plain
+  return lower.replace(/[^\p{L}\p{N}]/gu, '') || plain
+}
 
 /**
  * The colour each shown word wears, or null for the title's own. Each entry
@@ -482,17 +541,29 @@ function canvasMeasurer(def: TitleDef): ((s: string) => number) | null {
  * Where a word's ink sits, measured on `ctx` (its font already set, textAlign
  * 'left'): from the glyph edges, so a g gets its tail and a Czech Š its accent.
  * Without ink metrics the word's advance stands in.
+ *
+ * An emoji is drawn from a colour font, and some canvases report almost nothing as
+ * its ink: a sliver, or a box that does not hold the picture. A word with no
+ * letter or digit whose ink is under 0.3 of its own advance wide is taken as the
+ * advance instead, so its box and its pop are not built round a sliver. "!!" is
+ * such a word too, but its bounds are sane (a good part of its advance), so it
+ * keeps its tight ink. A keycap (a digit, # or * with the keycap mark, 1 then
+ * U+FE0F then U+20E3) is an emoji although it holds a digit, so the keycap is taken
+ * out before that test: the digit in it does not save it from the fallback.
  */
-function inkOfIn(ctx: OffscreenCanvasRenderingContext2D, word: string): WordInk {
+export function inkOfIn(ctx: Pick<OffscreenCanvasRenderingContext2D, 'measureText'>, word: string): WordInk {
   const m = ctx.measureText(word)
-  return Number.isFinite(m.actualBoundingBoxLeft) && Number.isFinite(m.actualBoundingBoxRight)
-    ? {
-        left: -m.actualBoundingBoxLeft,
-        right: m.actualBoundingBoxRight,
-        ...(Number.isFinite(m.actualBoundingBoxAscent) ? { ascent: m.actualBoundingBoxAscent } : {}),
-        ...(Number.isFinite(m.actualBoundingBoxDescent) ? { descent: m.actualBoundingBoxDescent } : {}),
-      }
-    : { left: 0, right: m.width }
+  if (!Number.isFinite(m.actualBoundingBoxLeft) || !Number.isFinite(m.actualBoundingBoxRight)) {
+    return { left: 0, right: m.width }
+  }
+  const vertical = {
+    ...(Number.isFinite(m.actualBoundingBoxAscent) ? { ascent: m.actualBoundingBoxAscent } : {}),
+    ...(Number.isFinite(m.actualBoundingBoxDescent) ? { descent: m.actualBoundingBoxDescent } : {}),
+  }
+  const left = -m.actualBoundingBoxLeft
+  const right = m.actualBoundingBoxRight
+  if (!/[\p{L}\p{N}]/u.test(word.replace(/[0-9#*]\uFE0F?\u20E3/g, '')) && right - left < 0.3 * m.width) return { left: 0, right: m.width, ...vertical }
+  return { left, right, ...vertical }
 }
 
 /** The face's cap height at the title's size, measured on `ctx`; the usual 0.70 em where it cannot be. */
@@ -714,7 +785,7 @@ let cacheBytes = 0
 // eviction from the bounded list MUST delete the matching identity entry, or a
 // word-caption timeline (one title clip per word) retains one canvas per word and
 // CACHE_LIMIT bounds nothing.
-let identityCache = new WeakMap<TitleDef, { w: number; h: number; entry: CacheEntry }>()
+let identityCache = new WeakMap<TitleDef, { w: number; h: number; seqW: number | undefined; entry: CacheEntry }>()
 
 /** Frames counted by beginTitleFrame(). 0 until the first call, which is the preview's case. */
 let frameNo = 0
@@ -778,16 +849,29 @@ export function rasterizeTitle(
    * 1 keeps the old behaviour byte for byte.
    */
   scale = 1,
+  /**
+   * The SEQUENCE width, for a `scale` other than 1 or a raster that is not the
+   * sequence's width (1082 px for a 1081 px sequence): the line width the breaks
+   * are decided at (titleLinesAt) is the sequence's, and a raster of another size
+   * cannot give it back exactly. Both callers know it and pass it.
+   */
+  seqWidth?: number,
 ): OffscreenCanvas {
   const fast = identityCache.get(defIn)
-  if (fast && fast.w === width && fast.h === height) {
+  if (fast && fast.w === width && fast.h === height && fast.seqW === seqWidth) {
     fast.entry.frame = frameNo
     return fast.entry.canvas
   }
   // Everything below reads the SCALED def; the identity cache stays keyed on the
   // caller's original object, which is the one the store holds.
   const def = scaleTitleDef(defIn, scale)
-  const key = cacheKey(def, width, height)
+  // The breaks come from the sequence geometry, not from this raster's rounded
+  // font and pad (titleLinesAt), so the monitor never wraps where the export
+  // does not. They join the key: the same scaled def can only break one way here.
+  // Asked at scale 1 too: an export at 1082 px of a 1081 px sequence has scale 1
+  // and not the sequence's width, and it still has to break at the sequence's.
+  const seqLines = titleLinesAt(defIn, width, scale, canvasMeasurer, seqWidth)
+  const key = seqLines ? `${cacheKey(def, width, height)}|${JSON.stringify(seqLines)}` : cacheKey(def, width, height)
   const hitIdx = cache.findIndex((e) => e.key === key)
   if (hitIdx !== -1) {
     const [hit] = cache.splice(hitIdx, 1)
@@ -797,7 +881,7 @@ export function rasterizeTitle(
     hit.def = defIn
     hit.frame = frameNo
     cache.push(hit) // touch → most-recently-used
-    identityCache.set(defIn, { w: width, h: height, entry: hit })
+    identityCache.set(defIn, { w: width, h: height, seqW: seqWidth, entry: hit })
     return hit.canvas
   }
 
@@ -813,6 +897,7 @@ export function rasterizeTitle(
     width,
     height,
     (str) => ctx.measureText(str).width,
+    seqLines,
   )
 
   // BOX: drawn behind the text. If there is no text but a box is set, draw a
@@ -906,8 +991,9 @@ export function rasterizeTitle(
     )
     ctx.textAlign = def.align
     if (rect && rect.x < width && rect.x + rect.w > 0 && rect.y < height && rect.y + rect.h > 0) {
-      // The box of the word that is popping pops with it, and is drawn with it
-      // after the other words; any other box stays behind the text as it was.
+      // The box of the word that is popping pops with it, and is held back to be
+      // drawn grown, under every word, by the word-by-word pass; any other box
+      // stays behind the text as it was.
       if (popPlace && locateWord(lines, def.boxWord)?.index === popPlace.index) focusBox = rect
       else drawWordBox(ctx, rect, def.wordBox)
     }
@@ -1021,7 +1107,7 @@ export function rasterizeTitle(
     cacheBytes -= canvasBytes(e.canvas)
     identityCache.delete(e.def)
   }
-  identityCache.set(defIn, { w: width, h: height, entry })
+  identityCache.set(defIn, { w: width, h: height, seqW: seqWidth, entry })
   return canvas
 }
 
@@ -1056,10 +1142,11 @@ function drawWordBox(
  * The text of a title that pops its words, one word at a time. Every word is
  * drawn at the place the whole line gives it, in the order the whole line is
  * drawn (outlines, then fills), so the words that are not popping are the same
- * pixels on every frame. The popping word, and its box, are drawn last, grown
- * about their own centre by `focus.scale` (less where it would leave the canvas).
- * Fill, outline and shadow grow with it; the shadow is scaled by hand because
- * a canvas shadow ignores the transform.
+ * pixels on every frame. The popping word's box goes down first and its letters
+ * last, both grown about their own centre by `focus.scale` (less where it would
+ * leave the canvas): the box sits under every word, the letters over them.
+ * Fill, outline and shadow grow with the letters; the shadow is scaled by hand
+ * because a canvas shadow ignores the transform.
  */
 function drawWordsOneByOne(
   ctx: OffscreenCanvasRenderingContext2D,
@@ -1102,6 +1189,28 @@ function drawWordsOneByOne(
 
   ctx.textAlign = 'left'
 
+  // Everything that grows with the popped word must stay inside the canvas, so the
+  // scale is fitted to the footprint: the ink, half the outline, the shadow's
+  // reach, the box and its thin edge. It is worked out first because the box,
+  // which grows too, goes down before any word is drawn.
+  let grow: { cx: number; cy: number; k: number } | null = null
+  if (focus && popped) {
+    const { cx, cy, ext } = popFootprint(def, popped, inkOfIn(ctx, popped.text), capHeightIn(ctx, def), focusBox)
+    grow = { cx, cy, k: fitScaleAbout(cx, cy, ext, width, height, focus.scale) }
+  }
+
+  // The popping word's box goes down FIRST, grown about its own centre, so that
+  // where it grows over a neighbour it sits under that word's letters. Drawn after
+  // them it covered the letters it grew over.
+  if (grow && focusBox && def.wordBox) {
+    ctx.save()
+    ctx.translate(grow.cx, grow.cy)
+    ctx.scale(grow.k, grow.k)
+    ctx.translate(-grow.cx, -grow.cy)
+    drawWordBox(ctx, focusBox, def.wordBox)
+    ctx.restore()
+  }
+
   // The other words: the outline is the bottom layer and casts the shadow, the
   // fills land on top of it, as they do when the line is drawn whole.
   const others = slots.filter((s) => s !== popped)
@@ -1117,17 +1226,12 @@ function drawWordsOneByOne(
   }
   clearShadow()
 
-  if (focus && popped) {
-    // Everything that grows with it must stay inside the canvas, so the scale is
-    // fitted to the footprint: the ink, half the outline, the shadow's reach, the box and its thin edge.
-    const { cx, cy, ext } = popFootprint(def, popped, inkOfIn(ctx, popped.text), capHeightIn(ctx, def), focusBox)
-    const k = fitScaleAbout(cx, cy, ext, width, height, focus.scale)
-
+  if (grow && popped) {
+    const { cx, cy, k } = grow
     ctx.save()
     ctx.translate(cx, cy)
     ctx.scale(k, k)
     ctx.translate(-cx, -cy)
-    if (focusBox && def.wordBox) drawWordBox(ctx, focusBox, def.wordBox)
     setShadow(k)
     if (hasOutline) {
       setStroke()

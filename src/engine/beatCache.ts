@@ -122,9 +122,3 @@ export async function ensureBeats(asset: MediaAsset, inS: number, outS: number):
 export function forgetBeats(assetId: string): void {
   for (const k of [...cache.keys()]) if (k.startsWith(`${assetId}|`)) cache.delete(k)
 }
-
-/** Forget everything. For tests, and for a project close. */
-export function clearBeatCache(): void {
-  cache.clear()
-  inFlight.clear()
-}

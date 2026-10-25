@@ -292,19 +292,7 @@ export async function flushOutgoing(always = false): Promise<boolean> {
   }
 }
 
-/** How the last switch went: how long it took and what it let go of. */
-export interface SwitchStats {
-  id: Id
-  ms: number
-  released: Released
-  keptHistory: boolean
-}
-let lastSwitch: SwitchStats | null = null
-export const lastSwitchStats = (): SwitchStats | null => lastSwitch
-
 export type SwitchResult = 'ok' | 'refused' | 'missing'
-
-const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
 /**
  * Open `target` in its tab: focus it when it is already open, wake it when it is
@@ -329,7 +317,6 @@ export async function switchTo(
   // Claimed BEFORE the first await, or two quick clicks both get past the check
   // above and wake two edits over each other.
   useEditTabs.setState({ waking: id })
-  const t0 = now()
   try {
     const busy = await whatKeepsThisEditOpen()
     if (busy) {
@@ -348,10 +335,9 @@ export async function switchTo(
     }
     // An edit he made while that was loading is written too, before it is let go.
     if (!(await flushOutgoing())) return 'refused'
-    const { asleep: mem, released } = adopt(p)
+    const { asleep: mem } = adopt(p)
     if (typeof target === 'string') void rememberOpenProject(p.id).catch(() => undefined)
     if (mem) restoreScroll(mem.view)
-    lastSwitch = { id, ms: Math.round(now() - t0), released, keptHistory: !!mem && mem.savedAt === p.updatedAt }
     if (opts.announce) useToasts.getState().show(`Opened “${p.name}”`, 'success')
     return 'ok'
   } finally {
@@ -468,7 +454,6 @@ export async function reconcileEditTabs(): Promise<void> {
 /** Test seam: an empty strip and no sleeping tabs. */
 export function resetEditTabsForTests(): void {
   asleep.clear()
-  lastSwitch = null
   useEditTabs.setState({ tabs: [], waking: null })
 }
 

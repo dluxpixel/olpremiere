@@ -665,10 +665,20 @@ function putOnFrames(chunks: CaptionChunk[], fps: number, minDurS: number, gapS:
   }
 }
 
+/** One visible character is one grapheme: a family emoji is one, though it is eleven UTF-16 units long. */
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+/** How many characters a person sees in `s` (an emoji, with its skin tone or joiners, counts once). */
+function graphemeCount(s: string): number {
+  return Array.from(GRAPHEMES.segment(s)).length
+}
+
 /**
  * Manual mode (no transcription): spread the words of a text across a time
  * window, weighted by word length so long words get more screen time. A word
  * wrapped in *asterisks* is an emphasis keyword (the asterisks are stripped).
+ * Length is counted in visible characters, so one emoji weighs the same
+ * whether it is a single code point or a joined family of four.
  */
 export function spreadWords(text: string, startS: number, durationS: number): CaptionWord[] {
   const tokens = text.split(/\s+/).filter(Boolean)
@@ -677,7 +687,7 @@ export function spreadWords(text: string, startS: number, durationS: number): Ca
     const emphasis = /^\*.+\*$/.test(t)
     return { text: emphasis ? t.slice(1, -1) : t, emphasis }
   })
-  const weights = parsed.map((p) => p.text.length + 2)
+  const weights = parsed.map((p) => graphemeCount(p.text) + 2)
   const total = weights.reduce((a, b) => a + b, 0)
   const words: CaptionWord[] = []
   let t = startS

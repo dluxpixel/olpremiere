@@ -175,6 +175,25 @@ describe('spreadWords', () => {
     expect(durB).toBeGreaterThan(durA)
   })
 
+  it('weighs an emoji by what is seen, not by its UTF-16 length', () => {
+    const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}' // four people joined: 11 units, one character
+    const fire = '\u{1F525}' // 2 units, one character
+    expect(family.length).toBeGreaterThan(fire.length)
+    const words = spreadWords(`${family} ${fire}`, 0, 4)
+    const dur = (i: number) => words[i].endS - words[i].startS
+    expect(dur(0)).toBeCloseTo(dur(1), 9)
+    expect(dur(0)).toBeCloseTo(2, 9)
+    // A skin tone, a flag and a heart with its emoji selector are one each as well.
+    const same = spreadWords('\u{1F44D}\u{1F3FD} \u{1F1E8}\u{1F1FF} ❤\uFE0F \u{1F525}', 0, 8)
+    for (const w of same) expect(w.endS - w.startS).toBeCloseTo(2, 9)
+  })
+
+  it('leaves plain words weighing their letters plus two, as before', () => {
+    // 'ab' = 4, 'abcdef' = 8, 'Český' = 7 (precomposed, one unit a letter): 19 in all.
+    const words = spreadWords('ab abcdef Český', 0, 19)
+    expect(words.map((w) => +(w.endS - w.startS).toFixed(9))).toEqual([4, 8, 7])
+  })
+
   it('parses *asterisk* emphasis markers and strips them', () => {
     const words = spreadWords('the *boom* lands', 0, 3)
     expect(words.map((x) => x.text)).toEqual(['the', 'boom', 'lands'])

@@ -7,7 +7,8 @@
 // (`wordColors`). The word being said is lit in colour and, with the Word box,
 // boxed, and with the size pop (`title.wordPopSize`, the peak, 1.15 is 15 percent
 // bigger) it swells and settles back in a fifth of a second from the moment it
-// starts: `popScaleAt` is that curve, and the size at this frame is handed to
+// starts (a word shorter than that squeezes the pop to fit, so it is back to its
+// own size when the next word starts or the caption ends): `popScaleAt` is that curve, and the size at this frame is handed to
 // the rasterizer as `popWord`. The colour and the size each work alone.
 //
 // The word box (his ask, 2026-10-19, off a frame of a Short) rides on the same
@@ -52,17 +53,30 @@ export interface PopWord {
  * exactly 1 from a fifth of a second on. A word he leaned on (`emphasis`) peaks a
  * third higher: 1 + (peak - 1) * 4/3. A peak of 1 or less, or not a number, is no
  * pop at all. Pure, and the only place the curve lives.
+ *
+ * `spanS` is how long the word has before the next one starts (the next start
+ * minus this start, or for the last word the caption's end minus its start; leave
+ * it out for no limit). A span of zero or less is no pop at all. A word
+ * shorter than the fifth of a second the pop takes would be cut off mid swell and
+ * snap back to 1 as the next word began, so for it the rise and the settle are both
+ * squeezed by span / 0.2, and the word is exactly 1 again when the next one starts.
+ * The curve stays continuous, and a word of a fifth of a second or more is untouched.
  */
-export function popScaleAt(dtS: number, peak: number, emphasis = false): number {
+export function popScaleAt(dtS: number, peak: number, emphasis = false, spanS = Infinity): number {
   if (!(peak > 1) || !Number.isFinite(peak) || !(dtS >= 0)) return 1
-  if (dtS >= POP_RISE_S + POP_SETTLE_S) return 1
+  // The share of the full pop this word has room for; none at all with no time.
+  const room = spanS >= POP_RISE_S + POP_SETTLE_S ? 1 : spanS > 0 ? spanS / (POP_RISE_S + POP_SETTLE_S) : 0
+  if (room === 0) return 1
+  const rise = POP_RISE_S * room
+  const settle = POP_SETTLE_S * room
+  if (dtS >= rise + settle || dtS >= spanS) return 1
   const top = emphasis ? 1 + (peak - 1) * POP_EMPHASIS_BOOST : peak
   const swell = top - 1
-  if (dtS <= POP_RISE_S) {
-    const u = dtS / POP_RISE_S
+  if (dtS <= rise) {
+    const u = dtS / rise
     return 1 + swell * (1 - Math.pow(1 - u, 3))
   }
-  const u = (dtS - POP_RISE_S) / POP_SETTLE_S
+  const u = (dtS - rise) / settle
   return 1 + swell * (1 - (1 - Math.cos(Math.PI * u)) / 2)
 }
 
@@ -90,6 +104,18 @@ export function activeWordAt(words: readonly { startS: number; endS: number }[],
     }
   }
   return best
+}
+
+/**
+ * How long `word` has before the next word starts: the nearest later start minus
+ * its own. The last word has no next one, so it gives way to the end of the caption
+ * (`endS`, the clip's out point in the same content time) instead; Infinity when
+ * that is not a finite number. Zero or negative for a word at or past the end.
+ */
+function spanOf(words: readonly PopWord[], word: PopWord, endS: number): number {
+  let next = Number.isFinite(endS) ? endS : Infinity
+  for (const w of words) if (w.startS > word.startS && w.startS < next) next = w.startS
+  return next - word.startS
 }
 
 interface WordsMemo {
@@ -186,8 +212,11 @@ export function wordPopTitle(clip: Clip, sourceTimeS: number): TitleDef | undefi
   if (at < 0) return title
   const word = words[at]!
   const pop = title.wordPop
-  // The size this frame, in whole SCALE_STEPs above 1 (0 is "not popped now").
-  const steps = peak ? Math.round((popScaleAt(sourceTimeS - word.startS, peak, word.emphasis) - 1) / SCALE_STEP) : 0
+  // The size this frame, in whole SCALE_STEPs above 1 (0 is "not popped now"). A word
+  // shorter than the pop is squeezed to fit before the next word starts (popScaleAt).
+  const steps = peak
+    ? Math.round((popScaleAt(sourceTimeS - word.startS, peak, word.emphasis, spanOf(words, word, clip.outS)) - 1) / SCALE_STEP)
+    : 0
   // A size pop alone, between pops: nothing differs from the plain title, so hand it back as it is.
   if (steps <= 0 && !pop && !title.wordBox) return title
   // One state per word and step, not one per frame, so frames that look the same hit the same raster.
