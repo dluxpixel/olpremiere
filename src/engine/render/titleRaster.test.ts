@@ -182,7 +182,7 @@ describe('words in their own colour', () => {
   it('lights each emoji sequence as itself: a skin tone, a joined family, a flag, a heart, a keycap', () => {
     const sequences = [
       '\u{1F44D}\u{1F3FD}', // thumbs up, medium skin tone
-      '\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}', // family of four, joined
+      '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}', // family of four, joined
       '\u{1F1E8}\u{1F1FF}', // flag of Czechia
       '❤\uFE0F', // red heart with its emoji selector
       '1\uFE0F\u20E3', // keycap one
@@ -449,7 +449,7 @@ describe('where a word ink sits (inkOfIn)', () => {
     expect(inkOfIn(sliver, '7\u20E3')).toEqual({ left: 0, right: 40, ascent: 28, descent: 4 })
     // Nothing at all reported (a box of no width) is the same.
     const empty = meter({ width: 40, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 0, actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 })
-    expect(inkOfIn(empty, '\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}')).toEqual({ left: 0, right: 40, ascent: 0, descent: 0 })
+    expect(inkOfIn(empty, '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}')).toEqual({ left: 0, right: 40, ascent: 0, descent: 0 })
   })
 
   it('keeps the ink of an emoji whose bounds are sane, and of "!!" (a tight ink on a short mark)', () => {

@@ -8,7 +8,7 @@
 // boxed, and with the size pop (`title.wordPopSize`, the peak, 1.15 is 15 percent
 // bigger) it swells and settles back in a fifth of a second from the moment it
 // starts (a word shorter than that squeezes the pop to fit, so it is back to its
-// own size when the next word starts): `popScaleAt` is that curve, and the size at this frame is handed to
+// own size when the next word starts or the caption ends): `popScaleAt` is that curve, and the size at this frame is handed to
 // the rasterizer as `popWord`. The colour and the size each work alone.
 //
 // The word box (his ask, 2026-10-19, off a frame of a Short) rides on the same

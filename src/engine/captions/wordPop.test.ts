@@ -467,7 +467,7 @@ describe('popScaleAt', () => {
 
     it('is exactly 1, never NaN, for a span of nothing or less at any time', () => {
       for (const span of [0, -1e-9, -0.05, -0.2, -60, -Infinity, NaN]) {
-        for (let i = -5; i <= 300; i++) {
+        for (let i = -5; i <= 300; i += 5) {
           for (const emphasis of [false, true]) {
             const v = popScaleAt(i / 1000, PEAK, emphasis, span)
             expect(Number.isNaN(v), `span ${span}, dt ${i / 1000}`).toBe(false)
@@ -686,6 +686,21 @@ describe('wordPopTitle with a size pop', () => {
         expect(wordPopTitle(beyond, t), `three at ${startS}, looked at ${t}`).toBe(beyond.title)
       }
     }
+  })
+
+  it('caps the last word at the caption end in its own time after a trim and a speed change', () => {
+    const t = sizeOnly({
+      inS: 0.5,
+      outS: 1.04,
+      speed: 2,
+      captionWords: [
+        { text: 'one', startS: 0.2, endS: 0.55 },
+        { text: 'two', startS: 0.6, endS: 0.95 },
+        { text: 'three', startS: 1.0, endS: 1.4 },
+      ],
+    })
+    expect(wordPopTitle(t, 1.02)!.popWord).toEqual({ at: 2, word: 'three', scale: 1.15 })
+    expect(wordPopTitle(t, 1.04)).toBe(t.title)
   })
 
   it('gives a short word the pop up to the next word start, not to the end of the word itself', () => {

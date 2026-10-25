@@ -176,7 +176,7 @@ describe('spreadWords', () => {
   })
 
   it('weighs an emoji by what is seen, not by its UTF-16 length', () => {
-    const family = '\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}' // four people joined: 11 units, one character
+    const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}' // four people joined: 11 units, one character
     const fire = '\u{1F525}' // 2 units, one character
     expect(family.length).toBeGreaterThan(fire.length)
     const words = spreadWords(`${family} ${fire}`, 0, 4)
