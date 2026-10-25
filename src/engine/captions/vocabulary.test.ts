@@ -180,7 +180,7 @@ describe('applyRewrites', () => {
   })
 
   // A merged word is the aligner's only if every word it covers was (the rule of
-  // withAligned in transcribe.ts). Taking the first word's flag alone called a mix
+  // withAligned, withAligned.ts, which transcribe.ts uses too). Taking the first word's flag alone called a mix
   // aligned, and the lag correction then left the recogniser's half uncorrected.
   describe('the aligned flag of the word it makes', () => {
     const al = (text: string, startS: number, endS: number, aligned?: boolean) => ({ text, startS, endS, ...(aligned === undefined ? {} : { aligned }) })

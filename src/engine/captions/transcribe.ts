@@ -9,6 +9,7 @@ import type { Clip, MediaAsset } from '../types'
 import type { CaptionWord } from './captions'
 import { getCaptionLanguage, modelFor, type CaptionLanguage } from './transcribeConfig'
 import type { TranscribeRequest, TranscribeResponse } from './transcribeWorker'
+import { withAligned } from './withAligned'
 
 /** Whisper's feature-extractor input rate. */
 export const TRANSCRIBE_SAMPLE_RATE = 16000
@@ -32,20 +33,6 @@ export interface AsrChunk {
   timestamp: [number, number | null]
   /** The aligner timed this word (transcribeWorker.ts); absent when it did not. */
   aligned?: boolean
-}
-
-/**
- * A word made of several is the aligner's only if EVERY part was. A number cut in
- * two ("30" and ",000") or a stretched loop mixes times from two sources, and
- * calling the mix aligned would hide the recogniser's half from the lag correction.
- * The key is left off rather than set false, so words the aligner never touched
- * compare equal to what they were before it existed.
- */
-function withAligned<T extends TranscribedWord>(word: T, parts: readonly TranscribedWord[]): T {
-  const out: TranscribedWord = { ...word }
-  if (parts.every((p) => p.aligned === true)) out.aligned = true
-  else delete out.aligned
-  return out as T
 }
 
 /**
@@ -630,8 +617,10 @@ const gpuFailures = new Map<string, number>()
  * budget would be tested first.
  *
  * The word timing model (alignRunner.ts) runs inside this budget, so every wait
- * it has is shorter than the floor; both numbers are exported for the test that
- * pins that.
+ * it has ends first: the load, the vocabulary and a GPU window are shorter than
+ * the floor, and a window on the CPU gets 40 s plus 10 s per second of its slice,
+ * which is under this budget because a slice is never longer than the recording.
+ * Both numbers are exported for the test that pins that.
  */
 export const LISTEN_FLOOR_MS = 60_000
 export const LISTEN_MS_PER_AUDIO_SECOND = 10_000
