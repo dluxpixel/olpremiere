@@ -86,7 +86,9 @@ const MIN_SLICE = 1600
 // that can be longer than the floor, because the CPU really is that slow; it grows
 // with the slice instead (windowDeadlineMs) and the watchdog grows with the
 // recording, so it still ends first. alignRunner.test.ts pins all of it against
-// the watchdog's numbers.
+// the watchdog's numbers. The one wait no timer here can end is a wasm run that
+// never returns: it holds the worker's event loop (see ALIGN_WASM_MS_PER_SECOND),
+// so only the watchdog ends that one.
 
 /** A model load that has gone this long without one download report is stalled. Each report starts the count again, so a slow download that keeps moving is let be. */
 export const ALIGN_LOAD_STALL_MS = 40_000
