@@ -129,6 +129,19 @@ describe('snapOnsetsToVoice', () => {
     const out = snapOnsetsToVoice(words, track(3, [[1.0, 1.5]]))
     expect(spans(out)).toEqual(spans(words))
   })
+
+  it('keeps the start of a word the aligner timed, and still ends the word before it where his voice went off', () => {
+    // The same breath as the first test, but "there" was timed against the sound.
+    const out = snapOnsetsToVoice([w('hi', 0.2, 0.6), { ...w('there', 1.08, 1.5), aligned: true }], track(3, [[0.2, 0.55], [1.0, 1.5]]))
+    expect(out[1]!.startS).toBe(1.08)
+    expect(out[1]!.aligned).toBe(true)
+    expect(out[0]!.endS).toBeCloseTo(0.55, 6)
+  })
+
+  it('keeps the start of an aligned word that begins in the quiet too', () => {
+    const out = snapOnsetsToVoice([{ ...w('there', 0.9, 1.5), aligned: true }], track(3, [[1.05, 1.5]]))
+    expect(out[0]!.startS).toBe(0.9)
+  })
 })
 
 /** Loudness per 10 ms: `level` dB everywhere, with dips to `dipDb` at the given times. */

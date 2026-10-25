@@ -421,6 +421,16 @@ export const PAUSE_MIN_S = 0.3
  * And if the detector hears his voice in fewer than half of the clip's words,
  * it is not hearing this voice well enough to say where any word stops, so
  * every word goes back exactly as the recogniser heard it.
+ *
+ * ⛔ A WORD THE ALIGNER TIMED KEEPS ITS START; ITS END IS STILL CUT. The two
+ * START moves above (the clip's first word, and the word after a pause) are
+ * for a recogniser that starts words early inside the quiet. An aligned word's
+ * start is read off the sound, and on the phrase starts after a pause in the
+ * synthetic speech (true onsets known, n=52, within 50 ms) the aligner alone
+ * was right 96.2% of the time and with this move on top 80.8%. The END moves
+ * stay: the aligner's end is the last frame of the last letter, which is
+ * early or late by a word's tail, and the trim lifted the ends before a pause
+ * (within 50 ms of the end of the sound) from 43.8% to 58.3% (n=48).
  */
 export function trimWordsToVoice<T extends TranscribedWord>(words: readonly T[], track: VoiceTrack): T[] {
   const out: T[] = words.map((w) => ({ ...w }))
@@ -465,7 +475,7 @@ export function trimWordsToVoice<T extends TranscribedWord>(words: readonly T[],
     const to = frameEnd(first.endS)
     while (f < to && !voiced(f)) f++
     const voiceS = timeOf(f)
-    if (f < to && voiceS - first.startS >= PAUSE_MIN_S - 1e-9 && voiceS < startAfter(0)) first.startS = voiceS
+    if (!first.aligned && f < to && voiceS - first.startS >= PAUSE_MIN_S - 1e-9 && voiceS < startAfter(0)) first.startS = voiceS
   }
 
   for (let k = 0; k + 1 < order.length; k++) {
@@ -496,7 +506,7 @@ export function trimWordsToVoice<T extends TranscribedWord>(words: readonly T[],
     // word can be squeezed to nothing. Checked anyway: losing a word is the one
     // thing this pipeline may never do.
     if (pause.fromS > a.startS) a.endS = Math.min(a.endS, pause.fromS)
-    if (pause.toS < b.endS && pause.toS < startAfter(k + 1)) b.startS = Math.max(b.startS, pause.toS)
+    if (!b.aligned && pause.toS < b.endS && pause.toS < startAfter(k + 1)) b.startS = Math.max(b.startS, pause.toS)
   }
 
   // The clip's last word, padded through the quiet after he stops.

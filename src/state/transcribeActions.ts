@@ -403,6 +403,23 @@ async function hearClip(clip: Clip, asset: MediaAsset, opts: HearOptions, job: C
   //
   // A word the aligner timed (`aligned`) is already where he said it, so the lag
   // correction passes it by and only moves the words the aligner could not time.
+  //
+  // ⛔ AN ALIGNED WORD KEEPS ITS START THROUGH THE TRIM AND THE SNAP TOO. Both were
+  // built to rescue the recogniser's guess at where a word begins, and an aligned
+  // word's start is already read off the sound. Measured 2026-10-25 on SAPI speech
+  // with known word onsets (_verify/aligner, four recordings, real Whisper timings),
+  // the words that open a phrase after a pause of 0.3 s or more (n=52), share of
+  // starts within 50 ms of the truth:
+  //
+  //                      aligner alone   + trim    + snap    whole chain   real door
+  //   before the guard       96.2%        80.8%     84.6%      84.6%        84.6%
+  //   after the guard        96.2%        96.2%     96.2%      96.2%        96.2%
+  //
+  // and over all 1117 letter words 93.8% for the aligner alone, 92.6% through the
+  // whole chain before the guard (92.4% at the real door) and 93.8% after (93.7%).
+  // The END moves stay, because they help: the word end before a pause (n=48,
+  // within 50 ms of where the sound stops) is 43.8% for the aligner alone and 58.3%
+  // with the trim, before the guard and after it alike.
   const needOnTime = wantsExact
   const unlagged = needOnTime ? correctWordLag(marked, whisperModel(modelFor(getCaptionLanguage())).wordLagS) : marked
   const onTime = needOnTime && loudness ? meetAtDips(unlagged, loudness, DIP_ENVELOPE_HOP_S) : unlagged

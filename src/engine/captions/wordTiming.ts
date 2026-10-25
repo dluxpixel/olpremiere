@@ -172,6 +172,16 @@ export const ONSET_QUIET_S = 0.1
  * them), so they keep the corrected timing. And the same guard as
  * trimWordsToVoice: if the detector hears his voice in fewer than half of the
  * clip's words, it is not hearing this voice well enough to place any of them.
+ *
+ * ⛔ A WORD THE ALIGNER TIMED KEEPS ITS START. The aligner reads the sound itself
+ * and puts a word's start on the sound to a frame; the voice detector here
+ * does it only to about a frame too, and was built to rescue the recogniser's
+ * guesses, which an aligned word is not. Measured on the phrase starts after a
+ * pause in the synthetic speech, whose true onsets are known (n=52, within
+ * 50 ms of the truth): the aligner alone 96.2%, the snap on top of it 84.6%
+ * (bias -10 to +20 ms). So the snap skips an aligned word's start. It still
+ * ends the word BEFORE at the moment his voice went off: that is an end move,
+ * and ends are the trim's business (see state/transcribeActions.ts).
  */
 export function snapOnsetsToVoice<T extends TranscribedWord>(
   words: readonly T[],
@@ -222,7 +232,7 @@ export function snapOnsetsToVoice<T extends TranscribedWord>(
     // gone, and only when the quiet comes AFTER the word before has begun, so
     // that word keeps its own voice and the two can never run together.
     if (onS >= w.endS - MIN_WORD_S || (next && onS >= next.startS) || (prev && offS <= prev.startS + MIN_WORD_S)) continue
-    w.startS = Math.max(0, onS)
+    if (!w.aligned) w.startS = Math.max(0, onS)
     if (prev) prev.endS = Math.min(prev.endS, offS)
   }
   return out

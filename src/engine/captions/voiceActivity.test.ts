@@ -322,6 +322,39 @@ describe('trimWordsToVoice: a pause the recogniser swallowed becomes a real gap'
     ])
   })
 
+  it('keeps the start of a word the aligner timed, and still cuts the ends the pause swallowed', () => {
+    // The pause test above, with every word timed against the sound.
+    const heard = [
+      { ...w('and', 0, 0.9), aligned: true },
+      { ...w('then', 0.9, 2.1), aligned: true },
+      { ...w('boom.', 2.1, 2.5), aligned: true },
+    ]
+    const voice = track(3, [
+      [0, 0.3],
+      [1.8, 2.5],
+    ])
+    const trimmed = trimWordsToVoice(heard, voice)
+    expect(spans(trimmed)).toEqual([
+      [0, 0.3],
+      [0.9, 2.1],
+      [2.1, 2.5],
+    ])
+    expect(trimmed.every((x) => x.aligned)).toBe(true)
+  })
+
+  it('keeps the start of the first word when the aligner timed it, and still lets the last word leave with his voice', () => {
+    const heard = [
+      { ...w('hey', 0, 0.8), aligned: true },
+      { ...w('there', 0.8, 1.1), aligned: true },
+      { ...w('bye', 1.1, 2.5), aligned: true },
+    ]
+    expect(spans(trimWordsToVoice(heard, track(3, [[0.5, 1.4]])))).toEqual([
+      [0, 0.8],
+      [0.8, 1.1],
+      [1.1, 1.4],
+    ])
+  })
+
   it('changes nothing when the detector cannot hear this voice in most of the words', () => {
     // A dry voice the model is nearly deaf to (see dropWordsWithoutVoice): two
     // blips in five words. Without this guard the blips would be read as a pause
