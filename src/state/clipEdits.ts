@@ -1104,16 +1104,6 @@ export function removeEffectKeyframeAtPlayhead(clipId: string, effectId: Id, key
   mapClip(clipId, `Remove ${key} keyframe`, (c) => ops.removeEffectParamKeyframe(c, effectId, key, playheadLocalT(c)))
 }
 
-export function setEffectKeyframeEase(
-  clipId: string,
-  effectId: Id,
-  key: string,
-  kfT: number,
-  ease: Keyframe['ease'],
-): void {
-  mapClip(clipId, `Set ${key} easing`, (c) => ops.setEffectParamEase(c, effectId, key, kfT, ease))
-}
-
 /**
  * The transition an edge is left with when `kind` is written over `prev`, with
  * the per kind duration envelope. Shared by the one clip write below and the

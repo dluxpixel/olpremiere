@@ -536,18 +536,6 @@ export function applyLook(spec: LookSpec, rgb: Vec3, amount: number, ctx: LookCo
 // ---------------------------------------------------------------------------
 // The passes that read neighbours, as plain numbers for the renderer.
 
-/** The params of a `lookClarity` pass. */
-export interface ClarityParams {
-  /** Local contrast gain at mid grey. */
-  amount: number
-  /** Blur radius, as a fraction of the frame's short side. */
-  radius: number
-  /** The look's grain, already scaled by its Amount, added AFTER the detail (grainAfterClarity). 0 or absent = none. */
-  grain?: number
-  /** That grain's size in frame pixels on a 1080 short side. */
-  grainSize?: number
-}
-
 /** How far the clarity pass looks, as a fraction of the short side: about 16 px on a 1080 frame. */
 export const CLARITY_RADIUS = 0.015
 

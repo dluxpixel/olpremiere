@@ -231,9 +231,4 @@ export async function sweepMediaTemps(): Promise<number> {
   return gone
 }
 
-/** Bytes on disk for every asset copy, so the size of this can be reported honestly. */
-export async function mediaBytes(): Promise<number> {
-  return (await listMedia()).files.reduce((n, m) => n + m.size, 0)
-}
-
 export { createReadStream }

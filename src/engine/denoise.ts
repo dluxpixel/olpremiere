@@ -367,8 +367,3 @@ export function invalidateDenoise(assetId: string): void {
   wetCache.delete(assetId)
   mixCache.delete(assetId)
 }
-
-/** What the denoise caches are holding, for the test that guards the budget. */
-export function denoiseCacheBytesForTests(): number {
-  return denoiseTotalBytes
-}
