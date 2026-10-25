@@ -9,6 +9,7 @@ import {
   STAR,
   alignWords,
   alignmentWindows,
+  echoedWords,
   extendAlignedEnds,
   forcedAlign,
   isSilentText,
@@ -376,5 +377,29 @@ describe('extendAlignedEnds', () => {
     expect(out[1].startS - out[0].endS).toBeGreaterThan(0.05)
     const touching = extendAlignedEnds([w(1, 1.1), w(1.2, 1.3)])
     expect(touching[1].startS - touching[0].endS).toBeLessThanOrEqual(0.05)
+  })
+})
+
+describe('echoedWords', () => {
+  const at = (...starts: number[]) => starts.map((startS) => ({ startS, endS: startS + 0.3 }))
+
+  it('flags nothing in words that run forward', () => {
+    expect(echoedWords(at(0, 0.4, 0.9, 1.5, 3))).toEqual([false, false, false, false, false])
+    expect(echoedWords([])).toEqual([])
+  })
+
+  it('flags the copy of a passage the recogniser wrote twice, to its last word, and keeps the original', () => {
+    // A passage at 20.2 to 24.5 and then the same words with the same times, then the next sentence.
+    const starts = [18.7, 19.1, 19.8, 20.2, 21.9, 23.0, 24.5, 20.2, 21.9, 23.0, 24.5, 26.7]
+    expect(echoedWords(at(...starts))).toEqual([false, false, false, false, false, false, false, true, true, true, true, false])
+  })
+
+  it('lets a small step back pass: word times wobble by a few hundredths, not by half a second', () => {
+    expect(echoedWords(at(1, 1.5, 1.3, 2))).toEqual([false, false, false, false])
+    expect(echoedWords(at(1, 1.5, 0.9, 2))).toEqual([false, false, true, false])
+  })
+
+  it('measures from the words that are not echoes, so one echo does not hide the next', () => {
+    expect(echoedWords(at(10, 11, 12, 10, 11, 12, 13, 5, 14))).toEqual([false, false, false, true, true, true, false, true, false])
   })
 })

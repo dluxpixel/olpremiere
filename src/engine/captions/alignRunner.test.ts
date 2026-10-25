@@ -127,6 +127,17 @@ describe('alignChunks', () => {
     expect(r.chunks[0]!.timestamp[1]).toBeCloseTo(0.885, 3)
   })
 
+  it('leaves a passage the recogniser wrote out twice alone, and times the one that was said', async () => {
+    // "ab cd" is heard once, but the text has it three times, the copies with the same times.
+    const chunks = [chunk(' ab', 0.9, 1.2), chunk(' cd', 1.7, 2.0), chunk(' ab', 0.9, 1.2), chunk(' cd', 1.7, 2.0), chunk(' ab', 0.9, 1.2), chunk(' cd', 1.7, 2.0)]
+    const r = await alignChunks(chunks, quiet(4), run())
+    expect(r.asked).toBe(6)
+    expect(r.aligned).toBe(2)
+    expect(r.chunks[0]!.timestamp[0]).toBeCloseTo(0.785, 3)
+    expect(r.chunks[1]!.timestamp[0]).toBeCloseTo(1.585, 3)
+    for (const k of [2, 3, 4, 5]) expect(r.chunks[k]).toBe(chunks[k])
+  })
+
   it('tells the share done after each window', async () => {
     const seen: number[] = []
     await alignChunks([chunk(' ab', 0.9, 1.2), chunk(' cd', 1.7, 2.0)], quiet(4), run({ report: (p) => seen.push(p) }))

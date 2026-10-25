@@ -12,7 +12,7 @@
 // `alignChunks` below does the work and may throw; `alignRecognised` is the
 // door the worker uses, and it cannot.
 
-import { FRAME_S, alignWords, alignmentWindows, extendAlignedEnds, isSilentText, makeAlignVocab, vocabTokens } from './ctcAlign'
+import { FRAME_S, alignWords, alignmentWindows, echoedWords, extendAlignedEnds, isSilentText, makeAlignVocab, vocabTokens } from './ctcAlign'
 import type { AlignInput, AlignVocab, AlignedWord, Emissions } from './ctcAlign'
 import { alignerFor } from './transcribeConfig'
 import type { AlignerModel, CaptionLanguage } from './transcribeConfig'
@@ -156,7 +156,15 @@ export async function alignChunks(chunks: readonly WordChunk[], pcm: Float32Arra
     where.push(i)
     rough.push({ text, startS, endS })
   })
-  const windows = rough.length > 0 ? alignmentWindows(rough, pcm.length / RATE) : []
+  // A passage the recogniser wrote out twice is left out of the alignment (it keeps
+  // its time): the audio has it once, and two copies of the text would squeeze one.
+  const echo = echoedWords(rough)
+  const live: number[] = []
+  rough.forEach((_, i) => {
+    if (!echo[i]) live.push(i)
+  })
+  const heard = live.map((i) => rough[i]!)
+  const windows = heard.length > 0 ? alignmentWindows(heard, pcm.length / RATE) : []
   const timed: AlignedWord[] = rough.map((w) => ({ startS: w.startS, endS: w.endS, aligned: false }))
   const full = makeAlignVocab(run.vocab, run.aligner.blank)
   const started = now()
@@ -167,12 +175,12 @@ export async function alignChunks(chunks: readonly WordChunk[], pcm: Float32Arra
     const a = Math.floor(win.fromS * RATE)
     const b = Math.min(pcm.length, Math.ceil(win.toS * RATE))
     if (b - a < MIN_SLICE) continue
-    const words = rough.slice(win.first, win.end)
+    const words = heard.slice(win.first, win.end)
     const cols = columnsFor(words, full)
     const emissions = reduceLogits(await run.logitsOf(normaliseSlice(pcm.subarray(a, b))), cols.ids)
     const got = alignWords(words, emissions, FRAME_S, a / RATE, cols.vocab, { biasS: run.aligner.onsetBiasS })
     got.words.forEach((w, k) => {
-      timed[win.first + k] = w
+      timed[live[win.first + k]!] = w
     })
     run.report?.(Math.round((100 * windowsRun) / windows.length))
   }

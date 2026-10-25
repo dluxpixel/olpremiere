@@ -342,6 +342,48 @@ export function alignmentWindows(
   return out
 }
 
+// ------------------------------------------------------------------ echoes
+
+/**
+ * How far back a word's start may fall behind the latest one before it counts as
+ * said again. Word times only ever run forward, so a start this far behind is not
+ * a new word, it is the recogniser reading a passage out a second time.
+ */
+export const ECHO_BACK_S = 0.5
+
+/**
+ * Which words are an echo: a stretch the recogniser wrote out twice over the one
+ * time it was said. MEASURED on the SAPI recordings, 2026-10-25: Whisper turbo
+ * wrote "fair price. But don't take my word for it, try it yourself." a second
+ * time (and in two other places a whole sentence), each copy with the SAME times,
+ * 3 to 4 s behind the words that came before it. Aligned in order, the text has
+ * the sentence twice and the audio once, so one copy is squeezed into a few
+ * frames, the window's median score falls, and the 34 words around it all kept
+ * the recogniser's late times. The echo is the copy that runs back in time; with
+ * it left out the first copy lines up with the audio like any other words.
+ *
+ * A word is an echo when it starts more than ECHO_BACK_S before the latest start
+ * seen among the words that are not, and it stays one until a word starts after
+ * that latest start again (the last word of a copy starts exactly where the
+ * original's did). Echoes keep the recogniser's time and are not aligned.
+ */
+export function echoedWords(words: readonly RoughWord[]): boolean[] {
+  const out = new Array<boolean>(words.length).fill(false)
+  let reach = Number.NEGATIVE_INFINITY
+  let echoing = false
+  for (let i = 0; i < words.length; i++) {
+    const s = words[i]!.startS
+    if (s < reach - ECHO_BACK_S || (echoing && s <= reach)) {
+      out[i] = true
+      echoing = true
+      continue
+    }
+    echoing = false
+    reach = Math.max(reach, s)
+  }
+  return out
+}
+
 // ------------------------------------------------------------- word timings
 
 /** One window's model output: T frames of V log probabilities, row-major. */
