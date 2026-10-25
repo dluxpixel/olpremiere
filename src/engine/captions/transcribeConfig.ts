@@ -146,11 +146,31 @@ export interface AlignerModel {
 // accented letters, so it spells Czech with the plain ones). That is agreement,
 // not proof.
 //
+// LICENCE, checked on the Hugging Face model API on 2026-10-25. The model is
+// NewComer00/wav2vec2-xlsr-multilingual-56-ONNX, an ONNX export of
+// voidful/wav2vec2-xlsr-multilingual-56, which was fine tuned from
+// facebook/wav2vec2-large-xlsr-53. All three are Apache-2.0. The weights are not
+// bundled in the build (electron-builder.yml ships out/ and ffmpeg only): they
+// download at run time into the app's cache, like Whisper, about 247 MB.
+//
 // COST. 247 MB once, in the same browser cache as Whisper, and it loads on the
 // same device (WebGPU, else wasm). base-960h (95 MB) was the English-only
-// alternative. TIME, in the real app on the RTX 4060 laptop GPU (WebGPU): the
-// aligner adds about 2 to 8 s to a clip of 88 to 145 s that Whisper turbo reads
-// in 41 to 45 s. The rest of a caption run is the music gate, not this.
+// alternative. TIME, as measured on 2026-10-25 in the real app on the RTX 4060
+// laptop GPU (WebGPU), four SAPI recordings, Whisper turbo alone and then
+// Whisper plus the aligner on the same audio (_verify/aligner/out/sapi.json):
+//
+//                    audio     Whisper alone   with the aligner
+//   en-david         122.7 s       35.4 s          51.7 s
+//   en-zira          120.8 s       40.4 s          47.8 s
+//   en-david-fast     88.4 s       36.5 s          48.1 s
+//   en-zira-slow     144.6 s       46.2 s          59.0 s
+//
+// So a whole run took 7 to 16 s longer. The aligner's own work, which the worker
+// logs, was 3.3 to 6.0 s once the model was loaded. The first clip paid the LOAD on
+// top of that (9.6 s in all, with the model read from the local cache); a first
+// download of the 247 MB is further still and is the connection's, not in these
+// numbers. These totals do not separate the rest of the gap. The rest of a caption
+// run is the music gate, not this.
 const XLSR_ALIGNER: AlignerModel = {
   id: 'NewComer00/wav2vec2-xlsr-multilingual-56-ONNX',
   dtype: 'q4',
