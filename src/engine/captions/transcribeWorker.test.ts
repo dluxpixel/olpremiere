@@ -140,8 +140,10 @@ describe('the word aligner after the speech model', () => {
     alignerWorks = true
     const said = await hear({ gpuFailures: 2, align: true })
     const kinds = said.map((m) => (m.type === 'progress' ? `${m.phase}${m.downloading ? ' downloading' : ''}` : m.type))
-    // Listening, the aligner's model loading (first time only), then each window, then done.
-    expect(kinds).toEqual(['model downloading', 'model downloading', 'listening', 'align', 'align downloading', 'align', 'done'])
+    // Listening, a beat as the aligner starts, its model loading (first time only), a beat
+    // when the model is ready (so the main thread's watchdog starts again before the first
+    // window, alignRunner.ts), then each window, then done.
+    expect(kinds).toEqual(['model downloading', 'model downloading', 'listening', 'align', 'align downloading', 'align', 'align', 'done'])
     const done = said[said.length - 1] as Extract<TranscribeResponse, { type: 'done' }>
     expect(done.chunks).toHaveLength(1)
     expect(done.chunks[0]).toMatchObject({ text: ' hey', aligned: true })
