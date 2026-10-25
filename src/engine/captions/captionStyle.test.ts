@@ -35,6 +35,7 @@ import {
 } from './captionStyle'
 import { captionLineWidthPx, captionTextWidthPx } from './captionFit'
 import { titleLayout, titleLinesAt } from '../render/titleRaster'
+import { exportRaster } from '../export/exportPlan'
 import { CAPTION_FONT_STACK, COMIC_STACK, OSWALD_STACK } from '../render/titleFonts'
 import { WORD_POP_COLOR, WORD_POP_SIZE, wordPopTitle } from './wordPop'
 
@@ -780,8 +781,10 @@ describe('what the fitter accepts is what is drawn', () => {
   // round(width / scale) it is off by 1 to 2 px wherever the raster is not a whole number of scale
   // steps wide (1350 at 0.375 is 506 px, which reads back as 1349; 1366 and 1081 at several scales),
   // and wherever an odd sequence height makes the export scale outH / seqH (1920x1079 read back as
-  // 1918). A caption that sits within those px of the limit then wrapped in the monitor and not in
-  // the export, or the other way about.
+  // 1918), and wherever an odd width is exported one px wider at a scale of exactly 1 (1081x1350 is
+  // exported at 1082x1350, which titleLinesAt used to take for the sequence itself). A caption that
+  // sits within those px of the limit then wrapped in the monitor and not in the export, or the
+  // other way about. The export raster is always the one exportRaster gives, for every sequence.
   describe('a caption at the limit, on a sequence whose width the raster cannot give back', () => {
     const CAPTION = "AWAKE DOESN'T REALLY"
     const HOUSE_STYLE = BUILTIN_CAPTION_STYLES[0]!
@@ -789,6 +792,9 @@ describe('what the fitter accepts is what is drawn', () => {
       { width: 1350, height: 1080 },
       { width: 1366, height: 768 },
       { width: 1081, height: 1350 },
+      // An odd width with an even height: the export raster is 1082 wide at a scale of exactly 1.
+      { width: 1081, height: 1080 },
+      { width: 1921, height: 1080 },
       // An odd height: the export raster is the next even height, so its scale is outH / seqH.
       { width: 1920, height: 1079 },
       { width: 1366, height: 767 },
@@ -805,10 +811,10 @@ describe('what the fitter accepts is what is drawn', () => {
           height: Math.round(seq.height * scale),
           scale,
         }))
-        if (seq.height % 2 === 1) {
-          const outH = seq.height + 1
-          rasters.push({ label: `export ${seq.width}x${outH}`, width: seq.width, height: outH, scale: outH / seq.height })
-        }
+        // The export raster, whatever shape it takes: exportRaster rounds the width and the height to
+        // even separately, so 1081x1350 is exported at 1082x1350 with a scale of exactly 1.
+        const out = exportRaster(seq.width, seq.height)
+        rasters.push({ label: `export ${out.width}x${out.height}`, width: out.width, height: out.height, scale: out.height / seq.height })
 
         let misread = 0
         for (const raster of rasters) {

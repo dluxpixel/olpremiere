@@ -167,9 +167,9 @@ function shownTextOf(def: TitleDef): string {
 /**
  * The lines a title drawn at `scale` into a `width` px raster shows, decided
  * ONCE at the sequence geometry with the unscaled def, which is exactly what the
- * export at scale 1 and the caption fitter decide. Undefined at scale 1 (the
- * raster IS the sequence geometry, so its own wrap is already that answer) and
- * where there is no measurer.
+ * export at scale 1 and the caption fitter decide. Undefined at scale 1 on a raster
+ * of the sequence's own width (the raster IS the sequence geometry, so its own wrap
+ * is already that answer) and where there is no measurer.
  *
  * Why: scaleTitleDef rounds the font size and titleLayout rounds the side pad in
  * SCALED px, so a line that just fits at the sequence size (Oswald "AWAKE
@@ -194,7 +194,9 @@ export function titleLinesAt(
   measureFor: (def: TitleDef) => ((s: string) => number) | null,
   seqWidth?: number,
 ): string[] | undefined {
-  if (Math.abs(scale - 1) < 1e-6 || !(scale > 0) || !(def.fontSizePx > 0)) return undefined
+  if (!(scale > 0) || !(def.fontSizePx > 0)) return undefined
+  // At scale 1 the raster is the sequence only when it has the sequence's width (evenFit makes 1081 into 1082).
+  if (Math.abs(scale - 1) < 1e-6 && (seqWidth === undefined || seqWidth === width)) return undefined
   const measure = measureFor(def)
   if (!measure) return undefined
   const seqW = seqWidth ?? Math.max(1, Math.round(width / scale))
@@ -826,8 +828,9 @@ export function rasterizeTitle(
    */
   scale = 1,
   /**
-   * The SEQUENCE width, for a `scale` other than 1: the line width the breaks are
-   * decided at (titleLinesAt) is the sequence's, and a raster of another size
+   * The SEQUENCE width, for a `scale` other than 1 or a raster that is not the
+   * sequence's width (1082 px for a 1081 px sequence): the line width the breaks
+   * are decided at (titleLinesAt) is the sequence's, and a raster of another size
    * cannot give it back exactly. Both callers know it and pass it.
    */
   seqWidth?: number,
@@ -843,7 +846,9 @@ export function rasterizeTitle(
   // The breaks come from the sequence geometry, not from this raster's rounded
   // font and pad (titleLinesAt), so the monitor never wraps where the export
   // does not. They join the key: the same scaled def can only break one way here.
-  const seqLines = def === defIn ? undefined : titleLinesAt(defIn, width, scale, canvasMeasurer, seqWidth)
+  // Asked at scale 1 too: an export at 1082 px of a 1081 px sequence has scale 1
+  // and not the sequence's width, and it still has to break at the sequence's.
+  const seqLines = titleLinesAt(defIn, width, scale, canvasMeasurer, seqWidth)
   const key = seqLines ? `${cacheKey(def, width, height)}|${JSON.stringify(seqLines)}` : cacheKey(def, width, height)
   const hitIdx = cache.findIndex((e) => e.key === key)
   if (hitIdx !== -1) {
