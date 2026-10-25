@@ -289,12 +289,30 @@ export function respellWords(
 }
 
 /**
+ * A word made of several is the aligner's only if EVERY part was: the rule of
+ * withAligned in transcribe.ts, kept here because that file pulls in the audio
+ * code at run time and this one only ever needed its types. The key is left off
+ * rather than set false, so a word the aligner never touched stays as it was.
+ */
+function alignedIfAll<T extends TranscribedWord>(word: T, parts: readonly TranscribedWord[]): T {
+  const out: TranscribedWord = { ...word }
+  if (parts.every((p) => p.aligned === true)) out.aligned = true
+  else delete out.aligned
+  return out as T
+}
+
+/**
  * Replace the misspellings he has fixed the same way twice.
  *
  * A rewrite matches whole words in a row, said without a pause between them, and
  * collapses them into ONE word holding his spelling over the time they covered,
  * because that is how he writes it: "bun bun" was one caption every time. The
  * last word's closing punctuation is kept, so a sentence still ends where it did.
+ *
+ * The merged word is the aligner's only if every word it covers was. Its start
+ * is the first word's and its end the last word's, so one part the recogniser
+ * timed makes the whole a mix, and calling the mix aligned would hide that part
+ * from the lag correction.
  */
 export function applyRewrites<T extends TranscribedWord>(words: readonly T[], v: Vocabulary): T[] {
   if (v.rewrites.length === 0) return words.slice()
@@ -323,7 +341,7 @@ export function applyRewrites<T extends TranscribedWord>(words: readonly T[], v:
     const first = words[i]
     const lastWord = words[i + hit.len - 1]
     const tail = /[.,!?;:…]+$/.exec(lastWord.text)?.[0] ?? ''
-    out.push({ ...first, text: hit.to + tail, endS: Math.max(first.endS, lastWord.endS) })
+    out.push(alignedIfAll({ ...first, text: hit.to + tail, endS: Math.max(first.endS, lastWord.endS) }, words.slice(i, i + hit.len)))
     i += hit.len
   }
   return out

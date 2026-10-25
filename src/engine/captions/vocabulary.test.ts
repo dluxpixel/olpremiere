@@ -178,4 +178,40 @@ describe('applyRewrites', () => {
     const words = [w('hello', 0, 0.3)]
     expect(applyRewrites(words, EMPTY_VOCABULARY)).toEqual(words)
   })
+
+  // A merged word is the aligner's only if every word it covers was (the rule of
+  // withAligned in transcribe.ts). Taking the first word's flag alone called a mix
+  // aligned, and the lag correction then left the recogniser's half uncorrected.
+  describe('the aligned flag of the word it makes', () => {
+    const al = (text: string, startS: number, endS: number, aligned?: boolean) => ({ text, startS, endS, ...(aligned === undefined ? {} : { aligned }) })
+
+    it('keeps it when every word it covers was timed by the aligner', () => {
+      const out = applyRewrites([al('Mecha', 0.2, 0.5, true), al('Bamban.', 0.5, 0.9, true)], v)
+      expect(out).toEqual([al('mecha bunbun.', 0.2, 0.9, true)])
+    })
+
+    it('drops it when the first word was timed and a later one was not', () => {
+      const out = applyRewrites([al('Mecha', 0.2, 0.5, true), al('Bamban.', 0.5, 0.9)], v)
+      expect(out.map((x) => x.text)).toEqual(['mecha bunbun.'])
+      expect('aligned' in out[0]!).toBe(false)
+    })
+
+    it('does not set it when only a later word was timed', () => {
+      const out = applyRewrites([al('Mecha', 0.2, 0.5), al('Bamban.', 0.5, 0.9, true)], v)
+      expect('aligned' in out[0]!).toBe(false)
+    })
+
+    it('leaves a one word rewrite as the word was, aligned or not', () => {
+      const timed = applyRewrites([al('Bamban', 0.2, 0.5, true)], v)
+      expect(timed).toEqual([al('bun bun', 0.2, 0.5, true)])
+      const plain = applyRewrites([al('Bamban', 0.2, 0.5)], v)
+      expect('aligned' in plain[0]!).toBe(false)
+    })
+
+    it('does not touch the flag of words it leaves alone', () => {
+      const out = applyRewrites([al('is', 0, 0.2, true), al('Mecha', 0.2, 0.5, true), al('Bamban.', 0.5, 0.9)], v)
+      expect(out[0]).toEqual(al('is', 0, 0.2, true))
+      expect('aligned' in out[1]!).toBe(false)
+    })
+  })
 })
