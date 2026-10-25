@@ -15,3 +15,6 @@ e2e/.fixtures/
 .claude/
 *.log
 scorecard.json
+# His own project files and media folder: never part of the app, never sent to the web host.
+*.olstudio
+/OLP-MEDIA/

@@ -4,7 +4,7 @@
 // release cannot be "checked by eye" in any useful sense.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -581,7 +581,9 @@ describe('a release refuses his project files and files of 50 MB or more', { tim
     git('add', '-A')
     git('commit', '-q', '-m', 'a big file that was already there')
     git('mv', 'already.bin', 'moved.bin')
-    // git sees a rename here; without --no-renames the AM filter would never see it.
+    // Porcelain status calls this a rename. Plumbing diff-tree never pairs renames unless given -M,
+    // so the moved file shows as an add and is judged like any new file; --no-renames only makes
+    // that explicit.
     expect(git('status', '--porcelain')).toMatch(/^R {2}already\.bin -> moved\.bin$/)
     expect(names(refusedAdds(treeHash(dir), 'HEAD', dir))).toEqual(['moved.bin'])
   })
@@ -603,6 +605,17 @@ describe('a release refuses his project files and files of 50 MB or more', { tim
     // A small regular file in its place is fine.
     const small = tree(`100644 blob ${git('hash-object', '-w', 'target.txt')}\tlink\n`)
     expect(refusedAdds(small, base, dir)).toEqual([])
+  })
+
+  it('weighs a tree of 9000 new small files without running out of buffer', () => {
+    const { dir, git } = scratchRepo()
+    // Built with mktree, so no file is on disk: 9000 names for one small blob, long enough that
+    // the diff runs past the 1 MB default buffer, which threw `spawnSync git ENOBUFS`.
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: dir, input: 'small', encoding: 'utf8', windowsHide: true }).trim()
+    const entries = Array.from({ length: 9000 }, (_, i) => `100644 blob ${blob}\ta-long-name-so-the-list-runs-past-one-megabyte-${String(i).padStart(5, '0')}.txt\n`)
+    const tree = execFileSync('git', ['mktree'], { cwd: dir, input: entries.join(''), encoding: 'utf8', windowsHide: true }).trim()
+    expect(git('ls-tree', tree).split('\n')).toHaveLength(9000)
+    expect(refusedAdds(tree, 'HEAD', dir)).toEqual([])
   })
 
   it('allows deleting a big file that is committed', () => {
@@ -661,6 +674,22 @@ describe('a push refuses his project files and files of 50 MB or more in the com
     // Nothing to send at all.
     expect(refusedInPush('HEAD..HEAD', dir)).toEqual([])
   })
+
+  it('looks at main, which the push sends, even with HEAD detached at the pushed commit', () => {
+    const { dir, git } = scratchRepo()
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+    sparse(dir, 'media.bin', LIMIT + 1)
+    git('add', '-A')
+    git('commit', '-q', '-m', 'main is one commit ahead with a big file')
+    git('checkout', '-q', '--detach', 'origin/main')
+    expect(git('rev-parse', 'HEAD')).toBe(git('rev-parse', 'origin/main'))
+    // The old range, against HEAD, sees nothing to send.
+    expect(refusedInPush('origin/main..HEAD', dir)).toEqual([])
+    // The range against main refuses what `git push origin main` would send.
+    expect(names(refusedInPush('origin/main..refs/heads/main', dir))).toEqual(['media.bin'])
+    // And so does the fallback with no remote branch.
+    expect(names(refusedInPush('refs/heads/main', dir))).toEqual(['media.bin'])
+  })
 })
 
 // ⛔ THE CHECK ON THE TREE CAME AFTER `git add -A` (2026-10-25), which reads every new file and writes
@@ -702,6 +731,39 @@ describe('new files are refused before anything is hashed', { timeout: 60_000 },
     write('small.txt', 'new and small')
     expect(refusedUntracked(dir)).toEqual([])
   })
+
+  it('refuses a small project file whose name starts with a space', () => {
+    const { dir, write } = scratchRepo()
+    // Sorted first, so a trimmed listing lost its space and the name no longer existed on disk.
+    write(' lead.olstudio', 'abcd')
+    write('small.txt', 'a small new file')
+    expect(refusedUntracked(dir)).toEqual([{ path: ' lead.olstudio', bytes: 4, why: 'his project file' }])
+  })
+
+  // A symlink is judged by its own name, never by the size of what it points at.
+  const canSymlink = (() => {
+    const probe = scratchDir('olp-link-')
+    try {
+      writeFileSync(join(probe, 'target'), '')
+      symlinkSync('target', join(probe, 'link'), 'file')
+      return true
+    } catch (e) {
+      if (e.code === 'EPERM') return false
+      throw e
+    }
+  })()
+  it.skipIf(!canSymlink)(
+    `judges an untracked symlink by its name, not by its target's size${canSymlink ? '' : ' (skipped: symlinkSync throws EPERM on this box, it needs Developer Mode or admin)'}`,
+    () => {
+      const { dir, write } = scratchRepo()
+      write('.gitignore', 'big-target.bin\n')
+      sparse(dir, 'big-target.bin', LIMIT + 1)
+      write('small.txt', 'a small new file')
+      symlinkSync('big-target.bin', join(dir, 'link.bin'), 'file')
+      symlinkSync('small.txt', join(dir, 'linked.olstudio'), 'file')
+      expect(refusedUntracked(dir)).toEqual([{ path: 'linked.olstudio', bytes: 0, why: 'his project file' }])
+    },
+  )
 
   it('writes nothing into .git/objects', () => {
     const { dir, git, write } = scratchRepo()
@@ -1235,7 +1297,8 @@ describe('patch.mjs is wired to them', () => {
     const backstopAt = code.indexOf('refusedAdds(releaseTree, headAtStart)')
     expect(code.indexOf('const releaseTree = treeWith(')).toBeLessThan(backstopAt)
     expect(backstopAt).toBeLessThan(code.indexOf('commitExactTree(releaseTree'))
-    expect(code).toMatch(/if \(refusedAtCommit\.length\) \{\s*refuse\(/)
+    // Through stopRefused, so the refusal reaches the ship log before the exit.
+    expect(code).toMatch(/if \(refusedAtCommit\.length\) \{\s*await stopRefused\(/)
   })
 
   it('looks at the new files BEFORE the tree is hashed, because hashing reads and writes every one', () => {
@@ -1244,7 +1307,21 @@ describe('patch.mjs is wired to them', () => {
     // The first treeHash( in the code is the start tree, so nothing hashes before the listing.
     expect(code.indexOf('treeHash(')).toBe(code.indexOf('const startTree = treeHash()') + 'const startTree = '.length)
     expect(untrackedAt).toBeLessThan(code.indexOf('const startTree = treeHash()'))
-    expect(code.match(/\brefusedUntracked\(/g)).toHaveLength(1)
+    // Once at the start and once at the end of the gate.
+    expect(code.match(/\brefusedUntracked\(/g)).toHaveLength(2)
+  })
+
+  it('looks at the new files again right before the gate hashes the tree at its end', () => {
+    const gateAt = code.indexOf('const gate = async (tree) =>')
+    const endHashAt = code.indexOf('const after = treeHash()')
+    const endCheckAt = code.indexOf('const refusedAtEnd = refusedUntracked()')
+    expect(gateAt).toBeGreaterThan(-1)
+    expect(endCheckAt).toBeGreaterThan(gateAt)
+    expect(endCheckAt).toBeLessThan(endHashAt)
+    // Nothing else runs between the check and the hash: it stops through stopRefused, like the start.
+    expect(code.slice(endCheckAt, endHashAt)).toMatch(
+      /^const refusedAtEnd = refusedUntracked\(\)\s*if \(refusedAtEnd\.length\) \{\s*await stopRefused\([^]*\)\s*\}\s*$/,
+    )
   })
 
   it('checks the commits for his files and huge files before pushMain sends anything', () => {
@@ -1264,7 +1341,10 @@ describe('patch.mjs is wired to them', () => {
     }
     // It compares against the remote branch when there is one, and refuses through the ship log.
     expect(code.slice(pushMainAt, checkAt)).toMatch(/'rev-parse', '--verify', '-q', 'origin\/main'/)
-    expect(code.slice(pushMainAt, checkAt)).toMatch(/range = 'origin\/main\.\.HEAD'/)
+    // main, not HEAD, because the push sends main and HEAD may be detached somewhere else.
+    expect(code.slice(pushMainAt, checkAt)).toMatch(/let range = 'refs\/heads\/main'/)
+    expect(code.slice(pushMainAt, checkAt)).toMatch(/range = 'origin\/main\.\.refs\/heads\/main'/)
+    expect(code.slice(pushMainAt, checkAt)).not.toMatch(/'[^']*HEAD[^']*'/)
     expect(code.slice(checkAt, code.indexOf('pushOnce(token)'))).toMatch(/await stopRefused\(/)
   })
 })

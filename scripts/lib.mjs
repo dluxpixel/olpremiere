@@ -1,6 +1,6 @@
 // Shared release helpers.
 import { execFileSync, spawn } from 'node:child_process'
-import { appendFileSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
+import { appendFileSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, lstatSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -518,9 +518,12 @@ export async function fetchRetry(url, opts = {}, tries = 4) {
 // and the release commit is BUILT from the gated tree (plus the version bump),
 // never from whatever is on disk at commit time.
 
-/** git in `cwd`, stdout trimmed. `env` adds to the environment. */
-function gitIn(cwd, args, { env, input, maxBuffer } = {}) {
-  return execFileSync('git', args, {
+/**
+ * git in `cwd`, stdout trimmed. `env` adds to the environment. `trim: false` keeps stdout
+ * exactly, for a list whose first name may start with a space.
+ */
+function gitIn(cwd, args, { env, input, maxBuffer, trim = true } = {}) {
+  const out = execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
     input,
@@ -528,7 +531,8 @@ function gitIn(cwd, args, { env, input, maxBuffer } = {}) {
     env: env ? { ...process.env, ...env } : process.env,
     stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     windowsHide: true,
-  }).trim()
+  })
+  return trim ? out.trim() : out
 }
 
 /** Run `fn(env)` against a throwaway index, so the real one is never touched. */
@@ -612,10 +616,14 @@ const LIST_BYTES = 512 * 1024 * 1024
  * hung packing. Two git calls however many paths there are: one diff, one batch of sizes.
  */
 export function refusedAdds(tree, base, cwd = process.cwd()) {
-  // -z so a path with spaces or odd characters comes back exactly; --no-renames so a
-  // moved big file is an add and cannot slip past the filter; T because a symlink
-  // replaced by a regular file is a type change, not an add or a modify.
-  const raw = gitIn(cwd, ['diff-tree', '-r', '-z', '--no-renames', '--no-commit-id', '--diff-filter=AMT', base, tree])
+  // -z so a path with spaces or odd characters comes back exactly. A moved file shows as
+  // an add and is judged like any new file: plumbing diff-tree never pairs renames unless
+  // given -M, whatever diff.renames says, so --no-renames only makes that explicit. T
+  // because a symlink replaced by a regular file is a type change, not an add or a modify.
+  // LIST_BYTES because thousands of changed paths overrun the 1 MB default (ENOBUFS).
+  const raw = gitIn(cwd, ['diff-tree', '-r', '-z', '--no-renames', '--no-commit-id', '--diff-filter=AMT', base, tree], {
+    maxBuffer: LIST_BYTES,
+  })
   const parts = raw.split('\0')
   const added = []
   for (let i = 0; i + 1 < parts.length; i += 2) {
@@ -624,7 +632,10 @@ export function refusedAdds(tree, base, cwd = process.cwd()) {
     if (mode !== '160000') added.push({ path: parts[i + 1], id })
   }
   if (!added.length) return []
-  const sizes = gitIn(cwd, ['cat-file', '--batch-check=%(objectsize)'], { input: `${added.map((a) => a.id).join('\n')}\n` }).split('\n')
+  const sizes = gitIn(cwd, ['cat-file', '--batch-check=%(objectsize)'], {
+    input: `${added.map((a) => a.id).join('\n')}\n`,
+    maxBuffer: LIST_BYTES,
+  }).split('\n')
   const refused = []
   added.forEach(({ path }, i) => {
     const bytes = Number(sizes[i])
@@ -674,17 +685,20 @@ export function refusedInPush(range, cwd = process.cwd()) {
  * size on disk, and nothing is read. One git call and one stat per new file.
  */
 export function refusedUntracked(cwd = process.cwd()) {
-  const listed = gitIn(cwd, ['ls-files', '-o', '--exclude-standard', '-z'], { maxBuffer: LIST_BYTES })
+  const listed = gitIn(cwd, ['ls-files', '-o', '--exclude-standard', '-z'], { maxBuffer: LIST_BYTES, trim: false })
   const refused = []
   for (const path of listed.split('\0')) {
     if (!path) continue
     let bytes = 0
     try {
-      const st = statSync(join(cwd, path))
-      if (!st.isFile()) continue // a folder that is its own repo is listed with a slash
-      bytes = st.size
+      // lstat, not stat: a symlink is judged by its name only, never by its target's size,
+      // because git takes the link itself, never what it points at.
+      const st = lstatSync(join(cwd, path))
+      if (st.isSymbolicLink()) bytes = 0
+      else if (!st.isFile()) continue // a folder that is its own repo is listed with a slash
+      else bytes = st.size
     } catch {
-      continue // gone since it was listed, or a link to nothing: git has nothing to take
+      continue // gone since it was listed: git has nothing to take
     }
     const why = whyRefused(path, bytes)
     if (why) refused.push({ path, bytes, why })

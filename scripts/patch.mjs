@@ -153,9 +153,14 @@ const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new
 // takes every new file that is not ignored, so a project file or a media folder that nothing
 // ignored went into a release commit, 4.3 GB of it, and the push hung packing. A release does
 // add files on purpose (fonts, sources, sounds), so new files are fine; his `.olstudio` files
-// and anything of 50 MB or more are not. A refusal prints, goes into the ship log, and exits 1.
+// and anything of 50 MB or more are not. Every one of these refusals goes through stopRefused:
+// it prints, waits until the ship log has taken it, and only then exits 1.
 const refusedSay = (refused) =>
   refused.map((r) => `   ${r.path}  (${(r.bytes / (1024 * 1024)).toFixed(1)} MB)  ${r.why}\n`).join('')
+const refusedNewWayOut = '   The way out, for a new file: add it to .gitignore, or move it out of this folder.\n'
+const refusedWayOut =
+  refusedNewWayOut +
+  '   For a tracked file: undo the change, or stop tracking it with `git rm --cached <path>` and ignore it.\n'
 const stopRefused = async (say) => {
   console.error(say)
   await new Promise((resolve) => (shipLog ? shipLog.write(say, resolve) : resolve()))
@@ -167,7 +172,8 @@ const stopIfRefusedAtStart = async (refused) => {
     '\n❌ This release would take files that must never be in it, so NOTHING was checked, committed or pushed.\n' +
       refusedSay(refused) +
       '   The files on disk were not touched.\n' +
-      '   The way out: add the path to .gitignore, or move it out of this folder. Then run the same command again.\n',
+      refusedWayOut +
+      '   Then run the same command again.\n',
   )
 }
 
@@ -337,6 +343,18 @@ const gate = async (tree) => {
     }
   }
 
+  // The same look at the new files as at the start, BEFORE the hash below: a big file made while
+  // the gate ran would otherwise be read and written into .git/objects by its `git add -A`.
+  const refusedAtEnd = refusedUntracked()
+  if (refusedAtEnd.length) {
+    await stopRefused(
+      '\n❌ Files that must never be in a release appeared while the gate ran, so NOTHING was committed, released or stamped.\n' +
+        refusedSay(refusedAtEnd) +
+        '   The files on disk were not touched.\n' +
+        refusedNewWayOut +
+        '   Then run the same command again.\n',
+    )
+  }
   const after = treeHash()
   if (after !== tree) {
     const moved = changedBetween(tree, after)
@@ -414,12 +432,14 @@ const pushMain = async () => {
   // is made: a release commit that was undone and put back, a reset to it, a push-only retry.
   // So the commits not yet on the remote are checked for his files and huge files, including
   // one that a later commit removed again, because the push sends every blob in every commit.
-  let range = 'HEAD'
+  // The range is main itself, not HEAD, because `git push origin main` sends main: with HEAD
+  // detached at a pushed commit, `..HEAD` would look at nothing while main carries the file.
+  let range = 'refs/heads/main'
   try {
     git('rev-parse', '--verify', '-q', 'origin/main')
-    range = 'origin/main..HEAD'
+    range = 'origin/main..refs/heads/main'
   } catch {
-    // No remote branch to compare with, so every commit under HEAD counts as unpushed.
+    // No remote branch to compare with, so every commit on main counts as unpushed.
   }
   const refusedInRange = refusedInPush(range)
   if (refusedInRange.length) {
@@ -427,8 +447,8 @@ const pushMain = async () => {
       '\n❌ A commit that is about to be pushed carries files that must never be in a release, so NOTHING was pushed.\n' +
         refusedSay(refusedInRange) +
         '   The commit already exists on this machine and stays there. The files on disk were not touched.\n' +
-        '   The way out: a plain `git reset` to the last pushed commit (never --hard) takes the commits back and keeps every file on disk.\n' +
-        '   Then add the path to .gitignore, or move it out of this folder, and run the same command again.\n',
+        '   The file sits in an unpushed commit, which has to be rewritten without it (for example a rebase that removes\n' +
+        '   the file from that commit). Then run the release again. Never `git reset --hard`.\n',
     )
   }
   const token = loadToken()
@@ -580,11 +600,12 @@ const releaseTree = treeWith(gatedTree, ['package.json', 'package-lock.json'])
 // manifests, which the bump rewrites, can differ from what the start check looked at.
 const refusedAtCommit = refusedAdds(releaseTree, headAtStart)
 if (refusedAtCommit.length) {
-  refuse(
+  await stopRefused(
     '\n❌ This release would take files that must never be in it, so NOTHING was committed or pushed.\n' +
       refusedSay(refusedAtCommit) +
       '   His files on disk were not touched. The version bump is on disk and uncommitted.\n' +
-      '   The way out: add the path to .gitignore, or move it out of this folder. Then run the same command again.\n',
+      refusedWayOut +
+      '   Then run the same command again.\n',
   )
 }
 const body = [
