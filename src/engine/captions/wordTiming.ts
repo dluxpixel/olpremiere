@@ -178,8 +178,12 @@ export const ONSET_QUIET_S = 0.1
  * does it only to about a frame too, and was built to rescue the recogniser's
  * guesses, which an aligned word is not. Measured on the phrase starts after a
  * pause in the synthetic speech, whose true onsets are known (n=52, within
- * 50 ms of the truth): the aligner alone 96.2%, the snap on top of it 84.6%
- * (bias -10 to +20 ms). So the snap skips an aligned word's start. It still
+ * 50 ms of the truth): the aligner alone 96.2%, the snap on top of it 84.6%.
+ * ("Bias" in the harness tables is the median of start minus true start, so a
+ * minus is early: the aligner alone sat 10 ms early, bias -10 ms. The snap's own
+ * bias was not kept, the stored run having been made with the guard below; the
+ * +20 ms beside it in those tables is the old chain on Whisper's words with no
+ * aligner, 20 ms late.) So the snap skips an aligned word's start. It still
  * ends the word BEFORE at the moment his voice went off: that is an end move,
  * and ends are the trim's business (see state/transcribeActions.ts).
  */

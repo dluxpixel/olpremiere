@@ -125,12 +125,23 @@ export interface AlignerModel {
 // THE TRUTH. Windows SAPI voices (David and Zira, plus a fast David and a slow
 // Zira) read 1156 words into a 16 kHz recording and report each word's start as
 // they say it; that is a time known to a few ms, not a guess (_verify/aligner).
-// Word start against the truth, median absolute error, share within 50 ms:
+// Word start against the truth, median absolute error, share within 50 ms. THIS
+// TABLE IS THE OFFLINE RUN OF 2026-10-21 (the model run from a script on the
+// stored recordings, outside the app); "bias" in its rows is the onset bias added
+// to every time, ctcAlign.ts ONSET_BIAS_S:
 //
 //                                letter words      phrase starts    number words
 //   xlsr q4 (this)  bias -15 ms   15.0 ms  93.3%    20.0 ms  98.1%    25.0 ms  88.9%
 //   base-960h q8    bias -45 ms   15.0 ms  94.8%    15.2 ms  94.2%    24.4 ms  78.6%
 //   (raw, no bias: xlsr 21.7 ms, 87.0% / base-960h 45 ms, 60.9%)
+//
+// The REAL-APP run of 2026-10-25 (the same recordings through the speech worker on
+// WebGPU, still the -15 ms setting) is the newer measurement, and wordTiming.ts and
+// transcribeActions.ts quote it: phrase starts 96.2% (n=52) and letter words 93.8%
+// (n=1117) within 50 ms, where the table says 98.1% and 93.3%. Two runs, not a
+// correction; the xlsr row above is left as it was measured. In the real-app run the
+// median signed start error (recorded start minus true start) was -10 ms on the
+// phrase starts, which is a result, not the -15 ms setting.
 //
 // A tie on plain English words, so the pick is made on the rest. A "phrase
 // start" is a word after a pause, the moment a caption appears, and xlsr has
@@ -148,9 +159,14 @@ export interface AlignerModel {
 //
 // LICENCE, checked on the Hugging Face model API on 2026-10-25. The model is
 // NewComer00/wav2vec2-xlsr-multilingual-56-ONNX, an ONNX export of
-// voidful/wav2vec2-xlsr-multilingual-56, which was fine tuned from
-// facebook/wav2vec2-large-xlsr-53. All three are Apache-2.0. The weights are not
-// bundled in the build (electron-builder.yml ships out/ and ffmpeg only): they
+// voidful/wav2vec2-xlsr-multilingual-56 (the export's base_model tag says so),
+// which was fine tuned from facebook/wav2vec2-large-xlsr-53. All three are
+// Apache-2.0 (the license field of each repo on the API). The fine tuning is NOT
+// on voidful's own repo: its README is gated and it has no base_model tag. It is
+// stated in prose in the ONNX repo's README, which copies voidful's model card
+// ("Fine-tuned facebook/wav2vec2-large-xlsr-53 on 56 language using the Common
+// Voice"), so it rests on that copy of the card and not on a tag. The weights are
+// not bundled in the build (electron-builder.yml ships out/ and ffmpeg only): they
 // download at run time into the app's cache, like Whisper, about 247 MB.
 //
 // COST. 247 MB once, in the same browser cache as Whisper, and it loads on the
@@ -158,17 +174,26 @@ export interface AlignerModel {
 // alternative.
 //
 // TIME, as measured on 2026-10-25 in the real app on the RTX 4060 laptop GPU
-// (WebGPU): four SAPI recordings of 88 to 145 s of audio, the whole set run twice
-// (_verify/aligner/out/sapi.json). The aligner's OWN work, which the worker logs
-// ("timed N of M words ... in X s"), took 2.3 to 6.0 s per recording once its
-// model was loaded. The first recording of each run also paid the LOAD (model read
-// from the local cache and built on the GPU): 9.6 s and 5.9 s in all, against 4.2 s
-// and 3.9 s for the same clip on its second pass. A first DOWNLOAD of the 247 MB
-// comes on top of that, depends on the connection, and was not measured.
+// (WebGPU): four SAPI recordings of 88 to 145 s of audio, the whole set run twice.
+//
+// ⚠️ WHERE THE FIGURES ARE. _verify/aligner/out/sapi.json (git ignored, so not in
+// the repo) holds only the SECOND run: running the set again overwrote the first.
+// In that file: the second-run column of the table below, the 5.9 s and 3.9 s pair
+// and the 2.3 to 4.6 s. From the run it replaced, which no file keeps (the messages
+// of commits a51df42 and 4426252 carry some of it): the first-run column, the 9.6 s,
+// the 4.2 s and the 6.0 s upper bound.
+//
+// The aligner's OWN work, which the worker logs ("timed N of M words ... in X s"),
+// took 2.3 to 4.6 s in the stored run, up to 6.0 s in the first, per recording once
+// its model was loaded. The first recording of each run also paid the LOAD (model
+// read from the local cache and built on the GPU): 9.6 s in the first run and 5.9 s
+// in the stored one, in all, against 4.2 s and 3.9 s for the same clip on its second
+// pass. A first DOWNLOAD of the 247 MB comes on top of that, depends on the
+// connection, and was not measured.
 //
 // Whisper alone against Whisper plus the aligner on the same audio, whole run:
 //
-//                    audio    first run          second run
+//                    audio    first run          second run (stored)
 //   en-david        122.7 s   35.4 -> 51.7 s     31.7 -> 33.0 s
 //   en-zira         120.8 s   40.4 -> 47.8 s     38.2 -> 36.5 s
 //   en-david-fast    88.4 s   36.5 -> 48.1 s     30.9 -> 31.4 s
