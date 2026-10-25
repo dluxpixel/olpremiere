@@ -55,7 +55,8 @@ export interface PopWord {
  * pop at all. Pure, and the only place the curve lives.
  *
  * `spanS` is how long the word has before the next one starts (the next start
- * minus this start; leave it out for the last word, which has no next). A word
+ * minus this start, or for the last word the caption's end minus its start; leave
+ * it out for no limit). A span of zero or less is no pop at all. A word
  * shorter than the fifth of a second the pop takes would be cut off mid swell and
  * snap back to 1 as the next word began, so for it the rise and the settle are both
  * squeezed by span / 0.2, and the word is exactly 1 again when the next one starts.
@@ -107,10 +108,12 @@ export function activeWordAt(words: readonly { startS: number; endS: number }[],
 
 /**
  * How long `word` has before the next word starts: the nearest later start minus
- * its own. Infinity for the last word, which has no next one to give way to.
+ * its own. The last word has no next one, so it gives way to the end of the caption
+ * (`endS`, the clip's out point in the same content time) instead; Infinity when
+ * that is not a finite number. Zero or negative for a word at or past the end.
  */
-function spanOf(words: readonly PopWord[], word: PopWord): number {
-  let next = Infinity
+function spanOf(words: readonly PopWord[], word: PopWord, endS: number): number {
+  let next = Number.isFinite(endS) ? endS : Infinity
   for (const w of words) if (w.startS > word.startS && w.startS < next) next = w.startS
   return next - word.startS
 }
@@ -212,7 +215,7 @@ export function wordPopTitle(clip: Clip, sourceTimeS: number): TitleDef | undefi
   // The size this frame, in whole SCALE_STEPs above 1 (0 is "not popped now"). A word
   // shorter than the pop is squeezed to fit before the next word starts (popScaleAt).
   const steps = peak
-    ? Math.round((popScaleAt(sourceTimeS - word.startS, peak, word.emphasis, spanOf(words, word)) - 1) / SCALE_STEP)
+    ? Math.round((popScaleAt(sourceTimeS - word.startS, peak, word.emphasis, spanOf(words, word, clip.outS)) - 1) / SCALE_STEP)
     : 0
   // A size pop alone, between pops: nothing differs from the plain title, so hand it back as it is.
   if (steps <= 0 && !pop && !title.wordBox) return title

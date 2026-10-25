@@ -464,6 +464,18 @@ describe('popScaleAt', () => {
     it('makes a word with no time at all, or a span that is not a number, no pop', () => {
       for (const span of [0, -0.1, NaN]) expect(popScaleAt(0.05, PEAK, false, span)).toBe(1)
     })
+
+    it('is exactly 1, never NaN, for a span of nothing or less at any time', () => {
+      for (const span of [0, -1e-9, -0.05, -0.2, -60, -Infinity, NaN]) {
+        for (let i = -5; i <= 300; i++) {
+          for (const emphasis of [false, true]) {
+            const v = popScaleAt(i / 1000, PEAK, emphasis, span)
+            expect(Number.isNaN(v), `span ${span}, dt ${i / 1000}`).toBe(false)
+            expect(v).toBe(1)
+          }
+        }
+      }
+    })
   })
 })
 
@@ -631,7 +643,7 @@ describe('wordPopTitle with a size pop', () => {
     expect(wordPopTitle(slow, 0.5)).toBe(slow.title)
   })
 
-  it('gives the last word the full pop, because no word follows it to give way to', () => {
+  it('gives the last word the full pop while the caption runs on past it, because no word follows it to give way to', () => {
     const last = sizeOnly({
       captionWords: [
         { text: 'one', startS: 0.2, endS: 0.55 },
@@ -640,6 +652,78 @@ describe('wordPopTitle with a size pop', () => {
       ],
     })
     expect(wordPopTitle(last, 1.1)!.popWord).toEqual({ at: 2, word: 'three', scale: 1.15 })
+  })
+
+  it('squeezes the pop of the last word into what is left of the caption, so it is not cut off at the end', () => {
+    // The caption ends at 1.4 and 'three' starts at 1.35: it has 0.05 s, a quarter of the pop.
+    const late = sizeOnly({
+      captionWords: [
+        { text: 'one', startS: 0.2, endS: 0.55 },
+        { text: 'two', startS: 0.6, endS: 0.95 },
+        { text: 'three', startS: 1.35, endS: 1.4 },
+      ],
+    })
+    expect(late.outS).toBe(1.4)
+    const scaleAt = (t: number): number => wordPopTitle(late, t)!.popWord?.scale ?? 1
+    expect(scaleAt(1.375)).toBe(1.15) // half the span, the top
+    expect(scaleAt(1.36)).toBeGreaterThan(1.05)
+    // The last moments of the caption: settled, where the full curve was still near the top.
+    expect(scaleAt(1.399)).toBeLessThanOrEqual(1.005)
+    expect(scaleAt(1.4)).toBe(1)
+    expect(wordPopTitle(late, 1.4)).toBe(late.title)
+  })
+
+  it('does not pop a word that starts at or after the end of the caption', () => {
+    for (const startS of [1.4, 1.5, 3]) {
+      const beyond = sizeOnly({
+        captionWords: [
+          { text: 'one', startS: 0.2, endS: 0.55 },
+          { text: 'two', startS: 0.6, endS: 0.95 },
+          { text: 'three', startS, endS: startS + 0.2 },
+        ],
+      })
+      for (const t of [startS, startS + 0.02, startS + 0.1, startS + 0.3]) {
+        expect(wordPopTitle(beyond, t), `three at ${startS}, looked at ${t}`).toBe(beyond.title)
+      }
+    }
+  })
+
+  it('gives a short word the pop up to the next word start, not to the end of the word itself', () => {
+    // 'one' is over at 0.27 but 'two' does not start until 1.0: it has the whole gap, so the full pop.
+    const gap = sizeOnly(
+      {
+        captionWords: [
+          { text: 'one', startS: 0.2, endS: 0.27 },
+          { text: 'two', startS: 1.0, endS: 1.4 },
+        ],
+      },
+      { text: 'one two' },
+    )
+    const scaleAt = (t: number): number => wordPopTitle(gap, t)!.popWord?.scale ?? 1
+    expect(scaleAt(0.3)).toBe(1.15)
+    expect(scaleAt(0.35)).toBeLessThan(1.15)
+    expect(scaleAt(0.35)).toBeGreaterThan(1)
+    expect(scaleAt(0.5)).toBe(1)
+  })
+
+  it('has a word give way when the next one starts, even though it is still being said', () => {
+    // 'one' runs to 0.9 but 'two' starts at 0.3: 'one' has 0.1 s, so it is back to 1 by 0.3.
+    const overlap = sizeOnly(
+      {
+        captionWords: [
+          { text: 'one', startS: 0.2, endS: 0.9 },
+          { text: 'two', startS: 0.3, endS: 1.0 },
+        ],
+      },
+      { text: 'one two' },
+    )
+    const scaleAt = (t: number): number => wordPopTitle(overlap, t)!.popWord?.scale ?? 1
+    expect(scaleAt(0.25)).toBe(1.15) // half of its 0.1 s, the top
+    expect(scaleAt(0.2999)).toBeLessThanOrEqual(1.005)
+    expect(scaleAt(0.3)).toBe(1)
+    expect(wordPopTitle(overlap, 0.3)).toBe(overlap.title)
+    // And 'two' starts its own pop from the beginning.
+    expect(wordPopTitle(overlap, 0.4)!.popWord).toEqual({ at: 1, word: 'two', scale: 1.15 })
   })
 
   it('pops, boxes and lights an emoji and a word of marks as itself', () => {

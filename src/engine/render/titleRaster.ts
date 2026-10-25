@@ -498,7 +498,9 @@ function canvasMeasurer(def: TitleDef): ((s: string) => number) | null {
  * letter or digit whose ink is under 0.3 of its own advance wide is taken as the
  * advance instead, so its box and its pop are not built round a sliver. "!!" is
  * such a word too, but its bounds are sane (a good part of its advance), so it
- * keeps its tight ink.
+ * keeps its tight ink. A keycap (a digit, # or * with the keycap mark, 1 then
+ * U+FE0F then U+20E3) is an emoji although it holds a digit, so the keycap is taken
+ * out before that test: the digit in it does not save it from the fallback.
  */
 export function inkOfIn(ctx: Pick<OffscreenCanvasRenderingContext2D, 'measureText'>, word: string): WordInk {
   const m = ctx.measureText(word)
@@ -511,7 +513,7 @@ export function inkOfIn(ctx: Pick<OffscreenCanvasRenderingContext2D, 'measureTex
   }
   const left = -m.actualBoundingBoxLeft
   const right = m.actualBoundingBoxRight
-  if (!/[\p{L}\p{N}]/u.test(word) && right - left < 0.3 * m.width) return { left: 0, right: m.width, ...vertical }
+  if (!/[\p{L}\p{N}]/u.test(word.replace(/[0-9#*]\uFE0F?\u20E3/g, '')) && right - left < 0.3 * m.width) return { left: 0, right: m.width, ...vertical }
   return { left, right, ...vertical }
 }
 

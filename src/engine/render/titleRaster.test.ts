@@ -444,6 +444,9 @@ describe('where a word ink sits (inkOfIn)', () => {
       actualBoundingBoxDescent: 4,
     })
     expect(inkOfIn(sliver, '\u{1F525}')).toEqual({ left: 0, right: 40, ascent: 28, descent: 4 })
+    // A keycap holds a digit (or # or *) but is an emoji all the same: it is widened too.
+    expect(inkOfIn(sliver, '1\uFE0F\u20E3')).toEqual({ left: 0, right: 40, ascent: 28, descent: 4 })
+    expect(inkOfIn(sliver, '7\u20E3')).toEqual({ left: 0, right: 40, ascent: 28, descent: 4 })
     // Nothing at all reported (a box of no width) is the same.
     const empty = meter({ width: 40, actualBoundingBoxLeft: 0, actualBoundingBoxRight: 0, actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 })
     expect(inkOfIn(empty, '\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}')).toEqual({ left: 0, right: 40, ascent: 0, descent: 0 })
@@ -481,8 +484,14 @@ describe('the order a popping word is drawn in', () => {
     text: string
     x: number
     y: number
+    /** The box's width and height (0 for text), read off its path, where `x` and `y` are the box's corner. */
+    w: number
+    h: number
     /** How much bigger than the plain title this was drawn. */
     k: number
+    /** Where the transform sends the origin: a point p is drawn at k * p + (tx, ty). */
+    tx: number
+    ty: number
     fillStyle: string
     strokeStyle: string
     shadowBlur: number
@@ -492,8 +501,15 @@ describe('the order a popping word is drawn in', () => {
 
   /** A 2D context that records the text and the word box it is asked to draw. Ten px a character. */
   function fakeContext(): unknown {
+    // The transform is only ever translate and uniform scale, so it is a size k and a shift (tx, ty).
     let k = 1
-    const stack: number[] = []
+    let tx = 0
+    let ty = 0
+    const stack: { k: number; tx: number; ty: number }[] = []
+    // The corners of the path being built, so the box's rectangle can be read off when it is filled.
+    let path: { x: number; y: number }[] = []
+    const note = (op: Drawn['op'], text: string, x: number, y: number, w = 0, h = 0): void =>
+      void drawn.push({ op, text, x, y, w, h, k, tx, ty, fillStyle: ctx.fillStyle, strokeStyle: ctx.strokeStyle, shadowBlur: ctx.shadowBlur })
     const ctx = {
       font: '',
       textAlign: 'center',
@@ -514,22 +530,34 @@ describe('the order a popping word is drawn in', () => {
         actualBoundingBoxAscent: 28,
         actualBoundingBoxDescent: s === 'H' ? 0 : 6,
       }),
-      save: () => void stack.push(k),
-      restore: () => void (k = stack.pop() ?? 1),
-      translate: () => undefined,
+      save: () => void stack.push({ k, tx, ty }),
+      restore: () => {
+        const top = stack.pop() ?? { k: 1, tx: 0, ty: 0 }
+        k = top.k
+        tx = top.tx
+        ty = top.ty
+      },
+      // Moves the origin by (dx, dy) in the current, already scaled, units.
+      translate: (dx: number, dy: number) => {
+        tx += k * dx
+        ty += k * dy
+      },
       scale: (sx: number) => void (k *= sx),
-      beginPath: () => undefined,
+      beginPath: () => void (path = []),
       closePath: () => undefined,
-      moveTo: () => undefined,
-      arcTo: () => undefined,
+      moveTo: (x: number, y: number) => void path.push({ x, y }),
+      arcTo: (x1: number, y1: number) => void path.push({ x: x1, y: y1 }),
       stroke: () => undefined,
-      // The only filled path in these titles is the word box.
-      fill: () =>
-        void drawn.push({ op: 'box', text: '', x: 0, y: 0, k, fillStyle: ctx.fillStyle, strokeStyle: ctx.strokeStyle, shadowBlur: ctx.shadowBlur }),
-      fillText: (text: string, x: number, y: number) =>
-        void drawn.push({ op: 'fillText', text, x, y, k, fillStyle: ctx.fillStyle, strokeStyle: ctx.strokeStyle, shadowBlur: ctx.shadowBlur }),
-      strokeText: (text: string, x: number, y: number) =>
-        void drawn.push({ op: 'strokeText', text, x, y, k, fillStyle: ctx.fillStyle, strokeStyle: ctx.strokeStyle, shadowBlur: ctx.shadowBlur }),
+      // The only filled path in these titles is the word box: its rectangle is the bounds of its corners.
+      fill: () => {
+        const xs = path.map((p) => p.x)
+        const ys = path.map((p) => p.y)
+        const x = Math.min(...xs)
+        const y = Math.min(...ys)
+        note('box', '', x, y, Math.max(...xs) - x, Math.max(...ys) - y)
+      },
+      fillText: (text: string, x: number, y: number) => note('fillText', text, x, y),
+      strokeText: (text: string, x: number, y: number) => note('strokeText', text, x, y),
     }
     return ctx
   }
@@ -621,6 +649,28 @@ describe('the order a popping word is drawn in', () => {
     const oneOutline = ofWord(calls, 'one').find((c) => c.op === 'strokeText')!
     expect(oneOutline.shadowBlur).toBe(6)
     for (const c of [...ofWord(calls, 'one'), ...ofWord(calls, 'three')]) expect(c.k).toBe(1)
+  })
+
+  it('grows the box and the letters about one centre: the middle of the word, and of its box up and down', () => {
+    const calls = draw(titleFor(1.15))
+    const box = calls.find((c) => c.op === 'box')!
+    const [outline, fill] = ofWord(calls, 'two')
+    expect(box.k).toBeGreaterThan(1)
+    // A point p is drawn at k * p + t, so the one point that stays where it was is t / (1 - k).
+    const centreOf = (c: Drawn): { x: number; y: number } => ({ x: c.tx / (1 - c.k), y: c.ty / (1 - c.k) })
+    const about = centreOf(box)
+    for (const c of [outline!, fill!]) {
+      expect(centreOf(c).x).toBeCloseTo(about.x, 9)
+      expect(centreOf(c).y).toBeCloseTo(about.y, 9)
+    }
+    // Up and down it is the middle of the box. Across it is the middle of the word's ink ("two" is 30 wide).
+    expect(about.y).toBeCloseTo(box.y + box.h / 2, 9)
+    expect(about.x).toBeCloseTo(fill!.x + 15, 9)
+    // Every other word is drawn where the plain title draws it: no shift at all.
+    for (const c of [...ofWord(calls, 'one'), ...ofWord(calls, 'three')]) {
+      expect(c.tx).toBe(0)
+      expect(c.ty).toBe(0)
+    }
   })
 
   it('holds the grown box back to the canvas, as the letters are', () => {
