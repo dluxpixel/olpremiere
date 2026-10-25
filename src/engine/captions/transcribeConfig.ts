@@ -155,22 +155,29 @@ export interface AlignerModel {
 //
 // COST. 247 MB once, in the same browser cache as Whisper, and it loads on the
 // same device (WebGPU, else wasm). base-960h (95 MB) was the English-only
-// alternative. TIME, as measured on 2026-10-25 in the real app on the RTX 4060
-// laptop GPU (WebGPU), four SAPI recordings, Whisper turbo alone and then
-// Whisper plus the aligner on the same audio (_verify/aligner/out/sapi.json):
+// alternative.
 //
-//                    audio     Whisper alone   with the aligner
-//   en-david         122.7 s       35.4 s          51.7 s
-//   en-zira          120.8 s       40.4 s          47.8 s
-//   en-david-fast     88.4 s       36.5 s          48.1 s
-//   en-zira-slow     144.6 s       46.2 s          59.0 s
+// TIME, as measured on 2026-10-25 in the real app on the RTX 4060 laptop GPU
+// (WebGPU): four SAPI recordings of 88 to 145 s of audio, the whole set run twice
+// (_verify/aligner/out/sapi.json). The aligner's OWN work, which the worker logs
+// ("timed N of M words ... in X s"), took 2.3 to 6.0 s per recording once its
+// model was loaded. The first recording of each run also paid the LOAD (model read
+// from the local cache and built on the GPU): 9.6 s and 5.9 s in all, against 4.2 s
+// and 3.9 s for the same clip on its second pass. A first DOWNLOAD of the 247 MB
+// comes on top of that, depends on the connection, and was not measured.
 //
-// So a whole run took 7 to 16 s longer. The aligner's own work, which the worker
-// logs, was 3.3 to 6.0 s once the model was loaded. The first clip paid the LOAD on
-// top of that (9.6 s in all, with the model read from the local cache); a first
-// download of the 247 MB is further still and is the connection's, not in these
-// numbers. These totals do not separate the rest of the gap. The rest of a caption
-// run is the music gate, not this.
+// Whisper alone against Whisper plus the aligner on the same audio, whole run:
+//
+//                    audio    first run          second run
+//   en-david        122.7 s   35.4 -> 51.7 s     31.7 -> 33.0 s
+//   en-zira         120.8 s   40.4 -> 47.8 s     38.2 -> 36.5 s
+//   en-david-fast    88.4 s   36.5 -> 48.1 s     30.9 -> 31.4 s
+//   en-zira-slow    144.6 s   46.2 -> 59.0 s     47.2 -> 43.9 s
+//
+// The gap between two whole runs is NOT the aligner's cost, and is not quoted as
+// one: Whisper's own time moved by several seconds between passes of the same clip
+// (in the second run the pass with the aligner finished sooner than the pass
+// without it, twice). The rest of a caption run is the music gate, not this.
 const XLSR_ALIGNER: AlignerModel = {
   id: 'NewComer00/wav2vec2-xlsr-multilingual-56-ONNX',
   dtype: 'q4',
