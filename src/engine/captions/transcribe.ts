@@ -628,9 +628,13 @@ const gpuFailures = new Map<string, number>()
  * ⚠️ Its wasm fallback (a machine with no usable GPU) was NOT measured: a big
  * model on the CPU is many times slower, and a long clip there is where this
  * budget would be tested first.
+ *
+ * The word timing model (alignRunner.ts) runs inside this budget, so every wait
+ * it has is shorter than the floor; both numbers are exported for the test that
+ * pins that.
  */
-const LISTEN_FLOOR_MS = 60_000
-const LISTEN_MS_PER_AUDIO_SECOND = 10_000
+export const LISTEN_FLOOR_MS = 60_000
+export const LISTEN_MS_PER_AUDIO_SECOND = 10_000
 
 /**
  * Run Whisper on 16kHz mono PCM in the shared, kept-alive worker. With

@@ -45,6 +45,8 @@ export interface AlignRun {
   /** No window is started after this long; the words in later ones keep Whisper's times. */
   budgetMs: number
   now?: () => number
+  /** How long one `logitsOf` may take before the aligner gives up (AlignTimeout); ALIGN_WINDOW_MS when absent. */
+  windowMs?: number
 }
 
 export interface AlignResult {
@@ -63,6 +65,74 @@ const BRACKETED = /^[[(].*[\])]$/
 
 /** Under 0.1 s of audio the model has no frame to read a letter from. */
 const MIN_SLICE = 1600
+
+// ⛔ EVERY WAIT IN THIS FILE ENDS BEFORE THE MAIN THREAD LOSES PATIENCE. The aligner
+// runs inside the speech run, and transcribe.ts keeps one watchdog over all of it
+// (LISTEN_FLOOR_MS, 60 s, plus 10 s per second of audio), wound back by every
+// progress message the worker posts. A wait with no deadline here, a download that
+// stalls on 247 MB, a session that never answers, a vocabulary fetch with no
+// reply, therefore ended in that watchdog killing the worker, and the run failed
+// as "The speech model stopped responding" with every word Whisper had finished
+// thrown away, for a model whose whole job is to make a caption a little better.
+// So each wait has its own shorter deadline, it throws AlignTimeout, and
+// alignRecognised answers that like any other failure: Whisper's chunks, unchanged.
+//
+// They are shorter than the 60 s floor because the quietest stretch the watchdog
+// can see is one of these waits, started right after a progress message
+// (alignRecognised posts one before the load, one when it is done and one after
+// each window). alignRunner.test.ts pins the sizes against the watchdog's floor.
+
+/** A model load that has gone this long without one download report is stalled. Each report starts the count again, so a slow download that keeps moving is let be. */
+export const ALIGN_LOAD_STALL_MS = 40_000
+/** The vocabulary is one 147 KB file; if it has not come in this long it is not coming. */
+export const ALIGN_VOCAB_MS = 20_000
+/** One window through the model. A 20 s slice takes a few seconds on the CPU; this is the hung session, not the slow one. */
+export const ALIGN_WINDOW_MS = 40_000
+
+export type AlignStage = 'load' | 'vocabulary' | 'window'
+
+/** A step of the aligner stopped answering. Thrown inside alignRecognised's try, so the chunks come back as they were. */
+export class AlignTimeout extends Error {
+  constructor(
+    readonly stage: AlignStage,
+    ms: number,
+  ) {
+    super(`The word timing ${stage} did not answer in ${Math.round(ms / 1000)} s`)
+    this.name = 'AlignTimeout'
+  }
+}
+
+/**
+ * Runs `start` and gives up on it, with an AlignTimeout, if it has not finished
+ * `ms` after the last `touch` (the first touch is now). `start` is handed `touch`
+ * so work that reports as it goes, like a download, can start the count again.
+ *
+ * The work itself cannot be cancelled (a model load and an inference run are not
+ * abortable), so it is left to finish or fail on its own with nobody listening.
+ */
+function guarded<T>(start: (touch: () => void) => PromiseLike<T>, ms: number, stage: AlignStage): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let over = false
+  let expire!: (reason: unknown) => void
+  const clock = new Promise<never>((_, reject) => {
+    expire = reject
+  })
+  const touch = (): void => {
+    if (over) return
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      over = true
+      expire(new AlignTimeout(stage, ms))
+    }, ms)
+  }
+  touch()
+  // An async wrapper, so a `start` that throws outright is a rejection like any other.
+  const work = (async () => start(touch))()
+  return Promise.race([work, clock]).finally(() => {
+    over = true
+    clearTimeout(timer)
+  })
+}
 
 /** Zero mean and unit variance over the slice: what the model's feature extractor does (preprocessor_config.json, do_normalize). */
 export function normaliseSlice(slice: Float32Array): Float32Array {
@@ -177,7 +247,9 @@ export async function alignChunks(chunks: readonly WordChunk[], pcm: Float32Arra
     if (b - a < MIN_SLICE) continue
     const words = heard.slice(win.first, win.end)
     const cols = columnsFor(words, full)
-    const emissions = reduceLogits(await run.logitsOf(normaliseSlice(pcm.subarray(a, b))), cols.ids)
+    const slice = normaliseSlice(pcm.subarray(a, b))
+    const logits = await guarded(() => run.logitsOf(slice), run.windowMs ?? ALIGN_WINDOW_MS, 'window')
+    const emissions = reduceLogits(logits, cols.ids)
     const got = alignWords(words, emissions, FRAME_S, a / RATE, cols.vocab, { biasS: run.aligner.onsetBiasS })
     got.words.forEach((w, k) => {
       timed[live[win.first + k]!] = w
@@ -212,8 +284,11 @@ export type LoadReport = (pct: number | null, downloading: boolean) => void
 
 type LoadProgress = { status?: string; progress?: number; total?: number }
 
-/** Only the biggest file reports, like the speech model's loader (transcribeWorker.modelProgress). */
-function fileProgress(report: LoadReport): (p: LoadProgress) => void {
+/**
+ * Only the biggest file reports, like the speech model's loader (transcribeWorker.modelProgress).
+ * Answers whether this event was passed on, which is the one the main thread hears.
+ */
+function fileProgress(report: LoadReport): (p: LoadProgress) => boolean {
   let biggest = 0
   let downloading = false
   return (p) => {
@@ -221,7 +296,9 @@ function fileProgress(report: LoadReport): (p: LoadProgress) => void {
     if (p.status === 'progress' && typeof p.progress === 'number' && (p.total ?? 0) >= biggest) {
       biggest = p.total ?? 0
       report(p.progress, downloading)
+      return true
     }
+    return false
   }
 }
 
@@ -231,15 +308,24 @@ function fileProgress(report: LoadReport): (p: LoadProgress) => void {
  * multilingual model ships no tokenizer.json, so it is fetched here: the first
  * time off the network, ever after out of the cache (so offline is fine).
  */
-async function readVocab(id: string): Promise<Record<string, number>> {
+async function fetchVocab(id: string, signal: AbortSignal): Promise<Record<string, number>> {
   const url = `https://huggingface.co/${id}/resolve/main/vocab.json`
   const cache = typeof caches === 'undefined' ? null : await caches.open('transformers-cache').catch(() => null)
   const hit = cache ? await cache.match(url).catch(() => undefined) : undefined
   if (hit) return (await hit.json()) as Record<string, number>
-  const res = await fetch(url)
+  const res = await fetch(url, { signal })
   if (!res.ok) throw new Error(`The word timing vocabulary did not load (${res.status})`)
   await cache?.put(url, res.clone()).catch(() => {})
   return (await res.json()) as Record<string, number>
+}
+
+/** fetchVocab with a deadline (ALIGN_VOCAB_MS): a request that never answers is aborted and is an AlignTimeout. */
+function readVocab(id: string, ms = ALIGN_VOCAB_MS): Promise<Record<string, number>> {
+  const ctl = new AbortController()
+  return guarded(() => fetchVocab(id, ctl.signal), ms, 'vocabulary').catch((err: unknown) => {
+    ctl.abort()
+    throw err
+  })
 }
 
 interface Loaded {
@@ -258,7 +344,22 @@ async function buildModel(aligner: AlignerModel, device: 'webgpu' | 'wasm', repo
   ;(tf.env as { useBrowserCache?: boolean; allowLocalModels?: boolean }).useBrowserCache = true
   ;(tf.env as { useBrowserCache?: boolean; allowLocalModels?: boolean }).allowLocalModels = false
   // The model first: if it cannot even be asked for, no vocabulary fetch is left running.
-  const loading = tf.AutoModelForCTC.from_pretrained(aligner.id, { device, dtype: aligner.dtype, progress_callback: fileProgress(report) })
+  // Its deadline is a STALL: every report the download passes on starts the count again, so a
+  // slow connection that keeps moving is let be and one that has gone quiet is not. Only the
+  // reports the main thread hears count, or its watchdog could run out while this one did not.
+  const progress = fileProgress(report)
+  const loading = guarded(
+    (touch) =>
+      tf.AutoModelForCTC.from_pretrained(aligner.id, {
+        device,
+        dtype: aligner.dtype,
+        progress_callback: (p: LoadProgress) => {
+          if (progress(p)) touch()
+        },
+      }),
+    ALIGN_LOAD_STALL_MS,
+    'load',
+  )
   const [model, vocab] = await Promise.all([loading, readVocab(aligner.id)])
   const callable = model as unknown as {
     (inputs: Record<string, unknown>): Promise<{ logits: { data: Float32Array; dims: number[] } }>
@@ -287,7 +388,11 @@ function modelOn(aligner: AlignerModel, device: 'webgpu' | 'wasm', report: LoadR
   if (known) return known
   const made = buildModel(aligner, device, report)
   loaded.set(key, made)
-  made.catch(() => loaded.delete(key))
+  // A load that failed or timed out is forgotten, so the next run tries again. Only
+  // its own entry: a newer one under the same key is somebody else's.
+  made.catch(() => {
+    if (loaded.get(key) === made) loaded.delete(key)
+  })
   return made
 }
 
@@ -318,12 +423,15 @@ export async function alignRecognised(
   try {
     const aligner = alignerFor(language)
     const budgetMs = ALIGN_BUDGET_FLOOR_MS + (pcm.length / RATE) * ALIGN_BUDGET_PER_AUDIO_SECOND_MS
-    report(null, false)
     for (;;) {
+      // A beat before each attempt, the load and the windows (see the deadlines at the
+      // top): the main thread's watchdog starts again on every one of them.
+      report(null, false)
       const device = await pickDevice()
       try {
         const began = Date.now()
         const model = await modelOn(aligner, device, report)
+        report(0, false)
         const r = await alignChunks(chunks, pcm, {
           aligner,
           vocab: model.vocab,
@@ -337,6 +445,18 @@ export async function alignRecognised(
         )
         return r.chunks
       } catch (err) {
+        if (err instanceof AlignTimeout) {
+          // Something stopped answering. No second attempt on the other device in the same
+          // run: it would wait on the same download, and the watchdog is not far off.
+          // A load that timed out has dropped its own entry (modelOn); a model that loaded
+          // and then hung on a window is dropped here, so the next run builds a fresh
+          // session instead of waiting on this one, and off the GPU if that is where it hung.
+          if (err.stage === 'window') {
+            loaded.delete(`${aligner.id}|${device}`)
+            if (device === 'webgpu') gpuBad = true
+          }
+          throw err
+        }
         if (device === 'wasm') throw err
         // The GPU could not run it. Said once, then wasm for the rest of the session.
         gpuBad = true
