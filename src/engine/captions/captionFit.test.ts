@@ -231,3 +231,88 @@ describe('an emoji', () => {
     expect(fits(`awake doesn't really ${FAMILY}`)).toBe(false)
   })
 })
+
+describe('a character the emoji face leaves out', () => {
+  // emojiFont.ts keeps the copyright, registered and trade mark signs out of the face's unicode-range
+  // ("they read as text in a caption"), so the title's own font draws them at their own, narrow,
+  // width. Unicode calls them pictographs, and the fitter used to reserve a whole emoji for each.
+  const COPYRIGHT = '\u00A9'
+  const REGISTERED = '\u00AE'
+  const TRADE_MARK = '\u2122'
+  // The section sign: in no width table and no emoji range, so it is measured the same plain way.
+  const PLAIN = '\u00A7'
+  const FIRE = '\u{1F525}'
+  const stacks = [OSWALD_STACK, CAPTION_FONT_STACK, COMIC_STACK, undefined]
+
+  it('measures the copyright, registered and trade mark signs as plain text', () => {
+    for (const stack of stacks) {
+      const plain = captionTextWidthPx(PLAIN, 100, stack)
+      expect(plain, `${stack}`).toBeLessThan(100)
+      for (const sign of [COPYRIGHT, REGISTERED, TRADE_MARK]) {
+        expect(captionTextWidthPx(sign, 100, stack), `${stack} ${sign}`).toBeCloseTo(plain, 6)
+      }
+    }
+  })
+
+  it('reads (c) 2026, typed with the real copyright sign, as plain text', () => {
+    for (const stack of stacks) {
+      const wide = (t: string): number => captionTextWidthPx(t, 100, stack)
+      expect(wide(`${COPYRIGHT} 2026`), `${stack}`).toBeCloseTo(wide(`${PLAIN} 2026`), 6)
+      expect(wide(`${COPYRIGHT} 2026`), `${stack}`).toBeLessThan(wide(`${FIRE} 2026`) - 30)
+      expect(wide(`AWAKE ${TRADE_MARK}`), `${stack}`).toBeCloseTo(wide(`AWAKE ${PLAIN}`), 6)
+    }
+  })
+
+  it('still reserves a picture for the same sign when it asks for the emoji look', () => {
+    // The emoji selector (U+FE0F) after it is a request for the picture, drawn by the emoji font.
+    for (const stack of stacks) expect(captionTextWidthPx(`${COPYRIGHT}\uFE0F`, 100, stack), `${stack}`).toBeCloseTo(110, 6)
+  })
+})
+
+describe('a skin toned, keycap or flag emoji', () => {
+  const THUMBS_UP = '\u{1F44D}'
+  const TONES = ['\u{1F3FB}', '\u{1F3FC}', '\u{1F3FD}', '\u{1F3FE}', '\u{1F3FF}']
+  const CZECH = '\u{1F1E8}\u{1F1FF}'
+  const BRITISH = '\u{1F1EC}\u{1F1E7}'
+  const stacks = [OSWALD_STACK, CAPTION_FONT_STACK, COMIC_STACK, undefined]
+
+  it('gives a thumbs up in every skin tone one picture, 1.1 em', () => {
+    for (const stack of stacks) {
+      for (const tone of TONES) {
+        expect([...THUMBS_UP + tone], tone).toHaveLength(2)
+        expect(captionTextWidthPx(THUMBS_UP + tone, 100, stack), `${stack} ${tone}`).toBeCloseTo(110, 6)
+      }
+      expect(captionTextWidthPx(THUMBS_UP, 100, stack), `${stack}`).toBeCloseTo(110, 6)
+    }
+  })
+
+  it('gives a keycap the width it is drawn at: one picture, not a digit and a mark', () => {
+    for (const stack of stacks) {
+      for (const base of ['1', '9', '#', '*']) {
+        expect(captionTextWidthPx(`${base}\uFE0F\u20E3`, 100, stack), `${stack} ${base}`).toBeCloseTo(110, 6)
+        expect(captionTextWidthPx(`${base}\u20E3`, 100, stack), `${stack} ${base} bare`).toBeCloseTo(110, 6)
+      }
+    }
+  })
+
+  it('leaves a bare digit, # and * at their own width: they are the keycap bases, not emoji', () => {
+    for (const stack of stacks) {
+      for (const base of ['1', '9', '#', '*']) {
+        expect(captionTextWidthPx(base, 100, stack), `${stack} ${base}`).toBeLessThan(100)
+      }
+    }
+  })
+
+  it('gives a flag (two regional indicators) one picture, and two flags two', () => {
+    for (const stack of stacks) {
+      expect([...CZECH]).toHaveLength(2)
+      expect(captionTextWidthPx(CZECH, 100, stack), `${stack}`).toBeCloseTo(110, 6)
+      expect(captionTextWidthPx(CZECH + BRITISH, 100, stack), `${stack}`).toBeCloseTo(220, 6)
+    }
+  })
+
+  it('adds a keycap and a flag to the words around them', () => {
+    const wide = (t: string): number => captionTextWidthPx(t, 100, OSWALD_STACK)
+    expect(wide(`TOP 1\uFE0F\u20E3 ${CZECH}`)).toBeCloseTo(wide('TOP ') + 110 + wide(' ') + 110, 6)
+  })
+})

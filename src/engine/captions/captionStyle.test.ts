@@ -702,13 +702,15 @@ describe('what the fitter accepts is what is drawn', () => {
     (str: string): number =>
       captionTextWidthPx(str, d.fontSizePx, d.fontFamily)
 
-  /** The lines rasterizeTitle draws this title on at this scale, as preview.ts and exportWorker.ts call it. */
-  const linesAt = (def: TitleDef, seq: { width: number; height: number }, scale: number): string[] => {
-    const w = Math.round(seq.width * scale)
-    const h = Math.round(seq.height * scale)
-    const scaled = scaleTitleDef(def, scale)
-    return titleLayout(scaled, w, h, measureOf(scaled), titleLinesAt(def, w, scale, measureOf)).lines
+  /** The lines rasterizeTitle draws this title on in a raster of this size and scale, as preview.ts and exportWorker.ts call it. */
+  const linesIn = (def: TitleDef, seqWidth: number, raster: { width: number; height: number; scale: number }): string[] => {
+    const scaled = scaleTitleDef(def, raster.scale)
+    return titleLayout(scaled, raster.width, raster.height, measureOf(scaled), titleLinesAt(def, raster.width, raster.scale, measureOf, seqWidth)).lines
   }
+
+  /** The same for a raster sized round(seq * scale), which is how the monitor and a same shape export size it. */
+  const linesAt = (def: TitleDef, seq: { width: number; height: number }, scale: number): string[] =>
+    linesIn(def, seq.width, { width: Math.round(seq.width * scale), height: Math.round(seq.height * scale), scale })
 
   /** The same, wrapped in the scaled raster itself, which is what the monitor did before. */
   const rewrappedAt = (def: TitleDef, seq: { width: number; height: number }, scale: number): string[] => {
@@ -774,6 +776,70 @@ describe('what the fitter accepts is what is drawn', () => {
     }
   })
 
+  // The sequence width is passed to titleLinesAt, not read back from the raster. Read back as
+  // round(width / scale) it is off by 1 to 2 px wherever the raster is not a whole number of scale
+  // steps wide (1350 at 0.375 is 506 px, which reads back as 1349; 1366 and 1081 at several scales),
+  // and wherever an odd sequence height makes the export scale outH / seqH (1920x1079 read back as
+  // 1918). A caption that sits within those px of the limit then wrapped in the monitor and not in
+  // the export, or the other way about.
+  describe('a caption at the limit, on a sequence whose width the raster cannot give back', () => {
+    const CAPTION = "AWAKE DOESN'T REALLY"
+    const HOUSE_STYLE = BUILTIN_CAPTION_STYLES[0]!
+    const SEQUENCES = [
+      { width: 1350, height: 1080 },
+      { width: 1366, height: 768 },
+      { width: 1081, height: 1350 },
+      // An odd height: the export raster is the next even height, so its scale is outH / seqH.
+      { width: 1920, height: 1079 },
+      { width: 1366, height: 767 },
+      { width: 1080, height: 2111 },
+    ]
+    /** The scale the old guess read the width back with: round(raster width / scale). */
+    const guessedWidth = (r: { width: number; scale: number }): number => Math.max(1, Math.round(r.width / r.scale))
+
+    for (const seq of SEQUENCES) {
+      it(`${seq.width}x${seq.height}: the monitor and the export break it on the same lines at every raster`, () => {
+        const rasters = SCALES.filter((scale) => scale !== 1).map((scale) => ({
+          label: `monitor at ${scale}`,
+          width: Math.round(seq.width * scale),
+          height: Math.round(seq.height * scale),
+          scale,
+        }))
+        if (seq.height % 2 === 1) {
+          const outH = seq.height + 1
+          rasters.push({ label: `export ${seq.width}x${outH}`, width: seq.width, height: outH, scale: outH / seq.height })
+        }
+
+        let misread = 0
+        for (const raster of rasters) {
+          const trueLimit = captionLineWidthPx(seq.width)
+          const guessedLimit = captionLineWidthPx(guessedWidth(raster))
+          // The caption is sized to draw halfway between the two limits, so it fits one and not
+          // the other (a size such as 71.3 px is fine here: only the break is under test). When
+          // the guess happens to be right it sits just inside the true limit instead.
+          const target = guessedLimit === trueLimit ? trueLimit - 0.5 : (guessedLimit + trueLimit) / 2
+          const base = captionDefFor(HOUSE_STYLE, CAPTION, seq.height)
+          const def: TitleDef = { ...base, fontSizePx: target / captionTextWidthPx(CAPTION, 1, base.fontFamily) }
+          expect(measureOf(def)(CAPTION), raster.label).toBeCloseTo(target, 6)
+
+          // What the export at the sequence size draws, which is also what the fitter decided.
+          const exported = titleLayout(def, seq.width, seq.height, measureOf(def)).lines
+          expect(linesIn(def, seq.width, raster), `${seq.width}x${seq.height}, ${raster.label}`).toEqual(exported)
+
+          if (guessedLimit !== trueLimit) {
+            misread++
+            // Not a test that cannot fail: the guess alone breaks this caption somewhere else.
+            const guessed = scaleTitleDef(def, raster.scale)
+            const guessedLines = titleLayout(guessed, raster.width, raster.height, measureOf(guessed), titleLinesAt(def, raster.width, raster.scale, measureOf)).lines
+            expect(guessedLines, `the guess at ${raster.label}`).not.toEqual(exported)
+          }
+        }
+        // Every one of these sequences has a raster the width is misread on.
+        expect(misread).toBeGreaterThan(0)
+      })
+    }
+  })
+
   describe('a two line caption', () => {
     const SUBTITLES = BUILTIN_CAPTION_STYLES.find((s) => s.id === 'builtin-subtitles')!
     const SHORT = { width: 1080, height: 1920, fps: 30 }
@@ -795,6 +861,19 @@ describe('what the fitter accepts is what is drawn', () => {
       // Where the letter count broke the same words, they draw on three.
       expect(drawnLines("diamonds MAMA office\nódy home WWW ódy doesn't")).toHaveLength(3)
       expect(captionFitterFor(SUBTITLES, SHORT)(RUN)).toBe(true)
+    })
+
+    it('is cut shorter by the chunker when it still does not fit once balanced, with no word lost', () => {
+      // Six wide words: the best two way break, "MMMMMM WWWWWW MMMMMM" and "WWWWWW MMMMMM WWWWWW",
+      // is still 1225 and 1313 px a side on a 950 px line, so it would draw on four lines.
+      const WIDE = 'MMMMMM WWWWWW MMMMMM WWWWWW MMMMMM WWWWWW'
+      const fits = captionFitterFor(SUBTITLES, SHORT)
+      expect(drawnLines(breakLines(WIDE, SUBTITLES.shape, font)).length).toBeGreaterThan(2)
+      expect(fits(WIDE)).toBe(false)
+      const chunks = chunkWords(said(WIDE, 0, 0.25), chunkOptionsFor(SUBTITLES.shape, SHORT.fps, fits))
+      expect(chunks.length).toBeGreaterThan(1)
+      expect(wordsIn(chunks)).toEqual(WIDE.split(' '))
+      for (const c of chunks) expect(c.text.trim(), JSON.stringify(c)).not.toBe('')
     })
 
     it('never needs more lines than the same words flowed as one paragraph', () => {

@@ -30,6 +30,7 @@
 //
 // Pure: no canvas, no store.
 
+import { EMOJI_UNICODE_RANGE } from '../render/emojiFont'
 import { wrapLinesWith } from '../render/titleRaster'
 import type { TitleDef } from '../types'
 import { LILITA_METRICS, MONTSERRAT_METRICS, OSWALD_METRICS, type FontMetrics } from './captionFontMetrics'
@@ -50,17 +51,53 @@ const ESTIMATE: FontMetrics = { advance: ESTIMATE_ADVANCE }
 const OTHER = 720
 
 /**
- * What one emoji is reserved, per 1000 em. An emoji is drawn from the emoji face
- * (the Apple set first, emojiFont.ts), never the title's own font, and is about
- * an em wide there, so 1.1 em keeps the fitter on the safe side of it. Counted per
- * GRAPHEME: a skin tone (👍🏽) or a ZWJ family is several code points drawn as
- * one picture, and code point by code point it read as two to seven unknown
- * characters, up to five times too wide.
+ * What one emoji picture is reserved, per 1000 em. An emoji is drawn from an emoji
+ * face (the Apple set first, emojiFont.ts), never the title's own font, and is
+ * about an em wide there, so 1.1 em keeps the fitter on the safe side of it.
+ * Counted per GRAPHEME: a skin tone (thumbs up with a tone) or a ZWJ family is
+ * several code points drawn as one picture, and code point by code point it read
+ * as two to seven unknown characters, up to five times too wide.
  */
 const EMOJI = 1100
 
-/** Any emoji at all; the fast path skips the grapheme split for plain text. */
-const HAS_PICTOGRAPH = /\p{Extended_Pictographic}/u
+/**
+ * The characters the Apple emoji face answers for, built from the very
+ * unicode-range the page registers it with (EMOJI_UNICODE_RANGE, "U+203C,
+ * U+2194-21AA, ..."), so the fitter and the font cannot drift apart. It is also
+ * the fast path's gate: plain text never reaches the grapheme split.
+ */
+const EMOJI_FACE = new RegExp(
+  `[${EMOJI_UNICODE_RANGE.split(',')
+    .map((part) => {
+      const [lo, hi] = part.trim().slice(2).split('-')
+      return hi ? `\\u{${lo}}-\\u{${hi}}` : `\\u{${lo}}`
+    })
+    .join('')}]`,
+  'u',
+)
+
+/** What holds a sequence together but is no picture itself: ZWJ, the emoji selector, the keycap mark, the flag tags. */
+const JOINER = /\u200D|\uFE0F|\u20E3|[\u{E0020}-\u{E007F}]/u
+
+/**
+ * Is this grapheme drawn as ONE emoji picture? Yes when
+ *   - the Apple face answers for a character in it that is more than a joiner: a
+ *     fire, a skin toned thumb, a family, a flag (two regional indicators), a heart;
+ *   - it asks for emoji presentation (U+FE0F) or is a keycap (U+20E3). A keycap's
+ *     digit, # or * sits outside the range on purpose and the face never takes a
+ *     keycap (emojiFont.ts appleEmojiFor), so the system's own emoji font draws
+ *     the whole keycap as one picture.
+ * No when the title's own font draws it. The copyright, registered and trade mark
+ * signs are pictographs to Unicode but are left out of the range ("they read as
+ * text in a caption"), so they draw as plain, narrower, characters.
+ */
+function isPicture(segment: string): boolean {
+  for (const ch of segment) {
+    if (ch === '\uFE0F' || ch === '\u20E3') return true
+    if (EMOJI_FACE.test(ch) && !JOINER.test(ch)) return true
+  }
+  return false
+}
 
 let graphemes: Intl.Segmenter | null = null
 
@@ -150,12 +187,12 @@ export function captionTextWidthPx(text: string, fontSizePx: number, fontFamily?
       prev = ch
     }
   }
-  if (!HAS_PICTOGRAPH.test(shaped)) {
+  if (!EMOJI_FACE.test(shaped)) {
     add(shaped)
   } else {
     graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' })
     for (const { segment } of graphemes.segment(shaped)) {
-      if (HAS_PICTOGRAPH.test(segment)) {
+      if (isPicture(segment)) {
         // Another face draws it, so nothing kerns across it.
         units += EMOJI
         prev = ''
