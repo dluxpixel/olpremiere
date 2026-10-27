@@ -18,6 +18,10 @@ export default tseslint.config(
       // Helper worktrees live here, each a whole copy of the repo with its own
       // build. They are not this tree's code: linting them failed a ship.
       '.claude',
+      // The desktop build writes its config out as electron.vite.config.<time>.mjs
+      // and deletes it again. In the release gate it runs beside lint, and on
+      // 2026-10-27 lint listed that file and then failed to open it (ENOENT).
+      'electron.vite.config.*.mjs',
     ],
   },
   {
