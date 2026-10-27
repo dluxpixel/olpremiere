@@ -16,8 +16,9 @@
  */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { newProject, type Project } from '../engine/types'
+import { resetEditTabsForTests } from '../state/editTabs'
 import { useStore } from '../state/store'
 import { ProjectsDialog } from './ProjectsDialog'
 
@@ -81,7 +82,29 @@ const rowOf = (name: string) => screen.getAllByTestId('project-row').find((r) =>
 const names = () =>
   screen.queryAllByTestId('project-row').map((r) => r.querySelector('.truncate')?.firstChild?.textContent ?? '')
 
+// The first switch to another project loads three heavy modules on demand (what
+// keeps an edit open, see whatKeepsThisEditOpen in state/editTabs.ts), and that
+// cold load, about a second alone, landed inside the 1 s wait of the first test
+// that opens a project. In the release gate's full run on a busy machine
+// (2026-10-27) it overran: "still opens a project from a double click" never saw
+// onClose. Forced the same way by stalling that first load for 1.2 s, it fails
+// exactly the same two tests. It is paid here instead, so each test waits only on
+// what it is about. The list is the one editTabs loads; the long limit is for the
+// load itself on a busy box, not for any assertion.
+beforeAll(async () => {
+  await Promise.all([
+    import('../state/transcribeActions'),
+    import('../state/voiceRecorder'),
+    import('../state/mediaActions'),
+  ])
+}, 60_000)
+
 beforeEach(() => {
+  // A switch claims `waking` until it ends, and the next switch is refused while it
+  // is set. One that outlived its test (the same slow load) made the following test
+  // delete nothing, so a single stall failed two tests. Each test starts with an
+  // empty tab strip instead.
+  resetEditTabsForTests()
   saved.clear()
   const open = seed('Open one', 100)
   useStore.getState().setProject(open)
