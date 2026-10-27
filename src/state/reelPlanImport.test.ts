@@ -64,7 +64,7 @@ const { importReelPlan } = await import('./reelPlanImport')
 const { useStore } = await import('./store')
 const { useEditTabs, resetEditTabsForTests } = await import('./editTabs')
 const { useImportProgress } = await import('./mediaActions')
-const { deleteProject } = await import('./persistence')
+const { deleteProject, saveSettled } = await import('./persistence')
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const loadPlan = (): ReelPlan => JSON.parse(readFileSync(path.join(here, '..', '..', 'electron', 'fixtures', 'reel-plan.json'), 'utf8'))
@@ -187,7 +187,7 @@ describe('a reel plan that cannot be finished leaves nothing behind', () => {
     expect(h.importFiles).not.toHaveBeenCalled()
     expect(createdId).not.toBe(before.id)
     expectNothingLeft(createdId)
-    expect(toasts.map((t) => t.message)).toEqual(['The reel plan could not be imported. No project was made'])
+    expect(toasts.map((t) => t.message)).toEqual(['The reel plan could not be imported, so no project was made'])
     expect(toasts[0].kind).toBe('danger')
     // The reading progress is not left on screen.
     expect(useImportProgress.getState().total).toBe(0)
@@ -214,6 +214,39 @@ describe('a reel plan that cannot be finished leaves nothing behind', () => {
     })
     expect(toasts.some((t) => t.kind === 'success')).toBe(false)
   })
+
+  it('a project that will not delete: back in his edit, its tab gone, and says it may remain in Projects', async () => {
+    shell()
+    bringIn(2)
+    vi.mocked(deleteProject).mockRejectedValueOnce(new Error('the disk said no'))
+
+    await importReelPlan()
+
+    const createdId = openWhenImporting.id
+    expect(useStore.getState().project.id).toBe(before.id)
+    expect(useEditTabs.getState().tabs.some((t) => t.id === createdId)).toBe(false)
+    expect(deleteProject).toHaveBeenCalledWith(createdId, { keepBytes: false })
+    expect(toasts.map((t) => t.message)).toEqual([
+      'A clip of the reel plan could not be imported. A half built project may remain in Projects',
+    ])
+    expect(toasts[0].kind).toBe('danger')
+  })
+
+  it('a build that throws: the same as a clip that did not come in', async () => {
+    shell()
+    // The ids come back but no media lands in the edit, so the mapper finds none.
+    h.importFiles.mockImplementation(async (files) => {
+      openWhenImporting.id = useStore.getState().project.id
+      useImportProgress.setState({ total: 0, done: 0, name: '', step: '', frac: 0 })
+      return files.map((_f, i) => `missing${i}`)
+    })
+
+    await importReelPlan()
+
+    expectNothingLeft(openWhenImporting.id)
+    expect(toasts.map((t) => t.message)).toEqual(['The reel plan could not be imported, so no project was made'])
+    expect(toasts[0].kind).toBe('danger')
+  })
 })
 
 describe('a reel plan that finishes', () => {
@@ -232,6 +265,40 @@ describe('a reel plan that finishes', () => {
     // The media import is asked to stay quiet: no success toast of its own.
     expect(h.importFiles).toHaveBeenCalledWith(expect.any(Array), { quiet: true })
     expect(toasts).toEqual([{ message: 'Built “reel-plan” from the reel plan: 4 shots', kind: 'success', action: undefined }])
+  })
+
+  it('a save that fails after the build: the built edit stays open, nothing deleted, no "built" toast', async () => {
+    shell()
+    h.importFiles.mockImplementation(async (files) => {
+      const live = useStore.getState().project
+      openWhenImporting.id = live.id
+      const made = files.map(
+        (f, i): MediaAsset => ({
+          id: `a${i}`,
+          name: f.name,
+          kind: 'video',
+          blobKey: `blob/a${i}`,
+          durationS: 30,
+          width: 1080,
+          height: 1920,
+          hasAudio: true,
+          hasVideo: true,
+        }),
+      )
+      useStore.setState({ project: { ...live, assets: { ...live.assets, ...Object.fromEntries(made.map((a) => [a.id, a])) } } })
+      useImportProgress.setState({ total: 0, done: 0, name: '', step: '', frac: 0 })
+      // The next save is the one after the build.
+      vi.mocked(saveSettled).mockRejectedValueOnce(new Error('the disk is full'))
+      return made.map((a) => a.id)
+    })
+
+    await importReelPlan()
+
+    const open = useStore.getState().project
+    expect(open.id).toBe(openWhenImporting.id)
+    expect(Object.values(open.sequences).some((s) => s.tracks.some((t) => t.clips.length > 0))).toBe(true)
+    expect(deleteProject).not.toHaveBeenCalled()
+    expect(toasts.map((t) => t.message)).toEqual(['Could not save this project. Staying here so nothing is lost'])
   })
 })
 

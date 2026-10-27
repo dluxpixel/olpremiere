@@ -210,7 +210,8 @@ export function applyReelPlan(base: Sequence, plan: ReelPlan, assets: Readonly<R
   // ---- the shots: V1, with their sound on A1 ----
   const v1 = videoTracks(seq)[0]
   const a1 = audioTracks(seq)[0]
-  const shotSpans = noOverlap(plan.timeline.map((s) => spanOf(s.at, s.src_out - s.src_in, fps)))
+  const rawSpans = plan.timeline.map((s) => spanOf(s.at, s.src_out - s.src_in, fps))
+  const shotSpans = noOverlap(rawSpans)
   const videoClips: Clip[] = []
   const audioClips: Clip[] = []
   plan.timeline.forEach((shot, i) => {
@@ -230,7 +231,11 @@ export function applyReelPlan(base: Sequence, plan: ReelPlan, assets: Readonly<R
           warnings.push(`Shot ${i + 1} starts past the end of ${asset.name}, so it was left out.`)
           return
         }
-        warnings.push(`Shot ${i + 1} was cut short: ${asset.name} ends before the plan's out point.`)
+        // The frame that closed a rounding gap is ours, not the plan's: losing it is no news.
+        const closedGap = rawSpans[i].startF - span.startF
+        if (room + closedGap < frames) {
+          warnings.push(`Shot ${i + 1} was cut short: ${asset.name} ends before the plan's out point.`)
+        }
         frames = room
       }
     }

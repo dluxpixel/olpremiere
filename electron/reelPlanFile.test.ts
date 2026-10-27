@@ -240,6 +240,8 @@ describe('reading a clip back', () => {
     await importReelPlanFromPath(writePlan())
     writeFileSync(path.join(dir, 'IMG_4410.MOV'), Buffer.from('by'))
     await expect(readReelClip('c1', 0, 'bytes of c1'.length)).rejects.toThrow(/the clip changed on disk/)
+    // The changed clip is let go: even a range inside its new size is refused now.
+    await expect(readReelClip('c1', 0, 1)).rejects.toThrow(/not a clip of the reel plan/)
     // The clip that did not change still reads.
     expect(await bytes('c2', 0, 'bytes of c2'.length)).toBe('bytes of c2')
   })

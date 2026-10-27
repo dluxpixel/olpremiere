@@ -45,18 +45,31 @@ let running = false
  * Throw away the project this import made, when the import cannot finish. Back to the
  * edit he was in first, then the half built one is deleted outright: no Undo toast, no
  * Projects row, no media left in the store. It is not one of his projects, so it does not
- * go through the delete he can take back. False when it could not be done (the way back
- * was refused, or the delete failed), and the half built project is then still there.
+ * go through the delete he can take back. 'gone' when it is done; 'open' when the way back
+ * was refused, so the half built project is still the open edit; 'left' when he is back
+ * in his edit but the delete failed, so it may still be listed in Projects.
  */
-async function discardHalfBuilt(createdId: string, previousId: string): Promise<boolean> {
+async function discardHalfBuilt(createdId: string, previousId: string): Promise<'gone' | 'open' | 'left'> {
   try {
-    if ((await switchTo(previousId)) !== 'ok') return false
+    if ((await switchTo(previousId)) !== 'ok') return 'open'
+  } catch (err) {
+    console.error('OL Premiere: could not go back from the half built reel project', err)
+    return 'open'
+  }
+  try {
     await discardProject(createdId)
-    return true
+    return 'gone'
   } catch (err) {
     console.error('OL Premiere: the half built reel project could not be removed', err)
-    return false
+    return 'left'
   }
+}
+
+/** The toast after an import that could not finish, by what became of its project. */
+function failedMessage(why: string, gone: 'gone' | 'open' | 'left'): string {
+  if (gone === 'gone') return `${why}, so no project was made`
+  if (gone === 'open') return `${why}, and the half built project is still open`
+  return `${why}. A half built project may remain in Projects`
 }
 
 /**
@@ -119,12 +132,7 @@ export async function importReelPlan(): Promise<void> {
     if (ids.length !== files.length) {
       const gone = await discardHalfBuilt(project.id, previousId)
       createdId = null
-      show(
-        gone
-          ? 'A clip of the reel plan could not be imported, so no project was made'
-          : 'A clip of the reel plan could not be imported, and the half built project is still open',
-        'danger',
-      )
+      show(failedMessage('A clip of the reel plan could not be imported', gone), 'danger')
       return
     }
 
@@ -146,13 +154,8 @@ export async function importReelPlan(): Promise<void> {
     describeResult(plan, project.name, warnings)
   } catch (err) {
     console.error('OL Premiere: the reel plan could not be imported', err)
-    const gone = createdId === null || (await discardHalfBuilt(createdId, previousId))
-    show(
-      gone
-        ? 'The reel plan could not be imported. No project was made'
-        : 'The reel plan could not be imported, and the half built project is still open',
-      'danger',
-    )
+    const gone = createdId === null ? 'gone' : await discardHalfBuilt(createdId, previousId)
+    show(failedMessage('The reel plan could not be imported', gone), 'danger')
   } finally {
     running = false
   }

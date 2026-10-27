@@ -171,8 +171,11 @@ export async function readReelClip(clipId: unknown, offset: unknown, length: unk
   try {
     const piece = await readChunk(handle, offset, length)
     // A clip that shrank since the plan was checked comes back short, and a short piece
-    // would be taken for the clip.
-    if (piece.byteLength !== length) throw new Error('Refused: the clip changed on disk')
+    // would be taken for the clip. The clip is let go too: a changed file is not read again.
+    if (piece.byteLength !== length) {
+      if (approved.get(id) === clip) approved.delete(id)
+      throw new Error('Refused: the clip changed on disk')
+    }
     // The last piece is the clip's last read. Only the entry this call found goes, never
     // one a newer plan put under the same id while the read was on its way.
     if (offset + length === clip.size && approved.get(id) === clip) approved.delete(id)

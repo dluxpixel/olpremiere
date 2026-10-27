@@ -184,8 +184,10 @@ export async function removeProject(id: string): Promise<void> {
  */
 export async function discardProject(id: string): Promise<void> {
   if (id === useStore.getState().project.id) throw new Error('discardProject: that project is the open edit')
-  await deleteProject(id, { keepBytes: false })
+  // Out of the tab strip first, so a delete that fails never leaves a tab to a project
+  // that is half gone.
   forgetTab(id)
+  await deleteProject(id, { keepBytes: false })
 }
 
 /** How long "Project deleted" offers its Undo, and so how long the media wait for it. */

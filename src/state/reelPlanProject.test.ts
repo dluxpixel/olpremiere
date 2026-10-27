@@ -152,6 +152,16 @@ describe('cuts that meet', () => {
     expect(soundB.outS).toBe(b.outS)
   })
 
+  it('trims the frame that closed the gap without calling the shot cut short', () => {
+    // 2 s of media is the 60 frames the plan asks of c2; the closed gap made the shot 61.
+    const { seq, warnings } = build(twoCuts(0.4834), { durationS: 2 })
+    expect(warnings.some((w) => /cut short/.test(w))).toBe(false)
+    const [, b] = videoTracks(seq)[0].clips
+    expect(b.outS).toBeLessThanOrEqual(2 + 1e-6)
+    // A file really shorter than the plan's out point still says so.
+    expect(build(twoCuts(0.4834), { durationS: 1.9 }).warnings.some((w) => /Shot 2 was cut short/.test(w))).toBe(true)
+  })
+
   it('keeps a gap the plan really has', () => {
     // 0.5 s is frame 15 and 16.7 ms after the first cut ends: not contiguous.
     const { seq } = build(twoCuts(0.5))
