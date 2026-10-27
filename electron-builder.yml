@@ -61,8 +61,9 @@ compression: maximum
 # its own code as this app: ELECTRON_RUN_AS_NODE turns the exe into plain Node, and
 # NODE_OPTIONS can make it load any script at start.
 # ⛔ The inspect fuse stays as it is: scripts/smoke-packaged.mjs and cold-start.mjs
-# drive the packaged app through it (Playwright's --inspect=0), and the ship gate
-# runs both.
+# drive the packaged app through it (Playwright's --inspect=0). release.mjs runs
+# both on a big update only (isBigUpdate in lib.mjs: a version that is not the
+# ordinary next minor or fix); an ordinary ship does not run them.
 electronFuses:
   runAsNode: false
   enableNodeOptionsEnvironmentVariable: false
