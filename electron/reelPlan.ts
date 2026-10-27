@@ -96,8 +96,8 @@ export function validateReelPlan(raw: unknown): ReelPlanCheck {
 
   if (raw.version !== 1) bad(`version must be 1 (the file says ${shown(raw.version)}).`)
   if (raw.format !== '9:16') bad(`format must be "9:16" (the file says ${shown(raw.format)}).`)
-  const fpsOk = isNum(raw.fps) && raw.fps > 0
-  if (!fpsOk) bad('fps must be a number above 0.')
+  const fpsOk = isNum(raw.fps) && raw.fps >= 1 && raw.fps <= 240
+  if (!fpsOk) bad('fps must be a number from 1 to 240.')
   const durOk = isNum(raw.duration) && raw.duration > 0
   if (!durOk) bad('duration must be a number above 0.')
   if (raw.source !== undefined && !isObj(raw.source)) bad('source must be an object when it is present.')

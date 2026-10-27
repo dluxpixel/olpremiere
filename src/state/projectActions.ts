@@ -176,6 +176,18 @@ export async function removeProject(id: string): Promise<void> {
   await deleteWithUndo(id, true)
 }
 
+/**
+ * Delete a project NOW, with no Undo and no toast, with its media. For a project the
+ * app made a moment ago and is throwing away itself (a reel plan import that failed
+ * half way), never one of his: his deletes go through `removeProject`. It refuses the
+ * open edit, so callers switch away first.
+ */
+export async function discardProject(id: string): Promise<void> {
+  if (id === useStore.getState().project.id) throw new Error('discardProject: that project is the open edit')
+  await deleteProject(id, { keepBytes: false })
+  forgetTab(id)
+}
+
 /** How long "Project deleted" offers its Undo, and so how long the media wait for it. */
 export const UNDO_DELETE_MS = 10_000
 

@@ -448,11 +448,11 @@ export interface OlApi {
   projectDir(): Promise<string>
 
   /**
-   * A reel plan from the gym auto edit. Opens the file dialog for a .json (or takes the
-   * full path of one), reads and checks it, and checks every clip is on disk. Any
+   * A reel plan from the gym auto edit. Opens the file dialog for a .json (the page
+   * cannot name the file), reads and checks it, and checks every clip is on disk. Any
    * problem refuses the whole plan. See electron/reelPlanFile.ts.
    */
-  reelPlanImport(planPath?: string): Promise<ReelPlanImportResult>
+  reelPlanImport(): Promise<ReelPlanImportResult>
   /** One slice of a clip of the plan that last passed. Nothing else can be read this way. */
   reelPlanReadClip(clipId: string, offset: number, length: number): Promise<ArrayBuffer>
 

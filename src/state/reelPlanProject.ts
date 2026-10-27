@@ -108,17 +108,32 @@ interface Span {
   startF: number
   endF: number
 }
+/** A span on the frame grid that also keeps the plan's own times it was rounded from. */
+interface TimedSpan extends Span {
+  atS: number
+  endS: number
+}
 const toFrame = (s: number, fps: number): number => Math.round(s * fps)
 /** A span on the frame grid, at least one frame long. */
-function spanOf(at: number, dur: number, fps: number): Span {
+function spanOf(at: number, dur: number, fps: number): TimedSpan {
   const startF = toFrame(at, fps)
-  return { startF, endF: Math.max(startF + 1, toFrame(at + dur, fps)) }
+  return { startF, endF: Math.max(startF + 1, toFrame(at + dur, fps)), atS: at, endS: at + dur }
 }
-/** Spans sorted by start, each ended where the next begins when rounding made them touch. */
-function noOverlap(spans: Span[]): Span[] {
+/**
+ * Spans sorted by start, each ended where the next begins when rounding made them touch.
+ * Two pieces the plan made contiguous (within a millisecond) can round one frame apart,
+ * which would leave a black frame between two cuts; the later one then starts where the
+ * earlier ends. A gap the plan really has is kept.
+ */
+function noOverlap(spans: TimedSpan[]): Span[] {
   return spans.map((s, i) => {
+    const prev = spans[i - 1]
     const next = spans[i + 1]
-    return next && s.endF > next.startF ? { ...s, endF: next.startF } : s
+    const meets = prev !== undefined && s.startF - prev.endF === 1 && Math.abs(s.atS - prev.endS) <= 1e-3
+    return {
+      startF: meets ? prev.endF : s.startF,
+      endF: next && s.endF > next.startF ? next.startF : s.endF,
+    }
   })
 }
 
@@ -203,6 +218,10 @@ export function applyReelPlan(base: Sequence, plan: ReelPlan, assets: Readonly<R
     if (!asset) throw new Error(`reel plan: no media for clip ${shot.clip}`)
     const span = shotSpans[i]
     let frames = span.endF - span.startF
+    if (frames < 1) {
+      warnings.push(`Shot ${i + 1} is shorter than one frame, so it was left out.`)
+      return
+    }
     // Never ask a file for more than it has. A shot cut short leaves a gap, not a shift.
     if (asset.durationS > 0) {
       const room = Math.floor((asset.durationS - shot.src_in) * fps + 1e-6)
@@ -215,7 +234,6 @@ export function applyReelPlan(base: Sequence, plan: ReelPlan, assets: Readonly<R
         frames = room
       }
     }
-    if (frames < 1) return
     const startS = span.startF / fps
     const placed: Clip = { ...newClipFromAsset(asset, startS), inS: shot.src_in, outS: shot.src_in + frames / fps }
     const video = fitNewClipToFrame(placed, asset, seq)
@@ -267,11 +285,19 @@ export function applyReelPlan(base: Sequence, plan: ReelPlan, assets: Readonly<R
     const spans = noOverlap(sorted.map((w) => spanOf(w.at, w.dur, fps)))
     const chunks: CaptionChunk[] = []
     sorted.forEach((w, i) => {
+      const text = w.word.trim()
+      const shown = text.length > 24 ? `${text.slice(0, 21)}...` : text
+      if (spans[i].startF >= limitF) {
+        warnings.push(`Caption “${shown}” starts after the end of the reel, so it was left out.`)
+        return
+      }
+      if (spans[i].endF <= spans[i].startF) {
+        warnings.push(`Caption “${shown}” falls on the same frame as the next one, so it was left out.`)
+        return
+      }
       const span = { startF: spans[i].startF, endF: Math.min(spans[i].endF, limitF) }
-      if (span.endF <= span.startF) return
       const startS = span.startF / fps
       const endS = span.endF / fps
-      const text = w.word.trim()
       chunks.push({ text, startS, endS, emphasis: false, words: [{ text, startS, endS }] })
     })
     if (chunks.length > 0) {

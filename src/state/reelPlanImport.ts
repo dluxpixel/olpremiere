@@ -15,7 +15,7 @@ import type { MediaAsset } from '../engine/types'
 import { flushOutgoing, guardRoom, switchTo } from './editTabs'
 import { importFiles, useImportProgress } from './mediaActions'
 import { listProjects } from './persistence'
-import { removeProject } from './projectActions'
+import { discardProject } from './projectActions'
 import {
   applyReelPlanToProject,
   newReelPlanProject,
@@ -42,6 +42,24 @@ async function readClipFile(api: OlApi, f: ReelPlanClipFile): Promise<File> {
 let running = false
 
 /**
+ * Throw away the project this import made, when the import cannot finish. Back to the
+ * edit he was in first, then the half built one is deleted outright: no Undo toast, no
+ * Projects row, no media left in the store. It is not one of his projects, so it does not
+ * go through the delete he can take back. False when it could not be done (the way back
+ * was refused, or the delete failed), and the half built project is then still there.
+ */
+async function discardHalfBuilt(createdId: string, previousId: string): Promise<boolean> {
+  try {
+    if ((await switchTo(previousId)) !== 'ok') return false
+    await discardProject(createdId)
+    return true
+  } catch (err) {
+    console.error('OL Premiere: the half built reel project could not be removed', err)
+    return false
+  }
+}
+
+/**
  * Ask for a reel plan, check it, and open it as a new project. Says what happened in
  * a toast either way; resolves when it is done.
  */
@@ -57,6 +75,7 @@ export async function importReelPlan(): Promise<void> {
   if (!guardRoom()) return
   running = true
   let createdId: string | null = null
+  let previousId = ''
   try {
     const answer = await api.reelPlanImport()
     if (answer.status === 'cancelled') return
@@ -77,6 +96,7 @@ export async function importReelPlan(): Promise<void> {
     }
     taken.add(useStore.getState().project.name)
     const project = newReelPlanProject(plan, nextFreeName(reelPlanProjectName(fileName), taken))
+    previousId = useStore.getState().project.id
     if ((await switchTo(project)) !== 'ok') return
     createdId = project.id
 
@@ -92,13 +112,19 @@ export async function importReelPlan(): Promise<void> {
       throw err
     }
 
-    const ids = await importFiles(clipFiles, { successMessage: `Brought in the ${files.length} clips of the reel plan` })
+    // No success message of its own: "done" is said once, after the build, never before it.
+    const ids = await importFiles(clipFiles)
     // The whole plan or nothing: a clip that did not come in (importFiles has said which)
     // would leave a hole in the edit, so the half built project goes.
     if (ids.length !== files.length) {
-      show('A clip of the reel plan could not be imported, so no project was made', 'danger')
-      await removeProject(project.id)
+      const gone = await discardHalfBuilt(project.id, previousId)
       createdId = null
+      show(
+        gone
+          ? 'A clip of the reel plan could not be imported, so no project was made'
+          : 'A clip of the reel plan could not be imported, and the half built project is still open',
+        'danger',
+      )
       return
     }
 
@@ -120,14 +146,13 @@ export async function importReelPlan(): Promise<void> {
     describeResult(plan, project.name, warnings)
   } catch (err) {
     console.error('OL Premiere: the reel plan could not be imported', err)
-    show('The reel plan could not be imported. No project was made', 'danger')
-    if (createdId !== null && useStore.getState().project.id === createdId) {
-      try {
-        await removeProject(createdId)
-      } catch (cleanup) {
-        console.error('OL Premiere: the half built reel project could not be removed', cleanup)
-      }
-    }
+    const gone = createdId === null || (await discardHalfBuilt(createdId, previousId))
+    show(
+      gone
+        ? 'The reel plan could not be imported. No project was made'
+        : 'The reel plan could not be imported, and the half built project is still open',
+      'danger',
+    )
   } finally {
     running = false
   }

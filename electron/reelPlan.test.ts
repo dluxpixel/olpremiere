@@ -85,6 +85,24 @@ describe('a bad plan is refused', () => {
     expect(probs[0]).toContain('"c9"')
   })
 
+  it('a frame rate that is not a real one: below 1, above 240, or not a number', () => {
+    for (const fps of [0.001, 0.99, 0, -30, 241, 1e9, Infinity, NaN, '30']) {
+      const p = good()
+      p.fps = fps
+      const probs = problemsOf(p)
+      expect(probs).toHaveLength(1)
+      expect(probs[0]).toBe('fps must be a number from 1 to 240.')
+    }
+  })
+
+  it('takes the frame rates a phone shoots, and the ends of the range', () => {
+    for (const fps of [1, 24, 29.97, 30, 60, 120, 240]) {
+      const p = good()
+      p.fps = fps
+      expect(validateReelPlan(p).ok).toBe(true)
+    }
+  })
+
   it('a title box outside the safe rect, on each side', () => {
     for (const box of [
       [40, 300, 500, 300], // left of x 60

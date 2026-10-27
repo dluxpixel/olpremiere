@@ -130,6 +130,37 @@ describe('the shots', () => {
   })
 })
 
+describe('cuts that meet', () => {
+  // 0.4833 s is frame 14.499 and 0.4834 s is frame 14.502: the same instant to a tenth of
+  // a millisecond, one frame apart once each is rounded on its own.
+  const twoCuts = (secondAt: number) => (p: ReelPlan) => {
+    p.timeline = [
+      { clip: 'c1', src_in: 0, src_out: 0.4833, at: 0 },
+      { clip: 'c2', src_in: 0, src_out: 2, at: secondAt },
+    ]
+  }
+
+  it('closes the 1 frame gap that rounding two contiguous cuts apart leaves', () => {
+    const { seq } = build(twoCuts(0.4834))
+    const [a, b] = videoTracks(seq)[0].clips
+    expect(Math.round(clipEndS(a) * 30)).toBe(14)
+    expect(Math.round(b.startS * 30)).toBe(14)
+    expect(b.startS).toBeCloseTo(clipEndS(a), 9)
+    // The sound moves with its picture.
+    const [, soundB] = audioTracks(seq)[0].clips
+    expect(soundB.startS).toBe(b.startS)
+    expect(soundB.outS).toBe(b.outS)
+  })
+
+  it('keeps a gap the plan really has', () => {
+    // 0.5 s is frame 15 and 16.7 ms after the first cut ends: not contiguous.
+    const { seq } = build(twoCuts(0.5))
+    const [a, b] = videoTracks(seq)[0].clips
+    expect(Math.round(clipEndS(a) * 30)).toBe(14)
+    expect(Math.round(b.startS * 30)).toBe(15)
+  })
+})
+
 describe('the sound of the shots', () => {
   it('links each shot to its own sound on A1', () => {
     const { seq } = build()
@@ -178,6 +209,22 @@ describe('shots the media cannot give', () => {
     const clips = videoTracks(seq)[0].clips
     expect(clips).toHaveLength(3)
     expect(warnings.some((w) => /left out/.test(w))).toBe(true)
+  })
+
+  it('says nothing for a plan that fits', () => {
+    expect(build().warnings).toEqual([])
+  })
+
+  it('warns about a shot that rounds to no frames, and leaves it out', () => {
+    // 1.00 s plus 10 ms is frame 30.3, and the next cut starts at 1.01 s, also frame 30.
+    const { seq, warnings } = build((p) => {
+      p.timeline = [
+        { clip: 'c1', src_in: 0, src_out: 0.01, at: 1.0 },
+        { clip: 'c2', src_in: 0, src_out: 2, at: 1.01 },
+      ]
+    })
+    expect(videoTracks(seq)[0].clips).toHaveLength(1)
+    expect(warnings).toEqual(['Shot 1 is shorter than one frame, so it was left out.'])
   })
 
   it('refuses a plan clip that has no media', () => {
@@ -281,6 +328,36 @@ describe('the captions', () => {
     const { seq } = build()
     const vts = videoTracks(seq)
     expect(vts[vts.length - 1].name).toBe(CAPTION_TRACK_NAME)
+  })
+
+  it('warns about a caption that starts after the end of the reel, and leaves it out', () => {
+    const { seq, warnings } = build((p) => {
+      p.captions[2].at = 20
+    })
+    expect(named(seq, CAPTION_TRACK_NAME)!.clips.map((c) => c.title?.text.toLowerCase())).toEqual(['heavy', 'bench'])
+    expect(warnings).toEqual(['Caption “day” starts after the end of the reel, so it was left out.'])
+  })
+
+  it('keeps a caption that only runs past the end, cut at the end', () => {
+    const { seq, warnings } = build((p) => {
+      p.captions[2].at = 14.1
+      p.captions[2].dur = 0.5
+    })
+    const last = named(seq, CAPTION_TRACK_NAME)!.clips.at(-1)!
+    expect(clipEndS(last)).toBeCloseTo(14.2, 5)
+    expect(warnings).toEqual([])
+  })
+
+  it('warns about a caption that falls on the same frame as the next one, and leaves it out', () => {
+    // 5.00 s and 5.01 s are both frame 150 at 30 fps.
+    const { seq, warnings } = build((p) => {
+      p.captions = [
+        { word: 'Heavy', at: 5.0, dur: 0.21 },
+        { word: 'bench', at: 5.01, dur: 0.3 },
+      ]
+    })
+    expect(named(seq, CAPTION_TRACK_NAME)!.clips.map((c) => c.title?.text.toLowerCase())).toEqual(['bench'])
+    expect(warnings).toEqual(['Caption “Heavy” falls on the same frame as the next one, so it was left out.'])
   })
 
   it('makes no Captions track when the plan has no words', () => {

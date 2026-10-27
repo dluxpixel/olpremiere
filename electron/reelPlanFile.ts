@@ -1,12 +1,18 @@
-// A reel plan, in main: pick the .json (or take a path), read it, check it, and make
-// sure every clip it names is really on disk. ANY problem refuses the whole plan and
-// nothing is half imported. A missing clip is named by its path.
+// A reel plan, in main: pick the .json, read it, check it, and make sure every clip it
+// names is really on disk. ANY problem refuses the whole plan and nothing is half
+// imported. A missing clip is named by its path.
 //
 // The page cannot read a path itself, so a plan that passes also becomes the ONLY set
 // of files the page may ask main to stream back (readReelClip). Same stance as
 // backup:read and project:read: main serves what it checked, it is never a general
 // file reader. That is why the list is replaced on every import, holds only the clips
-// of the last plan that passed, and only video extensions.
+// of the last plan that passed, and only video extensions. A clip leaves the list once
+// its last piece has been read, so a plan is readable once through and no longer.
+//
+// ⛔ THE PAGE NEVER NAMES THE PLAN FILE. The IPC import takes no argument: main opens
+// the dialog and reads what he picked. A plan path the page could hand over was a way
+// for page code to make main read any .json on his PC and approve the video files it
+// named. importReelPlanFromPath is for tests and has no channel.
 //
 // This writes nothing. The project is built by the page and saved by the app's own
 // save code.
@@ -55,26 +61,41 @@ async function planPathFromDialog(win: BrowserWindow | null): Promise<string | n
 }
 
 /**
- * Pick, read and check a plan. `given` is a path to a .json (used when something other
- * than the dialog already knows which plan); anything else opens the dialog.
+ * A full path on a drive: `C:\clips\a.mp4` or `C:/clips/a.mp4`. Never a share or a
+ * device path (`\\host\share\a.mp4`, `\\?\C:\a.mp4`, `\\.\C:\a.mp4`). path.isAbsolute
+ * takes all of those, and a stat on a share makes Windows send his sign-in hash to
+ * that host. Nothing in a plan is touched until its path passes this.
  */
-export async function importReelPlan(win: BrowserWindow | null, given?: unknown): Promise<ReelPlanImportResult> {
-  let planPath: string
-  if (typeof given === 'string' && given.length > 0) {
-    planPath = given
-  } else {
-    const picked = await planPathFromDialog(win)
-    if (picked === null) return { status: 'cancelled' }
-    planPath = picked
-  }
+export function isLocalFullPath(p: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(p) && !/^[\\/]{2}/.test(p)
+}
 
+/**
+ * Open the dialog for a plan, then read and check what he picked. There is no way to
+ * hand this a path: the page cannot name the plan file.
+ */
+export async function importReelPlan(win: BrowserWindow | null): Promise<ReelPlanImportResult> {
+  // Whatever an earlier plan approved is let go first, a dismissed dialog included.
+  approved = new Map()
+  const picked = await planPathFromDialog(win)
+  if (picked === null) return { status: 'cancelled' }
+  return checkPlanFile(picked)
+}
+
+/** The same read and check for a path already in hand. Tests only: no channel reaches this. */
+export async function importReelPlanFromPath(planPath: string): Promise<ReelPlanImportResult> {
+  approved = new Map()
+  return checkPlanFile(planPath)
+}
+
+async function checkPlanFile(planPath: string): Promise<ReelPlanImportResult> {
   const refuse = (problems: string[]): ReelPlanImportResult => {
     approved = new Map()
     return { status: 'refused', problems }
   }
 
-  if (path.extname(planPath).toLowerCase() !== '.json' || !path.isAbsolute(planPath)) {
-    return refuse(['A reel plan is a .json file, given by its full path.'])
+  if (path.extname(planPath).toLowerCase() !== '.json' || !isLocalFullPath(planPath)) {
+    return refuse(['A reel plan is a .json file, given by its full path on a drive.'])
   }
   let text: string
   try {
@@ -98,8 +119,8 @@ export async function importReelPlan(win: BrowserWindow | null, given?: unknown)
   for (let i = 0; i < plan.clips.length; i++) {
     const clip = plan.clips[i]
     const at = `clips[${i}]`
-    if (!path.isAbsolute(clip.path)) {
-      problems.push(`${at}: the path must be a full path, not ${clip.path}`)
+    if (!isLocalFullPath(clip.path)) {
+      problems.push(`${at}: the path must be a full path on a drive, not ${clip.path}`)
       continue
     }
     const mime = CLIP_TYPES[path.extname(clip.path).toLowerCase()]
@@ -130,7 +151,9 @@ export async function importReelPlan(win: BrowserWindow | null, given?: unknown)
  * plan did not name, or a range that is not inside the file.
  */
 export async function readReelClip(clipId: unknown, offset: unknown, length: unknown): Promise<ArrayBuffer> {
-  const clip = typeof clipId === 'string' ? approved.get(clipId) : undefined
+  // Plan clip ids are never empty, so '' finds nothing.
+  const id = typeof clipId === 'string' ? clipId : ''
+  const clip = approved.get(id)
   if (!clip) throw new Error('Refused: not a clip of the reel plan')
   if (
     typeof offset !== 'number' ||
@@ -146,7 +169,14 @@ export async function readReelClip(clipId: unknown, offset: unknown, length: unk
   }
   const handle = await open(clip.path, 'r')
   try {
-    return await readChunk(handle, offset, length)
+    const piece = await readChunk(handle, offset, length)
+    // A clip that shrank since the plan was checked comes back short, and a short piece
+    // would be taken for the clip.
+    if (piece.byteLength !== length) throw new Error('Refused: the clip changed on disk')
+    // The last piece is the clip's last read. Only the entry this call found goes, never
+    // one a newer plan put under the same id while the read was on its way.
+    if (offset + length === clip.size && approved.get(id) === clip) approved.delete(id)
+    return piece
   } finally {
     await handle.close().catch(() => undefined)
   }

@@ -1092,7 +1092,7 @@ app.whenReady().then(() => {
   ipcMain.handle('project:dir', () => projectFiles.projectDir())
   // A reel plan from the gym auto edit: checked here, built into a project by the page.
   // See electron/reelPlanFile.ts. The clips it streams back are only the plan's own.
-  ipcMain.handle('reelplan:import', (_e, planPath?: unknown) => reelPlanFile.importReelPlan(mainWindow, planPath))
+  ipcMain.handle('reelplan:import', () => reelPlanFile.importReelPlan(mainWindow))
   ipcMain.handle('reelplan:readClip', (_e, clipId: unknown, offset: unknown, length: unknown) =>
     reelPlanFile.readReelClip(clipId, offset, length),
   )

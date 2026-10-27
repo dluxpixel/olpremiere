@@ -140,7 +140,7 @@ const api: OlApi = {
   projectRead: (filePath: string) => ipcRenderer.invoke('project:read', filePath),
   projectTrash: (id: string) => ipcRenderer.invoke('project:trash', id),
   projectDir: () => ipcRenderer.invoke('project:dir'),
-  reelPlanImport: (planPath?: string) => ipcRenderer.invoke('reelplan:import', planPath),
+  reelPlanImport: () => ipcRenderer.invoke('reelplan:import'),
   reelPlanReadClip: (clipId: string, offset: number, length: number) =>
     ipcRenderer.invoke('reelplan:readClip', clipId, offset, length),
   libraryWrite: (json: string) => ipcRenderer.invoke('library:write', json),
