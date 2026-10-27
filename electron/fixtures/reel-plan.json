@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "format": "9:16",
+  "fps": 30,
+  "duration": 14.2,
+  "source": { "gen_id": "gen_test_0001", "variant": 2, "recipe": "text_on_screen", "script_sha": "0123456789abcdef" },
+  "clips": [
+    { "id": "c1", "path": "D:/gym/IMG_4410.MOV", "rotation": 90 },
+    { "id": "c2", "path": "D:/gym/IMG_4411.MOV", "rotation": 0 },
+    { "id": "c3", "path": "D:/gym/IMG_4412.MP4" }
+  ],
+  "timeline": [
+    { "clip": "c1", "src_in": 3.4, "src_out": 5.1, "at": 0.0 },
+    { "clip": "c2", "src_in": 0.0, "src_out": 3.3, "at": 1.7 },
+    { "clip": "c1", "src_in": 8.0, "src_out": 12.2, "at": 5.0 },
+    { "clip": "c3", "src_in": 1.0, "src_out": 6.0, "at": 9.2 }
+  ],
+  "titles": [
+    { "text": "Stop doing bench like this", "at": 0.0, "dur": 1.8, "style": "hook", "box": [90, 300, 860, 400] },
+    { "text": "Three sets. No ego.", "at": 2.0, "dur": 2.5, "style": "body", "box": [90, 1100, 860, 300] },
+    { "text": "Try it this week", "at": 11.7, "dur": 2.5, "style": "punch", "box": [60, 250, 900, 1250] }
+  ],
+  "captions": [
+    { "word": "Heavy", "at": 5.0, "dur": 0.21 },
+    { "word": "bench", "at": 5.21, "dur": 0.3 },
+    { "word": "day", "at": 5.51, "dur": 0.25 }
+  ],
+  "audio": { "music": null, "beats": [], "keep_clip_audio": true }
+}

@@ -53,6 +53,7 @@ import * as proxy from './proxy'
 import * as mediaStore from './mediaStore'
 import * as mediaSweep from './mediaSweep'
 import * as remux from './remux'
+import * as reelPlanFile from './reelPlanFile'
 import { CLOSE_SAVE_TIMEOUT_MS, createCloseGate, notSavedDialog, type CloseGate } from './closeGate'
 import { createInstallWait } from './installWait'
 import { CRASH_LOG_NAME, crashLogLine, crashPlan } from './crashPlan'
@@ -1089,6 +1090,12 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('project:trash', (_e, id: string) => projectFiles.trashProjectFile(id))
   ipcMain.handle('project:dir', () => projectFiles.projectDir())
+  // A reel plan from the gym auto edit: checked here, built into a project by the page.
+  // See electron/reelPlanFile.ts. The clips it streams back are only the plan's own.
+  ipcMain.handle('reelplan:import', (_e, planPath?: unknown) => reelPlanFile.importReelPlan(mainWindow, planPath))
+  ipcMain.handle('reelplan:readClip', (_e, clipId: unknown, offset: unknown, length: unknown) =>
+    reelPlanFile.readReelClip(clipId, offset, length),
+  )
   // The Library's records beside them, one fixed file. See electron/libraryFile.ts.
   ipcMain.handle('library:write', (_e, json: string) => libraryFile.writeLibraryFile(json))
   ipcMain.handle('library:read', () => libraryFile.readLibraryFile())

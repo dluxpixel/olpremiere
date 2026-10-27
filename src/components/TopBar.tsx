@@ -1,5 +1,6 @@
 import {
   Archive,
+  Clapperboard,
   Download,
   FolderOpen,
   HardDriveDownload,
@@ -23,6 +24,7 @@ import { activeSequence } from '../engine/types'
 import { comboLabel } from '../keymap'
 import { isCommitInPlace } from '../fieldCommit'
 import { exportProjectToFile, importProjectFromFile, registerProjectFilePicker } from '../state/projectFile'
+import { importReelPlan } from '../state/reelPlanImport'
 import { useStore } from '../state/store'
 import { useToasts } from '../state/toasts'
 import { reloadAndCheckForUpdates } from '../state/reloadApp'
@@ -435,6 +437,14 @@ export function TopBar() {
         className="phone:hidden"
       >
         <FolderOpen size={16} strokeWidth={1.5} />
+      </IconButton>
+      <IconButton
+        label="Import reel plan..."
+        onClick={() => void importReelPlan()}
+        data-testid="import-reel-plan"
+        className="phone:hidden"
+      >
+        <Clapperboard size={16} strokeWidth={1.5} />
       </IconButton>
 
       <div className="relative ml-auto flex shrink-0 items-center gap-1">

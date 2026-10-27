@@ -1,6 +1,8 @@
 // The shared IPC type surface between the Electron main process, the sandboxed
 // preload, and the renderer (via electron-api.d.ts).
 
+import type { ReelPlan } from './reelPlan'
+
 export type NativeEncoder = 'x264' | 'x265' | 'nvenc-h264' | 'nvenc-hevc' | 'nvenc-av1' | 'prores' | 'lossless'
 
 export interface NativeCaps {
@@ -204,6 +206,27 @@ export type ExportTaskbarState =
   | { kind: 'done' }
   | { kind: 'failed' }
   | { kind: 'clear' }
+
+/** One clip of a checked reel plan, as main will stream it back (electron/reelPlanFile.ts). */
+export interface ReelPlanClipFile {
+  /** The plan's own id for the clip. */
+  id: string
+  /** The file's name, which becomes the media bin name. */
+  name: string
+  size: number
+  /** `video/mp4` and friends: the page probes a file by its type. */
+  mime: string
+}
+
+/**
+ * What importing a reel plan answers. `plan` means the plan is sound AND every clip it
+ * names is on disk. `refused` carries every problem (a missing clip is named by its
+ * path) and nothing was approved. `cancelled` is the file dialog dismissed.
+ */
+export type ReelPlanImportResult =
+  | { status: 'plan'; plan: ReelPlan; fileName: string; files: ReelPlanClipFile[] }
+  | { status: 'refused'; problems: string[] }
+  | { status: 'cancelled' }
 
 export interface OlApi {
   /** Always true when running inside the desktop shell (the renderer's isElectron gate). */
@@ -423,6 +446,15 @@ export interface OlApi {
   projectTrash(id: string): Promise<number>
   /** The folder, for telling him where his projects are. */
   projectDir(): Promise<string>
+
+  /**
+   * A reel plan from the gym auto edit. Opens the file dialog for a .json (or takes the
+   * full path of one), reads and checks it, and checks every clip is on disk. Any
+   * problem refuses the whole plan. See electron/reelPlanFile.ts.
+   */
+  reelPlanImport(planPath?: string): Promise<ReelPlanImportResult>
+  /** One slice of a clip of the plan that last passed. Nothing else can be read this way. */
+  reelPlanReadClip(clipId: string, offset: number, length: number): Promise<ArrayBuffer>
 
   /**
    * The Library's records as one plain file beside the projects, kept current
