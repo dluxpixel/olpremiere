@@ -34,5 +34,5 @@ Install with `ELECTRON_SKIP_BINARY_DOWNLOAD=1` exactly as above: without it the 
 
 Never run here: `npx playwright test` (several specs are timing and GPU sensitive and lie on
 software rendering), anything under `_verify/`, `npm run dist`, `npm run dist:dir`,
-`npm run patch`, `npm run release`, `npm run verify:ffmpeg`. List anything that needs them under
+`npm run patch`, `npm run verify` (the full ship gate, it writes `.git/olp-verified.json`), `npm run release`, `npm run verify:ffmpeg`. List anything that needs them under
 "needs a local check" in the pull request.
