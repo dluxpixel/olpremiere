@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import {
   changedBetween,
   codeFiles,
@@ -60,6 +60,14 @@ function scratchDir(prefix) {
 afterAll(() => {
   for (const dir of made) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
+
+// ⛔ BACK TO THE EVENT LOOP AFTER EVERY TEST (2026-10-27). The git tests below are all
+// synchronous, so the worker went from the first of them to the withEnv child process without
+// once reading its messages: 30 s alone, 70.7 s in a busy full run (measured with a stall probe).
+// The test runner gives up on a worker answer after 60 s, and `npm run verify` went red three
+// times on "Timeout calling onTaskUpdate" with every test passing. One timer turn per test keeps
+// the longest stall to one test.
+afterEach(() => new Promise((resolve) => setTimeout(resolve, 0)))
 
 /**
  * A command that fails `failures` times and then succeeds, printing `message`
