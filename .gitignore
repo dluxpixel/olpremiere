@@ -38,3 +38,7 @@ ship-now.cmd
 # a release commit because nothing ignored them.
 *.olstudio
 /OLP-MEDIA/
+
+# electron-vite writes its config out as electron.vite.config.<time>.mjs and deletes it; a killed build
+# leaves it behind, and the release hash runs git add -A (2026-10-27).
+electron.vite.config.*.mjs
