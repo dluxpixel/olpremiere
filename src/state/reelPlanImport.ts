@@ -112,8 +112,8 @@ export async function importReelPlan(): Promise<void> {
       throw err
     }
 
-    // No success message of its own: "done" is said once, after the build, never before it.
-    const ids = await importFiles(clipFiles)
+    // Quiet: "done" is said once, after the build, never before it.
+    const ids = await importFiles(clipFiles, { quiet: true })
     // The whole plan or nothing: a clip that did not come in (importFiles has said which)
     // would leave a hole in the edit, so the half built project goes.
     if (ids.length !== files.length) {

@@ -74,6 +74,11 @@ export interface ImportOptions {
    * file he went and found, and the toast should say the thing that happened.
    */
   successMessage?: string
+  /**
+   * No success toast at all. For a caller that is only part way through: the
+   * reel plan import says "done" once, after its build, never before it.
+   */
+  quiet?: boolean
 }
 
 /**
@@ -323,7 +328,7 @@ export async function importFiles(files: File[], opts?: ImportOptions): Promise<
       ...Object.fromEntries(imported.map((a): [Id, MediaAsset] => [a.id, a])),
     },
   }))
-  show(opts?.successMessage ?? `Imported ${imported.length} file(s)`, 'success')
+  if (!opts?.quiet) show(opts?.successMessage ?? `Imported ${imported.length} file(s)`, 'success')
   // ⛔ AND A SECOND COPY ON DISK, OUTSIDE THE DATABASE. On 2026-08-18 the engine
   // threw its own IndexedDB away and his footage became unreachable: the bytes
   // were still on the disk and nothing could name them. Nothing waits on this

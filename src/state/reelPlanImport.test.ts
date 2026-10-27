@@ -229,8 +229,8 @@ describe('a reel plan that finishes', () => {
     expect(saved.has(open.id)).toBe(true)
     expect(saved.has(before.id)).toBe(true)
     expect(deleteProject).not.toHaveBeenCalled()
-    // The media import is asked for no success message of its own.
-    expect(h.importFiles).toHaveBeenCalledWith(expect.any(Array))
+    // The media import is asked to stay quiet: no success toast of its own.
+    expect(h.importFiles).toHaveBeenCalledWith(expect.any(Array), { quiet: true })
     expect(toasts).toEqual([{ message: 'Built “reel-plan” from the reel plan: 4 shots', kind: 'success', action: undefined }])
   })
 })
