@@ -453,10 +453,12 @@ describe('⛔ the time left does not go blank while the file is being closed', (
     // The last frame is in; ffmpeg is closing the file and says the same count every few seconds.
     for (let t = 16; t <= 60; t += 5) {
       tick(t, 110, 'finalizing')
-      expect(Number.isFinite(left())).toBe(true)
+      expect(left()).toBe(good)
     }
-    // A count that moves again is read again.
-    tick(65, 150, 'finalizing')
+    // A count that moves again is read again (the first one after a long quiet has no rate yet, which
+    // the label shows as nothing, never as NaN).
+    tick(65, 140, 'finalizing')
+    tick(67, 150, 'finalizing')
     expect(Number.isFinite(left())).toBe(true)
   })
 })

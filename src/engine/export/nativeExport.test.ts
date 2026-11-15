@@ -95,6 +95,8 @@ function fakeMain() {
     result: { ok: true, outPath: 'C:\\Videos\\Holiday.mp4', sizeBytes: 1234 } as Record<string, unknown>,
   }
   const startGate = { hold: false, release: () => {} }
+  // Held open when asked: the real begin waits for main to open the WAV on disk.
+  const audioBeginGate = { hold: false, release: () => {} }
   // What the save dialog answers: a path, or null when he dismisses it.
   const picker = { answer: 'C:\\Videos\\Holiday.mp4' as string | null }
   // What start answers. Main takes back only the path its own dialog gave; for any other it asks
@@ -109,7 +111,13 @@ function fakeMain() {
     nativeAudioBegin: (sampleRate: number, channels: number) => {
       log.push('audioBegin')
       audio.begun.push([sampleRate, channels])
-      return Promise.resolve()
+      if (!audioBeginGate.hold) return Promise.resolve()
+      return new Promise<void>((r) => {
+        audioBeginGate.release = () => {
+          log.push('audioBeginDone')
+          r()
+        }
+      })
     },
     nativeAudioChunk: (interleaved: ArrayBuffer) => {
       log.push('audioChunk')
@@ -163,6 +171,7 @@ function fakeMain() {
     starts,
     finish,
     startGate,
+    audioBeginGate,
     picker,
     startAnswer,
     ffmpegSays: (frame: number) => progress?.({ frame, totalFrames: 0 }),
@@ -863,5 +872,28 @@ describe('⛔ a cancel always ends the export, even when the sound never finishe
     expect(main.log).not.toContain('start')
     expect(main.log).not.toContain('audioFinish')
     expect(FakeWorker.made).toBe(0)
+  })
+
+  it('a cancel while main is still opening the mix file waits for that, then takes it away', async () => {
+    // Main sets its WAV only when the begin call returns, so a cancel sent before that deleted nothing
+    // and left the uncompressed mix open on his disk.
+    main.audioBeginGate.hold = true
+    h.audioPlan = {
+      info: { sampleRate: 48000, numberOfChannels: 2, totalFrames: 4 },
+      render: async (onSegment) => {
+        await onSegment([new Float32Array(2), new Float32Array(2)] as Float32Array<ArrayBuffer>[])
+        await never()
+      },
+    } satisfies AudioMixPlan
+    const ctrl = new AbortController()
+    const run = start(ctrl.signal)
+    while (!main.log.includes('audioBegin')) await new Promise((r) => setTimeout(r, 0))
+    ctrl.abort()
+    await flush()
+    expect(main.log).not.toContain('cancel')
+    main.audioBeginGate.release()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+    expect(main.log.slice(-2)).toEqual(['audioBeginDone', 'cancel'])
+    expect(main.log).not.toContain('start')
   })
 })

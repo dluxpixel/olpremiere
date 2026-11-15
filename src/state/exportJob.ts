@@ -432,14 +432,10 @@ function onProgress(id: number, progress: ExportProgress): void {
     // the label went blank. Only a count that moved is a point on the rate (a count that went DOWN
     // is the browser export's retry, which addSample starts over on).
     const last = rate.samples[rate.samples.length - 1]
-    const restarted = !!last && progress.framesDone < last.frames
     if (!last || progress.framesDone !== last.frames) {
       rate.samples = addSample(rate.samples, { t: performance.now(), frames: progress.framesDone })
     }
     leftS = timeLeftS(rate.samples, progress.framesTotal)
-    // No rate to read this tick (a quiet closing step): the last good estimate stays, never a blank.
-    const before = job.stage.leftS
-    if (!Number.isFinite(leftS) && !restarted && Number.isFinite(before)) leftS = before
   }
   useExportJob.setState({ job: { ...job, stage: { ...job.stage, progress, leftS } } })
 }

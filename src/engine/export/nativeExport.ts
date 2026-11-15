@@ -168,8 +168,20 @@ export async function exportNative(
   // Cancelling with nothing running is exactly what deletes it (a mix half
   // written too), so the cleanup is the same call the running case makes.
   let hasAudio = false
+  // ⛔ THE CLEANUP WAITS FOR THE SOUND'S OWN CALLS TO MAIN (not for the render, which may hang). Main
+  // opens the WAV only when the begin call finishes, so a cancel sent while that call is in flight
+  // finds nothing to delete, and the file is then left open on his disk. The calls always finish.
+  let audioIpc: Promise<unknown> = Promise.resolve()
   const dropPreparedAudio = async (): Promise<void> => {
-    if (hasAudio) await api.nativeCancel().catch(() => undefined)
+    if (hasAudio) {
+      // The render may start another call while this waits, so wait until none is left.
+      let seen: Promise<unknown> | null = null
+      while (seen !== audioIpc) {
+        seen = audioIpc
+        await seen.catch(() => undefined)
+      }
+      await api.nativeCancel().catch(() => undefined)
+    }
   }
   if (plan && plan.info.totalFrames > 0) {
     try {
@@ -184,9 +196,13 @@ export async function exportNative(
           if (cd.length === 0 || (cd[0]?.length ?? 0) === 0) return
           if (!hasAudio) {
             hasAudio = true
-            await api.nativeAudioBegin(plan.info.sampleRate, cd.length)
+            audioIpc = api.nativeAudioBegin(plan.info.sampleRate, cd.length)
+            await audioIpc
+            // The cancel may have landed during the begin call: no chunk after it.
+            if (signal.aborted) throw abortError()
           }
-          await api.nativeAudioChunk(interleaveF32(cd))
+          audioIpc = api.nativeAudioChunk(interleaveF32(cd))
+          await audioIpc
         }),
         signal,
       )
