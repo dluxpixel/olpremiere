@@ -10,7 +10,7 @@ import { getLut } from '../effects/lutBank'
 import { lutInfo, lutTexture } from '../effects/lutShader'
 import { CLARITY_GRAIN_GLSL, LOOK_COMMON_GLSL, PASS_FLOOR } from '../effects/lookMath'
 import { rgbSplitOffsets } from '../effects/gym'
-import { getEffect, stackSignature } from '../effects/registry'
+import { cinematicBarsKeepGlsl, getEffect, stackSignature } from '../effects/registry'
 import { blurPlan } from './blurPlan'
 import { computeQuad, cropUV, edgeU, quadScale } from './mat'
 import { deriveMotionBlur, quadCentre, quadRadius } from './motionBlur'
@@ -782,6 +782,28 @@ void main() {
   outColor = vec4(min(vec3(rr.r, cc.g, bb.b), vec3(a)), a);
 }`
 
+// Cinematic Bars as a layer's LAST pass, for a layer that also has a neighborhood
+// effect (see compositeLayer). The bars used to run in the layer shader, ahead of
+// every neighborhood pass, so RGB Split fringed their edges red and blue and a blur
+// turned them soft grey. The maths is the effect's own (cinematicBarsKeepGlsl), so
+// the bars size from the FRAME exactly as the layer shader's do. The output is the
+// keep factor, blended onto the layer's premultiplied FBO as dst * keep with alpha
+// untouched (blendFuncSeparate ZERO, SRC_COLOR, ZERO, ONE): premultiplied colour
+// scaled by a number is still premultiplied, and a bar is black where the layer is.
+const CINEMATIC_BARS_FS = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform float uSize; // bar height, percent of the frame
+uniform vec2 uFrame; // frame width,height in px
+out vec4 outColor;
+void main() {
+  // The layer shader's vSeqPos: seq px, y DOWN (this pass's vUV is y UP).
+  vec2 vSeqPos = vec2(vUV.x, 1.0 - vUV.y) * uFrame;
+  ${cinematicBarsKeepGlsl('uSize')}
+  float cbOut = mix(1.0, cbKeep, step(0.0001, cbBar));
+  outColor = vec4(cbOut, cbOut, cbOut, 1.0);
+}`
+
 // Dest-sampling blend modes (overlay / soft light): fixed-function blending
 // cannot read the destination, so the target is captured to a texture and the
 // blend computed in a full-screen pass. Both inputs premultiplied; math runs
@@ -1239,6 +1261,18 @@ interface LazyPass<L> {
 
 const isPointwise = (fx: ResolvedEffect): boolean => getEffect(fx.type)?.pass === 'pointwise'
 const isNeighborhood = (fx: ResolvedEffect): boolean => getEffect(fx.type)?.pass === 'neighborhood'
+const isBars = (fx: ResolvedEffect): boolean => fx.type === 'cinematicBars'
+
+/**
+ * The pointwise chain a layer's own shader runs. Cinematic Bars are in it, except
+ * on a layer with a neighborhood pass (`hasPost`): there they are drawn as the
+ * layer's LAST pass instead (compositeLayer, barsFbo), because every neighborhood
+ * pass reads the pixels beside the one it writes and would fringe or soften a bar
+ * edge drawn before it. A layer without one, and every layer without bars, gets
+ * exactly the chain it always had.
+ */
+const layerPointwise = (effects: readonly ResolvedEffect[], hasPost: boolean): ResolvedEffect[] =>
+  effects.filter((fx) => isPointwise(fx) && !(hasPost && isBars(fx)))
 
 // --- Renderer --------------------------------------------------------------
 
@@ -1393,7 +1427,10 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
 
   function warm(shapes: readonly LayerShape[]): void {
     for (const shape of shapes) {
-      const pointwise = shape.effects.filter(isPointwise)
+      // The program compositeLayer will ask for: bars leave it when a neighborhood
+      // effect follows. (A shutter smear is only known at draw time.)
+      const hasPost = shape.effects.some(isNeighborhood)
+      const pointwise = layerPointwise(shape.effects, hasPost)
       for (const bicubic of [false, true]) {
         const key = layerKey(pointwise, shape.mask, bicubic)
         if (layerPrograms.has(key) || pendingPrograms.has(key)) continue
@@ -1414,6 +1451,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
         lookGlowPass.start()
       }
       if (passes.some((fx) => fx.type === 'lookClarity')) lookClarityPass.start()
+      if (hasPost && shape.effects.some(isBars)) barsPass.start()
     }
   }
 
@@ -1639,7 +1677,12 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
    * first draw that needs it finishes it, and one that fails is said ONCE and its
    * pass is left out. The look still draws its colour; nothing else is touched.
    */
-  function lazyPass<L>(name: string, fsSrc: string, locate: (prog: WebGLProgram) => L): LazyPass<L> {
+  function lazyPass<L>(
+    name: string,
+    fsSrc: string,
+    locate: (prog: WebGLProgram) => L,
+    failed = `the look ${name} pass did not build, so looks draw without it`,
+  ): LazyPass<L> {
     let pending: WebGLProgram | null = null
     let built: PassProgram<L> | null | undefined
     return {
@@ -1665,7 +1708,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
           built = { prog, loc: locate(prog) }
         } catch (err) {
           built = null
-          console.warn(`OL Premiere renderer: the look ${name} pass did not build, so looks draw without it`, err)
+          console.warn(`OL Premiere renderer: ${failed}`, err)
         }
         return built
       },
@@ -1701,6 +1744,18 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     uSeed: gl.getUniformLocation(prog, 'uSeed'),
     uFrame: gl.getUniformLocation(prog, 'uFrame'),
   }))
+  // Not a look's pass, but built the same lazy way: only a layer with bars AND a
+  // neighborhood effect ever draws it, so every other project never links it.
+  const barsPass = lazyPass(
+    'cinematic bars',
+    CINEMATIC_BARS_FS,
+    (prog) => ({
+      aPos: gl.getAttribLocation(prog, 'aPos'),
+      uSize: gl.getUniformLocation(prog, 'uSize'),
+      uFrame: gl.getUniformLocation(prog, 'uFrame'),
+    }),
+    'the Cinematic Bars pass did not build, so bars on a layer with a blur or RGB Split are left out',
+  )
   const blendModeLoc = {
     aPos: gl.getAttribLocation(blendModeProg, 'aPos'),
     uDst: gl.getUniformLocation(blendModeProg, 'uDst'),
@@ -2179,6 +2234,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     frameW: number,
     frameH: number,
     dither: number,
+    barsLast = false,
   ): void {
     const texW = sourceW(source)
     const texH = sourceH(source)
@@ -2197,7 +2253,8 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     v[16] = br[0]; v[17] = br[1]; v[18] = uR; v[19] = uv.v1
     v[20] = bl[0]; v[21] = bl[1]; v[22] = uL; v[23] = uv.v1
 
-    const pointwise = layer.effects.filter(isPointwise)
+    // `barsLast`: the layer has a neighborhood pass, so its bars are drawn after it.
+    const pointwise = layerPointwise(layer.effects, barsLast)
     // Magnified layers sample through the clamped Catmull-Rom instead of plain
     // bilinear. Decided per DRAW from the quad the transform just produced, so a
     // keyframed zoom picks the right filter on every frame it crosses 1:1, and
@@ -2515,6 +2572,28 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
   }
 
   /**
+   * Cinematic Bars as the layer's LAST pass: the keep factor multiplied into the
+   * layer FBO's premultiplied colour, alpha untouched, in place (no scratch, no
+   * copy back). Only this layer's FBO is touched, so no other layer, title or
+   * caption is barred. A bar of nothing is not drawn.
+   */
+  function barsFbo(fbo: Fbo, sizePct: number, frameW: number, frameH: number): void {
+    if (sizePct / 100 <= 0.0001) return
+    const bars = barsPass.get()
+    if (!bars) return
+    gl.useProgram(bars.prog)
+    bindFull(bars.loc.aPos)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb)
+    gl.viewport(0, 0, fboW, fboH)
+    gl.enable(gl.BLEND)
+    gl.blendFuncSeparate(gl.ZERO, gl.SRC_COLOR, gl.ZERO, gl.ONE)
+    gl.uniform1f(bars.loc.uSize, sizePct)
+    gl.uniform2f(bars.loc.uFrame, frameW, frameH)
+    gl.drawArrays(gl.TRIANGLES, 0, 3)
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+  }
+
+  /**
    * Run one neighborhood effect over the layer's isolated FBO. Result is left
    * in `fbo`. These run AFTER the pointwise chain (which already premultiplied
    * alpha), in stack order. `seed` is the frame index the layer's pointwise
@@ -2611,8 +2690,13 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
       // Blend within the layer FBO with premultiplied over onto transparent.
       gl.enable(gl.BLEND)
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
-      drawLayer(layer, source, tex, frameW, frameH, 0)
+      // Bars are the last thing on the layer, after every neighborhood pass and the
+      // shutter smear: out of the layer shader here, a pass of their own below.
+      drawLayer(layer, source, tex, frameW, frameH, 0, post.length > 0)
       for (const fx of post) applyNeighborhood(fx, layerFbo, scratch, layer.frameSeed)
+      if (post.length > 0) {
+        for (const fx of layer.effects) if (isBars(fx)) barsFbo(layerFbo, fx.params.size ?? 0, frameW, frameH)
+      }
       // The target may be a seq-sized transition FBO (fboW×fboH), NOT the
       // canvas. Sizing the viewport to the canvas would draw into only a
       // sub-rect of that FBO (the transition-preview bug).
@@ -2913,6 +2997,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
     lookBrightPass.dispose()
     lookGlowPass.dispose()
     lookClarityPass.dispose()
+    barsPass.dispose()
     if (destCapTex) gl.deleteTexture(destCapTex)
     destCapTex = null
     if (destCapFb) gl.deleteFramebuffer(destCapFb)

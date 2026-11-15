@@ -4,6 +4,7 @@ import type { ResolvedEffect } from '../render/types'
 import type { ClipFilters, EffectInstance } from '../types'
 import {
   CANONICAL_ORDER,
+  cinematicBarsKeepGlsl,
   EFFECTS,
   defaultParams,
   filtersToEffectStack,
@@ -246,5 +247,19 @@ describe('stackSignature', () => {
     expect(stackSignature(a)).toBe(stackSignature(b))
     expect(stackSignature([...a].reverse())).not.toBe(stackSignature(a))
     expect(stackSignature([])).toBe('')
+  })
+})
+
+describe('cinematicBars', () => {
+  it('stays a pointwise effect with its size param, and its shader body is the shared bar maths', () => {
+    const def = getEffect('cinematicBars')!
+    expect(def.pass).toBe('pointwise')
+    expect(def.params.map((q) => q.key)).toEqual(['size'])
+    const body = def.glsl!((k) => `u_${k}`)
+    expect(body).toContain(cinematicBarsKeepGlsl('u_size'))
+    expect(body).toContain('c *= mix(1.0, cbKeep, step(0.0001, cbBar));')
+    // Sized from the FRAME (vSeqPos over uFrame), never the clip.
+    expect(cinematicBarsKeepGlsl('s')).toContain('vSeqPos.y / cbH')
+    expect(cinematicBarsKeepGlsl('s')).toContain('max(uFrame.y, 1.0)')
   })
 })

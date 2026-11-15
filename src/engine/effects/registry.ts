@@ -80,6 +80,21 @@ export const paramSens = (param: EffectParamDef): number => param.sens ?? param.
 /** Emit the uniform name for one param of this effect at its stack index. */
 export type UniformNamer = (paramKey: string) => string
 
+/**
+ * The Cinematic Bars maths, shared by the layer shader (the effect's `glsl`) and the
+ * renderer's final bars pass so the two cannot drift. Needs `vSeqPos` (seq px, y
+ * down) and `uFrame` in scope; `size` is a GLSL expression for the bar height in
+ * percent of the frame. Leaves `cbBar` and `cbKeep` (0 in a bar, 1 in the picture).
+ */
+export const cinematicBarsKeepGlsl = (size: string): string =>
+  [
+    'float cbH = max(uFrame.y, 1.0);',
+    'float cbY = vSeqPos.y / cbH;',
+    `float cbBar = ${size} / 100.0;`,
+    'float cbE = 0.75 / cbH;',
+    'float cbKeep = smoothstep(cbBar - cbE, cbBar + cbE, cbY) * (1.0 - smoothstep(1.0 - cbBar - cbE, 1.0 - cbBar + cbE, cbY));',
+  ].join('\n      ')
+
 export interface EffectDef {
   type: string
   label: string
@@ -676,12 +691,12 @@ export const EFFECTS: EffectDef[] = [
       params: (f) => ({ size: Math.round(barFractionForRatio(r.ratio, f.width, f.height) * 1000) / 10 }),
     })),
     params: [p('size', 'Size', 0, 50, 0.1, 0, '%', 0.25)],
+    // When the layer ALSO has a neighborhood effect (RGB Split, a blur) the renderer
+    // leaves this out of the layer shader and draws the same maths as the layer's
+    // LAST pass (glRenderer.ts cinematicBarsFs), so a split or a blur cannot fringe
+    // or soften the bar edges. Alone it stays here, in the shader, as it always was.
     glsl: (u) => `
-      float cbH = max(uFrame.y, 1.0);
-      float cbY = vSeqPos.y / cbH;
-      float cbBar = ${u('size')} / 100.0;
-      float cbE = 0.75 / cbH;
-      float cbKeep = smoothstep(cbBar - cbE, cbBar + cbE, cbY) * (1.0 - smoothstep(1.0 - cbBar - cbE, 1.0 - cbBar + cbE, cbY));
+      ${cinematicBarsKeepGlsl(u('size'))}
       c *= mix(1.0, cbKeep, step(0.0001, cbBar));
     `,
   },
