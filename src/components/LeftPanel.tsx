@@ -16,7 +16,7 @@ import { CaptionsTab } from './CaptionsTab'
 import { applyEffectToAllClips } from '../state/bulkEdits'
 import { applyEffectToClips, applyTransitionToSelection, transitionPictureCount } from '../state/bulkEdits'
 import { openContextMenu, type MenuItem } from '../state/contextMenu'
-import { ASSET_MIME, EFFECT_MIME, TITLE_MIME, TRANSITION_MIME } from '../state/dnd'
+import { ASSET_MIME, EFFECT_MIME, TITLE_MIME, TRANSITION_MIME, setDragRecord } from '../state/dnd'
 import { isInLibrary, saveAssetToLibrary, useLibrary } from '../state/library'
 import { oneClickSaveHint, saveToCategoryItems } from '../state/libraryMenus'
 import { LibraryTab } from './LibraryTab'
@@ -324,6 +324,7 @@ function AssetCard({ asset, fps }: { asset: MediaAsset; fps: number }) {
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData(ASSET_MIME, asset.id)
+        setDragRecord('asset', asset.id)
         e.dataTransfer.effectAllowed = 'copy'
         scrub.handlers.onPointerLeave() // the drag takes the pointer; the scrub video goes
       }}
@@ -777,6 +778,7 @@ function BrowserItem({
       title={title}
       onDragStart={(e) => {
         e.dataTransfer.setData(mime, payload)
+        if (mime === TITLE_MIME) setDragRecord('title', payload)
         e.dataTransfer.effectAllowed = 'copy'
       }}
       onDoubleClick={onApply}

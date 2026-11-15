@@ -21,7 +21,7 @@ import {
 } from '../engine/types'
 import { installKeymap } from '../keymap'
 import { useContextMenu } from '../state/contextMenu'
-import { ASSET_MIME, EFFECT_MIME } from '../state/dnd'
+import { ASSET_MIME, EFFECT_MIME, clearDragRecord, setDragRecord } from '../state/dnd'
 import { copySelection } from '../state/clipboard'
 import { PAIR_LOCKED_MESSAGE } from '../state/clipEdits'
 import { answerNamePrompt, useNamePrompt } from '../state/namePrompt'
@@ -392,6 +392,36 @@ describe('Timeline', () => {
     const after = lanes.scrollLeft
     for (let i = 0; i < 5; i++) act(() => raf.flush())
     expect(lanes.scrollLeft).toBe(after)
+  })
+
+  // The drop preview, end to end through the real lanes: a ghost clip as long as
+  // the media, on the video lane and again on the audio lane, gone on dragend.
+  it('a bin drag draws the ghost clip on the lanes and clears it on dragend', () => {
+    const asset = makeAsset({ id: 'vid', name: 'cat.mp4', durationS: 6 })
+    useStore.getState().setProject({ ...useStore.getState().project, assets: { vid: asset } })
+    render(<Timeline height={300} />)
+    const { lanes } = layOut()
+    lanes.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1000, bottom: 300, width: 1000, height: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    const dragOver = (clientY: number) => {
+      const e = new MouseEvent('dragover', { bubbles: true, cancelable: true, clientX: 200, clientY })
+      Object.defineProperty(e, 'dataTransfer', { value: { types: [ASSET_MIME], dropEffect: '', getData: () => '' } })
+      return e
+    }
+    setDragRecord('asset', 'vid')
+    onTestFinished(clearDragRecord)
+    // Hover each lane in turn until one takes the drop and draws.
+    for (let y = 40; y < 300 && screen.queryAllByTestId('drop-ghost').length === 0; y += 10) {
+      act(() => {
+        lanes.dispatchEvent(dragOver(y))
+      })
+    }
+    const ghosts = screen.getAllByTestId('drop-ghost')
+    expect(ghosts).toHaveLength(2)
+    expect(ghosts.map((g) => g.style.width)).toEqual(['60px', '60px'])
+    act(() => {
+      window.dispatchEvent(new Event('dragend'))
+    })
+    expect(screen.queryAllByTestId('drop-ghost')).toHaveLength(0)
   })
 
   // Five moves over the same clip used to write five new selections, and every

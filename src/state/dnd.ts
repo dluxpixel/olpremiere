@@ -27,6 +27,34 @@ export const EFFECT_CARD_MIME = 'application/x-olpremiere-effect-card'
 
 export const dragHasType = (types: readonly string[], mime: string): boolean => types.includes(mime)
 
+/** What a drag from the bins is carrying, by the id its source put in the dataTransfer. */
+export type DragKind = 'asset' | 'sfx' | 'title' | 'library'
+export interface DragRecord {
+  kind: DragKind
+  id: string
+}
+
+/**
+ * WHAT IS BEING DRAGGED, readable while it is still being dragged.
+ *
+ * The browser hides a drag's DATA until the drop and only shows its MIME types
+ * during dragover, so the timeline could not know WHICH clip was over it, only
+ * that "some media" was. A source sets this on dragstart; the timeline reads it
+ * to draw the ghost clip, and clears it on drop and on dragend. Plain module
+ * state: nothing subscribes, nothing re-renders on it. It is only a hint for the
+ * preview. The dataTransfer stays the source of truth for the DROP itself, so a
+ * drag nobody recorded (or a stale record) still drops correctly and only loses
+ * the ghost.
+ */
+let dragRecord: DragRecord | null = null
+export const setDragRecord = (kind: DragKind, id: string): void => {
+  dragRecord = { kind, id }
+}
+export const getDragRecord = (): DragRecord | null => dragRecord
+export const clearDragRecord = (): void => {
+  dragRecord = null
+}
+
 /**
  * Which edge of a clip a transition drop lands on. Dropping past the midpoint
  * means the outgoing edge. Matches how an editor reaches for the cut nearest

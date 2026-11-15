@@ -6,7 +6,7 @@ import { formatTimecode } from '../engine/timecode'
 import { activeSequence, type Id } from '../engine/types'
 import { useBlobUrl } from '../state/blobUrls'
 import { openContextMenu } from '../state/contextMenu'
-import { LIBRARY_MIME, SFX_MIME, dragHasType } from '../state/dnd'
+import { LIBRARY_MIME, SFX_MIME, dragHasType, setDragRecord } from '../state/dnd'
 import {
   addLibraryItemToProject,
   addLibraryItemToTimeline,
@@ -89,6 +89,7 @@ function LibraryCard({ item, fps, categories }: { item: LibraryItem; fps: number
       title="Enter or + puts it on the timeline. Double-click adds it to this project's media. Drag it to the timeline, or onto a category to move it."
       onDragStart={(e) => {
         e.dataTransfer.setData(LIBRARY_MIME, item.id)
+        setDragRecord('library', item.id)
         e.dataTransfer.effectAllowed = 'copyMove'
       }}
       onDoubleClick={() => void addLibraryItemToProject(item.id)}
@@ -310,6 +311,7 @@ function SfxRow({ sfx }: { sfx: SfxDef }) {
       title="Click to preview · double-click or drag to add"
       onDragStart={(e) => {
         e.dataTransfer.setData(SFX_MIME, sfx.id)
+        setDragRecord('sfx', sfx.id)
         e.dataTransfer.effectAllowed = 'copy'
       }}
       onClick={() => {

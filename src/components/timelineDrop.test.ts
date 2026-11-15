@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { ASSET_MIME, SFX_MIME, TITLE_MIME } from '../state/dnd'
-import { assetDropTrack, dropKinds, laneTakesDrop, sfxDropTrack, snappedDropTime } from './timelineDrop'
-import { makeClip, makeSeq, makeTrack } from './timelineTestFixtures'
+import {
+  assetDropGhosts,
+  assetDropTrack,
+  dropKinds,
+  insertDroppedAsset,
+  laneTakesDrop,
+  sfxDropGhosts,
+  sfxDropTrack,
+  snappedDropTime,
+  titleDropGhosts,
+  titleDropTrack,
+} from './timelineDrop'
+import { makeAsset, makeClip, makeSeq, makeTrack } from './timelineTestFixtures'
 
 describe('dropKinds', () => {
   it('reads what the drag carries', () => {
@@ -66,5 +77,73 @@ describe('drop targets', () => {
     expect(assetDropTrack(a2, seq, 'video')).toBe(v1)
     expect(assetDropTrack(null, seq, 'audio')).toBe(a2)
     expect(assetDropTrack(null, makeSeq([vLocked]), 'video')).toBeUndefined()
+  })
+})
+
+describe('drop ghosts', () => {
+  const clip = (startS: number, outS: number) => makeClip({ startS, outS })
+  const av = makeAsset({ id: 'av', name: 'cat.mp4', durationS: 8 })
+  const still = makeAsset({ id: 'png', name: 'pic.png', kind: 'image', durationS: 0, hasAudio: false })
+  const snd = makeAsset({ id: 'snd', name: 'meow.wav', kind: 'audio', durationS: 2, hasVideo: false })
+
+  it('runs the insert a bin drop runs: a pair for video with sound, one clip for the rest', () => {
+    const seq = makeSeq([makeTrack(), makeTrack({ kind: 'audio' })])
+    const pair = insertDroppedAsset(seq, av, seq.tracks[0]!, 3)
+    expect(pair.clipIds).toHaveLength(2)
+    expect(pair.seq.tracks.map((t) => t.clips.length)).toEqual([1, 1])
+    const one = insertDroppedAsset(seq, still, seq.tracks[0]!, 3)
+    expect(one.clipIds).toHaveLength(1)
+    // The sequence handed in is never touched: the ghost is only a preview.
+    expect(seq.tracks.map((t) => t.clips.length)).toEqual([0, 0])
+  })
+
+  it('reads the ghosts off the clips the insert made, one per lane', () => {
+    const seq = makeSeq([makeTrack(), makeTrack({ kind: 'audio' })])
+    expect(assetDropGhosts(seq, av, seq.tracks[0]!, 3)).toEqual([
+      { trackId: seq.tracks[0]!.id, tS: 3, durS: 8, label: 'cat.mp4' },
+      { trackId: seq.tracks[1]!.id, tS: 3, durS: 8, label: 'cat.mp4' },
+    ])
+  })
+
+  it('shows a picture at the default length, and a sound on an audio lane even when hovering video', () => {
+    const seq = makeSeq([makeTrack(), makeTrack({ kind: 'audio' })])
+    expect(assetDropGhosts(seq, still, seq.tracks[0]!, 1)[0]!.durS).toBe(5)
+    expect(assetDropGhosts(seq, snd, seq.tracks[0]!, 1)).toEqual([
+      { trackId: seq.tracks[1]!.id, tS: 1, durS: 2, label: 'meow.wav' },
+    ])
+  })
+
+  it('follows the insert onto the next free lane, and shows nothing for a lane that does not exist yet', () => {
+    const v1 = makeTrack({ clips: [clip(0, 20)] })
+    const v2 = makeTrack()
+    const seq = makeSeq([v1, v2])
+    expect(assetDropGhosts(seq, still, v1, 2).map((g) => g.trackId)).toEqual([v2.id])
+    const packed = makeSeq([makeTrack({ clips: [clip(0, 20)] })])
+    expect(assetDropGhosts(packed, still, packed.tracks[0]!, 2)).toEqual([])
+  })
+
+  it('shows nothing when no unlocked lane of the kind is left', () => {
+    const seq = makeSeq([makeTrack({ locked: true })])
+    expect(assetDropGhosts(seq, still, seq.tracks[0]!, 2)).toEqual([])
+  })
+
+  it('puts a sound ghost on the lane a dropped sound takes, nudged to a gap like the sound insert', () => {
+    const a1 = makeTrack({ kind: 'audio', clips: [clip(0, 3)] })
+    const seq = makeSeq([makeTrack(), a1])
+    const [g] = sfxDropGhosts(seq, snd, a1, 1)
+    expect(g!.trackId).toBe(a1.id)
+    expect(g!.tS).toBe(3)
+    expect(g!.durS).toBe(2)
+  })
+
+  it('puts a title ghost on the topmost unlocked video lane, nudged to a gap like the title insert', () => {
+    const v1 = makeTrack()
+    const v2 = makeTrack({ clips: [clip(0, 4)] })
+    const v3 = makeTrack({ locked: true })
+    const seq = makeSeq([v1, v2, v3])
+    expect(titleDropTrack(seq)?.id).toBe(v2.id)
+    const [g] = titleDropGhosts(seq, 3, 'Headline', 1)
+    expect(g).toEqual({ trackId: v2.id, tS: 4, durS: 3, label: 'Headline' })
+    expect(titleDropGhosts(makeSeq([makeTrack({ locked: true })]), 3, 'x', 1)).toEqual([])
   })
 })

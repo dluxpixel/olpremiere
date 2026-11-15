@@ -88,12 +88,33 @@ describe('TimelineLane', () => {
   })
 
   it('draws the drop preview line only on its own lane', () => {
-    const { laneEl } = renderLane({ dropPreview: { trackId: lane.id, tS: 4 } })
+    const { laneEl } = renderLane({ dropPreview: { trackId: lane.id, tS: 4, ghosts: [] } })
     const line = laneEl.querySelector('.bg-accent.w-\\[2px\\]') as HTMLElement
     expect(line.style.left).toBe('40px')
     cleanup()
-    const other = renderLane({ dropPreview: { trackId: 'elsewhere', tS: 4 } })
+    const other = renderLane({ dropPreview: { trackId: 'elsewhere', tS: 4, ghosts: [] } })
     expect(other.laneEl.querySelector('.w-\\[2px\\]')).toBeNull()
+  })
+
+  it('draws a ghost clip where the drop will land, as long as it will be, with the line at its start', () => {
+    const { laneEl } = renderLane({
+      dropPreview: { trackId: 'hovered', tS: 4, ghosts: [{ trackId: lane.id, tS: 4, durS: 3, label: 'cat.mp4' }] },
+    })
+    const ghost = screen.getByTestId('drop-ghost')
+    expect(ghost.style.left).toBe('40px')
+    expect(ghost.style.width).toBe('30px')
+    expect(ghost.className).toContain('pointer-events-none')
+    expect(ghost.className).toContain('rounded-clip')
+    expect(ghost.textContent).toBe('cat.mp4')
+    const line = laneEl.querySelector('.bg-accent.w-\\[2px\\]') as HTMLElement
+    expect(line.style.left).toBe('40px')
+  })
+
+  it('draws a ghost only on its own lane, and no separate hover line on the hovered one', () => {
+    const preview = { trackId: lane.id, tS: 4, ghosts: [{ trackId: 'other-lane', tS: 6, durS: 1 }] }
+    const { laneEl } = renderLane({ dropPreview: preview })
+    expect(screen.queryByTestId('drop-ghost')).toBeNull()
+    expect(laneEl.querySelector('.w-\\[2px\\]')).toBeNull()
   })
 
   it('routes presses to the lane and the clip handlers', () => {
