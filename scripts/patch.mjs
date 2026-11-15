@@ -153,14 +153,17 @@ const writeStamp = (tree) => writeFileSync(STAMP, JSON.stringify({ tree, at: new
 // takes every new file that is not ignored, so a project file or a media folder that nothing
 // ignored went into a release commit, 4.3 GB of it, and the push hung packing. A release does
 // add files on purpose (fonts, sources, sounds), so new files are fine; his `.olstudio` files
-// and anything of 50 MB or more are not. Every one of these refusals goes through stopRefused:
+// and anything of 50 MB or more are not, nor is anything inside his OLP-MEDIA folder or a folder named
+// `*.olstudio`, and a tracked file that grew counts like a new one. Every one of these refusals goes through stopRefused:
 // it prints, waits until the ship log has taken it, and only then exits 1.
 const refusedSay = (refused) =>
   refused.map((r) => `   ${r.path}  (${(r.bytes / (1024 * 1024)).toFixed(1)} MB)  ${r.why}\n`).join('')
-const refusedNewWayOut = '   The way out, for a new file: add it to .gitignore, or move it out of this folder.\n'
+// One way out for every file these checks can name, because a new file may already be staged with
+// `git add` and a tracked one may have grown: ignoring such a file does nothing while git has it.
 const refusedWayOut =
-  refusedNewWayOut +
-  '   For a tracked file: undo the change, or stop tracking it with `git rm --cached <path>` and ignore it.\n'
+  '   The way out: move the file out of this folder, or add it to .gitignore.\n' +
+  '   If it was already added with `git add`, or git already tracks it, also run `git rm --cached <path>`\n' +
+  '   so git lets go of it (the file on disk stays). For a tracked file you changed, undoing the change works too.\n'
 const stopRefused = async (say) => {
   console.error(say)
   await new Promise((resolve) => (shipLog ? shipLog.write(say, resolve) : resolve()))
@@ -351,7 +354,7 @@ const gate = async (tree) => {
       '\n❌ Files that must never be in a release appeared while the gate ran, so NOTHING was committed, released or stamped.\n' +
         refusedSay(refusedAtEnd) +
         '   The files on disk were not touched.\n' +
-        refusedNewWayOut +
+        refusedWayOut +
         '   Then run the same command again.\n',
     )
   }
@@ -441,19 +444,21 @@ const pushMain = async () => {
   } catch {
     // No remote branch to compare with, so every commit on main counts as unpushed.
   }
-  const refusedInRange = refusedInPush(range)
-  if (refusedInRange.length) {
-    await stopRefused(
-      '\n❌ A commit that is about to be pushed carries files that must never be in a release, so NOTHING was pushed.\n' +
-        refusedSay(refusedInRange) +
-        '   The commit already exists on this machine and stays there. The files on disk were not touched.\n' +
-        '   The file sits in an unpushed commit, which has to be rewritten without it (for example a rebase that removes\n' +
-        '   the file from that commit). Then run the release again. Never `git reset --hard`.\n',
-    )
-  }
   const token = loadToken()
   process.stdout.write('\n▶ push\n')
   for (let attempt = 1; ; attempt++) {
+    // ⛔ LOOKED AT AGAIN BEFORE EVERY TRY (2026-11-15), not once before the loop: a retry waits up to 30 s, and a
+    // commit made in that wait is in the range now and was not when the first look ran.
+    const refusedInRange = refusedInPush(range)
+    if (refusedInRange.length) {
+      await stopRefused(
+        '\n❌ A commit that is about to be pushed carries files that must never be in a release, so NOTHING was pushed.\n' +
+          refusedSay(refusedInRange) +
+          '   The commit already exists on this machine and stays there. The files on disk were not touched.\n' +
+          '   The file sits in an unpushed commit, which has to be rewritten without it (for example a rebase that removes\n' +
+          '   the file from that commit). Then run the release again. Never `git reset --hard`.\n',
+      )
+    }
     try {
       pushOnce(token)
       return
@@ -482,7 +487,15 @@ const lastTag = (() => {
   }
 })()
 const dirty = git('status', '--porcelain')
-const unpushed = git('rev-list', '--count', 'origin/main..HEAD')
+const unpushed = (() => {
+  try {
+    return git('rev-list', '--count', 'origin/main..HEAD')
+  } catch {
+    // No origin/main (a fresh clone state, a failed fetch): nothing is known to be on the remote, so
+    // every commit on HEAD counts as unpushed, the same as pushMain's range with no remote branch.
+    return git('rev-list', '--count', 'HEAD')
+  }
+})()
 const unreleased = lastTag ? git('rev-list', '--count', `${lastTag}..HEAD`) : '1'
 const shippedVersion = JSON.parse(readFileSync('package.json', 'utf8')).version
 // Only this script writes that line, and only after a gate passed.

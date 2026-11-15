@@ -598,9 +598,16 @@ export function commitExactTree(tree, message, { parent, cwd = process.cwd() }) 
 /** A file this size or larger is not taken: GitHub warns at 50 MB, refuses 100 MB, and a push of it hangs packing. */
 const REFUSED_BYTES = 50 * 1024 * 1024
 
-/** Why a file at `path` of `bytes` must not be in a release, or '' when it may be. */
+/**
+ * Why a file at `path` of `bytes` must not be in a release, or '' when it may be.
+ * 2026-11-15: judged by every FOLDER name on the way too, not only the file name. His media
+ * folder (OLP-MEDIA) was held out by .gitignore alone, and a project saved as a folder
+ * ("My Edit.olstudio/data.bin") has no file that ends in .olstudio. Split on / and \, any case.
+ */
 function whyRefused(path, bytes) {
-  if (/\.olstudio$/i.test(path)) return 'his project file'
+  const segments = path.split(/[\\/]/)
+  if (segments.some((s) => s.toLowerCase() === 'olp-media')) return 'his media folder'
+  if (segments.some((s) => /\.olstudio$/i.test(s))) return 'his project file'
   if (bytes >= REFUSED_BYTES) return 'GitHub warns at 50 MB and refuses 100 MB, and a push of it hangs packing'
   return ''
 }
@@ -654,23 +661,35 @@ export function refusedAdds(tree, base, cwd = process.cwd()) {
  * batch of sizes however many objects there are.
  */
 export function refusedInPush(range, cwd = process.cwd()) {
-  const listed = gitIn(cwd, ['rev-list', '--objects', range], { maxBuffer: LIST_BYTES })
+  // 2026-11-15: NOT `rev-list --objects`, which names a blob once however many paths hold it, so a
+  // project file with the same bytes as an earlier harmless file was only ever judged under the
+  // harmless name. Every commit in the range is diffed against its parent(s) instead (-m so a merge
+  // is diffed too, --root so a first commit is), and every path a commit adds or changes is judged.
+  const commits = gitIn(cwd, ['rev-list', range], { maxBuffer: LIST_BYTES })
+  if (!commits) return []
+  const raw = gitIn(cwd, ['diff-tree', '--stdin', '-r', '-z', '-m', '--root', '--no-renames', '--no-commit-id', '--diff-filter=AMT'], {
+    input: `${commits}\n`,
+    maxBuffer: LIST_BYTES,
+  })
+  const parts = raw.split('\0')
   const named = []
-  for (const line of listed.split('\n')) {
-    // `<oid> <path>`; a commit and a root tree have no path.
-    const space = line.indexOf(' ')
-    if (space > 0 && line.slice(space + 1)) named.push({ oid: line.slice(0, space), path: line.slice(space + 1) })
+  const seen = new Set()
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    // `:oldmode newmode oldid newid status`; a submodule (160000) has no blob to weigh.
+    const [, mode, , id] = parts[i].split(' ')
+    const path = parts[i + 1]
+    if (mode === '160000' || seen.has(`${id} ${path}`)) continue
+    seen.add(`${id} ${path}`)
+    named.push({ oid: id, path })
   }
   if (!named.length) return []
-  const checked = gitIn(cwd, ['cat-file', '--batch-check=%(objecttype) %(objectname) %(objectsize)'], {
+  const sizes = gitIn(cwd, ['cat-file', '--batch-check=%(objectsize)'], {
     input: `${named.map((n) => n.oid).join('\n')}\n`,
     maxBuffer: LIST_BYTES,
   }).split('\n')
   const refused = []
   named.forEach(({ path }, i) => {
-    const [type, , size] = (checked[i] ?? '').split(' ')
-    if (type !== 'blob') return
-    const bytes = Number(size)
+    const bytes = Number(sizes[i])
     const why = whyRefused(path, bytes)
     if (why) refused.push({ path, bytes, why })
   })
@@ -679,15 +698,19 @@ export function refusedInPush(range, cwd = process.cwd()) {
 
 /**
  * The same refusal for new files, BEFORE anything is hashed: the untracked files nothing
- * ignores that are a `.olstudio` project or 50 MB or more. `treeHash` runs `git add -A`,
+ * ignores, plus the tracked files changed in the working tree (one that grew past 50 MB since
+ * it was committed), that are a `.olstudio` project, in his media folder or 50 MB or more. `treeHash` runs `git add -A`,
  * which reads every new file and writes it into .git/objects first, minutes and
  * gigabytes for a 1.4 GB project file, so the files are looked at here, by name and by
  * size on disk, and nothing is read. One git call and one stat per new file.
  */
 export function refusedUntracked(cwd = process.cwd()) {
-  const listed = gitIn(cwd, ['ls-files', '-o', '--exclude-standard', '-z'], { maxBuffer: LIST_BYTES, trim: false })
+  // -m lists a tracked file that differs from the index, once per index entry (a merge conflict
+  // has three), so the paths are made unique. A tracked file deleted on disk is listed too and
+  // skipped below, the same as a file that vanished after it was listed.
+  const listed = gitIn(cwd, ['ls-files', '-m', '-o', '--exclude-standard', '-z'], { maxBuffer: LIST_BYTES, trim: false })
   const refused = []
-  for (const path of listed.split('\0')) {
+  for (const path of new Set(listed.split('\0'))) {
     if (!path) continue
     let bytes = 0
     try {

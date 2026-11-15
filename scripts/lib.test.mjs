@@ -783,6 +783,128 @@ describe('new files are refused before anything is hashed', { timeout: 60_000 },
   })
 })
 
+// ⛔ ROUND THREE OF THE FILE GUARD (2026-11-15). The folder of his media and a project folder were held
+// out by .gitignore alone, a tracked file that grew was never looked at, and the printed way out for a
+// file that was already staged said only "add it to .gitignore".
+describe('the file guard, round three: names by folder, grown tracked files, long lists', { timeout: 120_000 }, () => {
+  /** A scratch repo with small files written at these paths (not yet added), and the commit it started at. */
+  function withFiles(paths) {
+    const { dir, git, write } = scratchRepo()
+    const base = git('rev-parse', 'HEAD')
+    for (const p of paths) {
+      mkdirSync(join(dir, p, '..'), { recursive: true })
+      write(p, 'tiny')
+    }
+    return { dir, git, base }
+  }
+  const refusedNames = ['OLP-MEDIA/clip.mp4', 'proj/olp-media/a/b/clip.mp4', 'My Edit.olstudio/data.bin', 'deep/OLP-Media/x/y.txt', 'a/B.OLSTUDIO/c.txt']
+  const keptNames = ['OLP-MEDIA-notes.txt', 'not.olstudio.txt', 'docs/olp-media.md', 'my.olstudio.bak/data.bin']
+
+  it('refuses a tiny file inside OLP-MEDIA or a .olstudio folder, at any depth and in any case, from refusedAdds', () => {
+    const { dir, base } = withFiles([...refusedNames, ...keptNames])
+    const refused = refusedAdds(treeHash(dir), base, dir)
+    expect(names(refused)).toEqual([...refusedNames].sort())
+    expect(refused.find((r) => r.path === 'OLP-MEDIA/clip.mp4')).toMatchObject({ bytes: 4, why: 'his media folder' })
+    expect(refused.find((r) => r.path === 'My Edit.olstudio/data.bin')).toMatchObject({ bytes: 4, why: 'his project file' })
+  })
+
+  it('refuses the same paths in the commits a push would send, even after a later commit removed them', () => {
+    const { dir, git, base } = withFiles([...refusedNames, ...keptNames])
+    git('add', '-A')
+    git('commit', '-q', '-m', 'takes them')
+    git('rm', '-q', '-r', 'OLP-MEDIA', 'proj')
+    git('commit', '-q', '-m', 'removes two folders of them again')
+    expect(names(refusedInPush(`${base}..HEAD`, dir))).toEqual([...refusedNames].sort())
+  })
+
+  it('judges a path in a push by its own name even when an earlier harmless file holds the same bytes', () => {
+    const { dir, git, write } = scratchRepo()
+    const base = git('rev-parse', 'HEAD')
+    // a.txt already holds 'a1', so one blob answers to three names; git lists a blob once, under one name.
+    mkdirSync(join(dir, 'OLP-MEDIA'))
+    write('OLP-MEDIA/same.txt', 'a1')
+    write('Same Bytes.olstudio', 'a1')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'one blob, three names')
+    expect(names(refusedInPush(`${base}..HEAD`, dir))).toEqual(['OLP-MEDIA/same.txt', 'Same Bytes.olstudio'])
+    // The first commit of a history is judged too.
+    expect(names(refusedInPush('HEAD', dir))).toEqual(['OLP-MEDIA/same.txt', 'Same Bytes.olstudio'])
+  })
+
+  it('refuses the same paths among the untracked files, and lets the look-alike names through', () => {
+    const { dir } = withFiles([...refusedNames, ...keptNames])
+    const refused = refusedUntracked(dir)
+    expect(names(refused)).toEqual([...refusedNames].sort())
+    expect(refused.find((r) => r.path === 'proj/olp-media/a/b/clip.mp4').why).toBe('his media folder')
+  })
+
+  it('a tracked small file that grew past 50 MB in the working tree is refused', () => {
+    const { dir } = scratchRepo()
+    sparse(dir, 'a.txt', LIMIT + 1)
+    const refused = refusedUntracked(dir)
+    expect(refused).toHaveLength(1)
+    expect(refused[0]).toMatchObject({ path: 'a.txt', bytes: LIMIT + 1 })
+    expect(refused[0].why).toMatch(/100 MB/)
+  })
+
+  it('a modified small tracked file is not refused, and a deleted tracked file is skipped quietly', () => {
+    const { dir, write } = scratchRepo()
+    write('a.txt', 'a changed and still small')
+    rmSync(join(dir, 'b.txt'))
+    expect(refusedUntracked(dir)).toEqual([])
+  })
+
+  it('a path git lists more than once (a merge conflict) is judged once', () => {
+    const { dir, git, write } = scratchRepo()
+    git('checkout', '-q', '-b', 'side')
+    write('a.txt', 'side')
+    git('commit', '-q', '-am', 'side')
+    git('checkout', '-q', 'main')
+    write('a.txt', 'main')
+    git('commit', '-q', '-am', 'main')
+    expect(() => git('merge', 'side')).toThrow()
+    sparse(dir, 'a.txt', LIMIT + 1)
+    expect(names(refusedUntracked(dir))).toEqual(['a.txt'])
+  })
+
+  it('finds one refused file in a push of 12,000 paths', () => {
+    const { dir, git } = scratchRepo()
+    const base = git('rev-parse', 'HEAD')
+    // One fast-import stream: 12,000 distinct tiny blobs in one commit, quickly. Long folder names so the
+    // listing is well over the 1 MB a default buffer holds.
+    const hidden = 5_999
+    const hiddenPath = 'crowd-of-files/with-a-long-folder-name/Hidden Project.olstudio'
+    let stream = `commit refs/heads/crowd\ncommitter t <t@test.invalid> 1700000000 +0000\ndata 5\ncrowd\nfrom ${base}\n`
+    for (let i = 0; i < 12_000; i++) {
+      const path = i === hidden ? hiddenPath : `crowd-of-files/with-a-long-folder-name/file-${String(i).padStart(5, '0')}.txt`
+      const body = `blob ${i}`
+      stream += `M 100644 inline ${path}\ndata ${body.length}\n${body}\n`
+    }
+    execFileSync('git', ['fast-import', '--quiet'], { cwd: dir, input: stream, windowsHide: true, maxBuffer: 64 * 1024 * 1024 })
+    try {
+      expect(git('ls-tree', '-r', '--name-only', 'crowd').split('\n').length).toBeGreaterThan(12_000)
+      expect(refusedInPush(`${base}..crowd`, dir).map((r) => r.path)).toEqual([hiddenPath])
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+  }, 180_000)
+
+  it('finds one refused file among 20,000 untracked files', () => {
+    const { dir, write } = scratchRepo()
+    try {
+      for (let d = 0; d < 200; d++) {
+        mkdirSync(join(dir, `crowd/part-${d}`), { recursive: true })
+        for (let f = 0; f < 100; f++) write(`crowd/part-${d}/file-${f}.txt`, 'x')
+      }
+      mkdirSync(join(dir, 'crowd/part-77/OLP-MEDIA'))
+      write('crowd/part-77/OLP-MEDIA/clip.mp4', 'tiny')
+      expect(refusedUntracked(dir).map((r) => r.path)).toEqual(['crowd/part-77/OLP-MEDIA/clip.mp4'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+  }, 240_000)
+})
+
 // ⛔ `--fast` ("docs only") shipped four feature releases with no browser test.
 describe('the --fast contract', () => {
   it('lets Markdown and docs/ through', () => {
@@ -1354,6 +1476,56 @@ describe('patch.mjs is wired to them', () => {
     expect(code.slice(pushMainAt, checkAt)).toMatch(/range = 'origin\/main\.\.refs\/heads\/main'/)
     expect(code.slice(pushMainAt, checkAt)).not.toMatch(/'[^']*HEAD[^']*'/)
     expect(code.slice(checkAt, code.indexOf('pushOnce(token)'))).toMatch(/await stopRefused\(/)
+  })
+
+  // ⛔ A FILE ALREADY `git add`ED WAS TOLD ONLY "ADD IT TO .gitignore" (2026-11-15), which does nothing for a file git
+  // already has in its index.
+  it('tells every refusal of a file that may already be staged or tracked to `git rm --cached <path>`', () => {
+    expect(code).not.toMatch(/refusedNewWayOut/)
+    expect(code).toMatch(/const refusedWayOut =[^]*?git rm --cached <path>/)
+    // The start look, the end look and the backstop on the tree all print it; none is left on a shorter text.
+    const wayOutCalls = code.match(/refusedWayOut \+/g) ?? []
+    expect(wayOutCalls).toHaveLength(3)
+    for (const marker of ['refusedUntracked())', 'const refusedAtEnd', 'const refusedAtCommit']) {
+      expect(code.indexOf(marker)).toBeGreaterThan(-1)
+    }
+    const endAt = code.indexOf('const refusedAtEnd = refusedUntracked()')
+    expect(code.slice(endAt, endAt + 700)).toMatch(/refusedWayOut \+/)
+    const commitAt = code.indexOf('const refusedAtCommit = refusedAdds(')
+    expect(code.slice(commitAt, commitAt + 900)).toMatch(/refusedWayOut \+/)
+    const startAt = code.indexOf('const stopIfRefusedAtStart = async')
+    expect(code.slice(startAt, startAt + 700)).toMatch(/refusedWayOut \+/)
+  })
+
+  it('looks at the commits again before EVERY push try, so a commit made between tries is caught', () => {
+    const pushMainAt = code.indexOf('const pushMain = async')
+    const loopAt = code.indexOf('for (let attempt = 1;', pushMainAt)
+    const sendAt = code.indexOf('pushOnce(token)', loopAt)
+    expect(loopAt).toBeGreaterThan(pushMainAt)
+    expect(sendAt).toBeGreaterThan(loopAt)
+    // Not once before the loop ...
+    expect(code.slice(pushMainAt, loopAt)).not.toMatch(/refusedInPush\(/)
+    // ... but inside it, before the try that sends, and through stopRefused.
+    const checkAt = code.indexOf('refusedInPush(range)', loopAt)
+    expect(checkAt).toBeGreaterThan(loopAt)
+    expect(checkAt).toBeLessThan(sendAt)
+    expect(code.slice(checkAt, sendAt)).toMatch(/await stopRefused\(/)
+    expect(code.match(/\brefusedInPush\(/g)).toHaveLength(1)
+  })
+
+  it('does not crash the ship when origin/main is missing: everything counts as unpushed', () => {
+    // The bare call with no fallback is gone.
+    expect(code).not.toMatch(/const unpushed = git\('rev-list', '--count', 'origin\/main\.\.HEAD'\)/)
+    const at = code.indexOf('const unpushed = ')
+    expect(at).toBeGreaterThan(-1)
+    expect(code.indexOf('const lastTag = ')).toBeLessThan(at)
+    expect(code.indexOf('const plan = planShip(')).toBeGreaterThan(at)
+    const block = code.slice(at, code.indexOf('const unreleased = '))
+    expect(block).toMatch(/try \{/)
+    expect(block).toMatch(/'rev-list', '--count', 'origin\/main\.\.HEAD'/)
+    expect(block).toMatch(/catch \{/)
+    // The fallback is every commit on HEAD, the same range pushMain uses with no remote branch.
+    expect(block).toMatch(/'rev-list', '--count', 'HEAD'/)
   })
 })
 
