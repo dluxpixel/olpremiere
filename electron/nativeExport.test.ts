@@ -10,6 +10,7 @@
 // pouring in and the output cannot be written.
 
 import { spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtemp, readdir, rm } from 'node:fs/promises'
 import * as os from 'node:os'
@@ -41,6 +42,20 @@ vi.mock('node:os', async (importOriginal) => {
       priority.calls.push([pid, value])
       if (priority.fail) throw new Error('access denied')
       real.setPriority(pid, value)
+    },
+  }
+})
+
+// The real ffmpeg, or a stand-in the test hands over for one start() (the closing step's wiring).
+const spawnHook = vi.hoisted(() => ({ fake: null as null | (() => unknown) }))
+vi.mock('node:child_process', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:child_process')>()
+  return {
+    ...real,
+    spawn: (...args: Parameters<typeof real.spawn>) => {
+      const fake = spawnHook.fake
+      spawnHook.fake = null
+      return fake ? fake() : real.spawn(...args)
     },
   }
 })
@@ -91,7 +106,7 @@ describe('an ffmpeg that cannot start', () => {
       await native.finishAudio()
       const wav = (await readdir(tmpdir())).filter((f) => f.startsWith(`olp-audio-${process.pid}-`))
       expect(wav.length).toBeGreaterThan(0)
-      const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+      const win = { isDestroyed: () => false, webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
       const res = await native.start(
         { width: 64, height: 64, fps: 30, totalFrames: 3, encoder: 'x264', quality: 18, hasAudio: true, outPath: join(userData, 'x.mp4'), suggestedName: 'x' },
         win,
@@ -119,7 +134,7 @@ describe('an ffmpeg that dies mid export says why', () => {
     // A folder that does not exist: ffmpeg takes the first frames, then fails
     // to open the file it was meant to write, exactly mid stream.
     const outPath = join(userData, 'no such folder', 'export.mp4')
-    const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+    const win = { isDestroyed: () => false, webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
     const started = await native.start(
       { width: W, height: H, fps: 30, totalFrames: 300, encoder: 'x264', quality: 18, hasAudio: false, outPath, suggestedName: 'x' },
       win,
@@ -166,7 +181,7 @@ describe('ffmpeg progress, read across chunks', () => {
 describe('the export runs below normal priority, so the editor stays smooth', () => {
   const W = 64
   const H = 64
-  const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+  const win = { isDestroyed: () => false, webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
   const config = (outPath: string) =>
     ({ width: W, height: H, fps: 30, totalFrames: 3, encoder: 'x264', quality: 18, hasAudio: false, outPath, suggestedName: 'x' }) as const
 
@@ -202,7 +217,7 @@ describe('⛔ a preset export never writes over a file that appeared after its n
   // start was not enough: a file made in between was overwritten, or deleted (review, 2026-10-11).
   const W = 64
   const H = 64
-  const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+  const win = { isDestroyed: () => false, webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
   const config = (outPath: string) =>
     ({ width: W, height: H, fps: 30, totalFrames: 3, encoder: 'x264', quality: 18, hasAudio: false, outPath, suggestedName: 'x' }) as const
 
@@ -246,7 +261,7 @@ describe('⛔ a cancel while ffmpeg is finishing the file', () => {
     const W = 320
     const H = 240
     const outPath = join(userData, 'finishing.mp4')
-    const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+    const win = { isDestroyed: () => false, webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
     const started = await native.start(
       { width: W, height: H, fps: 30, totalFrames: 30, encoder: 'x264', quality: 18, hasAudio: false, outPath, suggestedName: 'x' },
       win,
@@ -336,7 +351,7 @@ describe('the sound, written a segment at a time', () => {
     await native.audioChunk(new Float32Array(960).buffer)
     await native.finishAudio()
     expect(await ours()).toHaveLength(1)
-    const win = { webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
+    const win = { isDestroyed: () => false, webContents: { send: () => undefined } } as unknown as Parameters<typeof native.start>[1]
     const outPath = join(userData, 'quit.mp4')
     const starting = native.start(
       { width: 64, height: 64, fps: 30, totalFrames: 3, encoder: 'x264', quality: 18, hasAudio: true, outPath, suggestedName: 'x' },
@@ -407,6 +422,118 @@ describe('⛔ the closing step says it is alive, so a slow faststart is never st
     stop()
     vi.advanceTimersByTime(60_000)
     expect(beats).toBe(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('⛔ the closing step, wired end to end with a stand-in ffmpeg and window', () => {
+  // Only the heartbeat helper was tested; nothing drove finish() itself. Seen in the code, review
+  // 2026-10-17: a window closed mid export threw in the progress send, a window destroyed between
+  // the check and the beat threw in main, and a second finish ran the whole closing step again.
+  const live: { emit: (event: string, ...args: unknown[]) => unknown }[] = []
+  afterEach(() => {
+    vi.useRealTimers()
+    // A stand-in that never ended would leave the shared cleanup waiting on it.
+    for (const ff of live.splice(0)) ff.emit('close', null)
+  })
+
+  /** A child process that does nothing until the test speaks for it. */
+  function fakeFfmpeg() {
+    const ff = Object.assign(new EventEmitter(), {
+      stdin: Object.assign(new EventEmitter(), { writable: true, end: vi.fn(), destroy: vi.fn(), write: () => true }),
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      pid: undefined as number | undefined,
+      exitCode: null as number | null,
+      signalCode: null as string | null,
+      kill: vi.fn(),
+    })
+    setTimeout(() => ff.emit('spawn'), 0)
+    live.push(ff)
+    return ff
+  }
+  function fakeWindow() {
+    const state = { destroyed: false, throwOnSend: false, sent: [] as { channel: string; payload: unknown }[] }
+    const win = {
+      isDestroyed: () => state.destroyed,
+      webContents: {
+        send: (channel: string, payload: unknown) => {
+          if (state.throwOnSend) throw new Error('Object has been destroyed')
+          state.sent.push({ channel, payload })
+        },
+      },
+    } as unknown as Parameters<typeof native.start>[1]
+    return { state, win }
+  }
+  const startFake = async (outName: string) => {
+    const ff = fakeFfmpeg()
+    spawnHook.fake = () => ff
+    const w = fakeWindow()
+    const started = await native.start(
+      { width: 64, height: 64, fps: 30, totalFrames: 3, encoder: 'x264', quality: 18, hasAudio: false, outPath: join(userData, outName), suggestedName: 'x' },
+      w.win,
+    )
+    expect(started.started).toBe(true)
+    return { ff, ...w }
+  }
+  /** Real time passes while finish reads the file's size, before its heartbeat is set. */
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 100))
+
+  it("ffmpeg's progress is not sent to a window that is gone", async () => {
+    const { ff, state } = await startFake('gone.mp4')
+    ff.stdout.emit('data', Buffer.from('frame=2\nprogress=continue\n'))
+    expect(state.sent).toEqual([{ channel: 'native:progress', payload: { frame: 2, totalFrames: 3 } }])
+    state.destroyed = true
+    expect(() => ff.stdout.emit('data', Buffer.from('frame=3\nprogress=continue\n'))).not.toThrow()
+    expect(state.sent).toHaveLength(1)
+    // cancel waits for ffmpeg to end, which the stand-in only does when told.
+    const stopped = native.cancel()
+    ff.emit('close', null)
+    await stopped
+  })
+
+  it('finish closes stdin and says it is alive until ffmpeg ends, and a window that goes away never throws', async () => {
+    const { ff, state } = await startFake('closing.mp4')
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+    const fin = native.finish()
+    await settle()
+    expect(ff.stdin.end).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(5_000)
+    expect(state.sent).toEqual([{ channel: 'native:progress', payload: { frame: 0, totalFrames: 3 } }])
+    // Closed between beats: nothing is sent.
+    state.destroyed = true
+    vi.advanceTimersByTime(5_000)
+    expect(state.sent).toHaveLength(1)
+    // Destroyed between the check and the send: the throw stays out of main.
+    state.destroyed = false
+    state.throwOnSend = true
+    expect(() => vi.advanceTimersByTime(5_000)).not.toThrow()
+    state.throwOnSend = false
+    vi.advanceTimersByTime(5_000)
+    expect(state.sent).toHaveLength(2)
+    // ffmpeg ends: the answer is ok, the beat is gone, and the job is over.
+    ff.exitCode = 0
+    ff.emit('close', 0)
+    expect(await fin).toMatchObject({ ok: true })
+    expect(vi.getTimerCount()).toBe(0)
+    expect(native.isExporting()).toBe(false)
+  })
+
+  it('a second finish does the closing step once and gets the same answer', async () => {
+    const { ff, state } = await startFake('twice.mp4')
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+    const first = native.finish()
+    const second = native.finish()
+    await settle()
+    expect(ff.stdin.end).toHaveBeenCalledTimes(1)
+    // One heartbeat, not two.
+    vi.advanceTimersByTime(5_000)
+    expect(state.sent).toHaveLength(1)
+    ff.exitCode = 0
+    ff.emit('close', 0)
+    const a = await first
+    expect(a).toMatchObject({ ok: true })
+    expect(await second).toEqual(a)
     expect(vi.getTimerCount()).toBe(0)
   })
 })

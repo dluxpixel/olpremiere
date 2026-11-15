@@ -424,6 +424,43 @@ describe('the export on the taskbar button', () => {
   })
 })
 
+describe('⛔ the time left does not go blank while the file is being closed', () => {
+  // x264 reports a few more counts after the last frame goes in, then ffmpeg is quiet for a long
+  // time (the faststart pass). A tick whose count had not risen used to be added as a flat sample,
+  // and about 10 s into the quiet the rate read NaN, so the label went blank (review, 2026-10-17).
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('keeps the last good estimate through ticks that bring no new frame', async () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    requestExport()
+    closeExportDialog()
+    const left = (): number => {
+      const stage = useExportJob.getState().job?.stage
+      return stage?.kind === 'running' ? stage.leftS : Number.NaN
+    }
+    const tick = (tS: number, framesDone: number, phase: ExportProgress['phase'] = 'video'): void => {
+      now = tS * 1000
+      h.native[0].onProgress({ phase, framesDone, framesTotal: 150 })
+    }
+    tick(1, 10)
+    tick(6, 60)
+    tick(11, 110)
+    const good = left()
+    expect(Number.isFinite(good)).toBe(true)
+    // The last frame is in; ffmpeg is closing the file and says the same count every few seconds.
+    for (let t = 16; t <= 60; t += 5) {
+      tick(t, 110, 'finalizing')
+      expect(Number.isFinite(left())).toBe(true)
+    }
+    // A count that moves again is read again.
+    tick(65, 150, 'finalizing')
+    expect(Number.isFinite(left())).toBe(true)
+  })
+})
+
 describe('the browser path stays up front', () => {
   beforeEach(() => {
     h.electron = false

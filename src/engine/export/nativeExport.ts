@@ -27,6 +27,32 @@ export interface NativeExportResult {
 const abortError = (): DOMException => new DOMException('Export cancelled', 'AbortError')
 
 /**
+ * Waits for `work`, or ends with an AbortError the moment the signal fires, whichever is first.
+ *
+ * ⛔ A CANCEL MUST NOT DEPEND ON THE WORK HEARING IT (2026-10-17). The sound's mix listened only at
+ * its own segment boundaries, so a plan or a segment that hung left Cancel doing nothing for good.
+ * The work itself is left to finish or fail on its own; its late answer is swallowed here, and it
+ * stops itself at its next check of the signal.
+ */
+function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(abortError())
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+    work.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (err: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      },
+    )
+  })
+}
+
+/**
  * One segment of the mix as a WAV's sample data: interleaved 32-bit float,
  * little-endian (bit-exact, no quantisation). Main writes the header around it
  * (electron/nativeExport.ts wavHeaderF32) and ffmpeg reads it as a 2nd input.
@@ -106,24 +132,27 @@ export async function exportNative(
   // Render the audio mix to a WAV and hand it to main BEFORE ffmpeg spawns (it's
   // an -i input). Reuses the exact planAudioMix rules → same mix as WebCodecs.
   onProgress({ phase: 'audio', framesDone: 0, framesTotal })
-  const plan = await planAudioMix(
-    sequence,
-    project.assets,
-    settings.startS,
-    settings.endS,
-    (names) =>
-      // Some clips gave no sound. The rest of the mix is honest audio, so the
-      // export continues, but he has to hear about the gap NOW rather than after
-      // he has uploaded it.
-      useToasts
-        .getState()
-        .show(
-          `No sound from ${names.length === 1 ? names[0] : `${names.length} clips`}. The rest of the audio exported.`,
-          'danger',
-        ),
-    // The export's own rate, which may be below the timeline's (exportFps).
-    // The signal is heard by Platform loudness's measuring pass too, not only as segments arrive below.
-    { loudnessTargetLufs: settings.loudnessTargetLufs ?? null, fps: settings.fps, signal },
+  const plan = await raceAbort(
+    planAudioMix(
+      sequence,
+      project.assets,
+      settings.startS,
+      settings.endS,
+      (names) =>
+        // Some clips gave no sound. The rest of the mix is honest audio, so the
+        // export continues, but he has to hear about the gap NOW rather than after
+        // he has uploaded it.
+        useToasts
+          .getState()
+          .show(
+            `No sound from ${names.length === 1 ? names[0] : `${names.length} clips`}. The rest of the audio exported.`,
+            'danger',
+          ),
+      // The export's own rate, which may be below the timeline's (exportFps).
+      // The signal is heard by Platform loudness's measuring pass too, not only as segments arrive below.
+      { loudnessTargetLufs: settings.loudnessTargetLufs ?? null, fps: settings.fps, signal },
+    ),
+    signal,
   )
   // ⛔ THE MIX IS A FILE ON HIS DISK FROM ITS FIRST SEGMENT ON, so every way out
   // of here until ffmpeg owns it has to take it with it.
@@ -146,18 +175,21 @@ export async function exportNative(
     try {
       // One segment per message, straight on to main: nothing here ever holds
       // the whole mix (electron/nativeExport.ts beginAudio says why).
-      await plan.render(async (cd) => {
-        // ⛔ A CANCEL STOPS THE MIX AT THE NEXT SEGMENT (30 s of sound), not after
-        // the last one. Nothing here listened before, so Cancel during the sound
-        // of a long video did nothing until all of it had been rendered.
-        if (signal.aborted) throw abortError()
-        if (cd.length === 0 || (cd[0]?.length ?? 0) === 0) return
-        if (!hasAudio) {
-          hasAudio = true
-          await api.nativeAudioBegin(plan.info.sampleRate, cd.length)
-        }
-        await api.nativeAudioChunk(interleaveF32(cd))
-      })
+      await raceAbort(
+        plan.render(async (cd) => {
+          // ⛔ A CANCEL STOPS THE MIX AT THE NEXT SEGMENT (30 s of sound), not after
+          // the last one. Nothing here listened before, so Cancel during the sound
+          // of a long video did nothing until all of it had been rendered.
+          if (signal.aborted) throw abortError()
+          if (cd.length === 0 || (cd[0]?.length ?? 0) === 0) return
+          if (!hasAudio) {
+            hasAudio = true
+            await api.nativeAudioBegin(plan.info.sampleRate, cd.length)
+          }
+          await api.nativeAudioChunk(interleaveF32(cd))
+        }),
+        signal,
+      )
       if (hasAudio) await api.nativeAudioFinish()
     } catch (err) {
       await dropPreparedAudio()
@@ -232,7 +264,18 @@ export async function exportNative(
   })
 
   return await new Promise<NativeExportResult | null>((resolve, reject) => {
-    const worker = new Worker(new URL('./exportWorker.ts', import.meta.url), { type: 'module' })
+    // ⛔ A WORKER THAT CANNOT BE MADE ENDS THE EXPORT (2026-10-17). A throw here rejected the
+    // promise and nothing else: ffmpeg was already running and holding the file, and the
+    // progress subscription stayed on. Same way out as any other failure.
+    let worker: Worker
+    try {
+      worker = new Worker(new URL('./exportWorker.ts', import.meta.url), { type: 'module' })
+    } catch (err) {
+      void api.nativeCancel()
+      unsub()
+      reject(err instanceof Error ? err : new Error(String(err)))
+      return
+    }
     let settled = false
     const done = (fn: () => void): void => {
       if (settled) return

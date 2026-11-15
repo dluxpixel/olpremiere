@@ -427,8 +427,19 @@ function onProgress(id: number, progress: ExportProgress): void {
   let leftS = Number.NaN
   if (progress.phase === 'video' || progress.phase === 'finalizing') {
     if (rate.id !== id) rate = { id, samples: [] }
-    rate.samples = addSample(rate.samples, { t: performance.now(), frames: progress.framesDone })
+    // ⛔ A TICK WITH NO NEW FRAME IS NOT A SAMPLE (2026-10-17). In the closing step ffmpeg says the
+    // same count every few seconds; added as flat points they made the rate NaN about 10 s in, and
+    // the label went blank. Only a count that moved is a point on the rate (a count that went DOWN
+    // is the browser export's retry, which addSample starts over on).
+    const last = rate.samples[rate.samples.length - 1]
+    const restarted = !!last && progress.framesDone < last.frames
+    if (!last || progress.framesDone !== last.frames) {
+      rate.samples = addSample(rate.samples, { t: performance.now(), frames: progress.framesDone })
+    }
     leftS = timeLeftS(rate.samples, progress.framesTotal)
+    // No rate to read this tick (a quiet closing step): the last good estimate stays, never a blank.
+    const before = job.stage.leftS
+    if (!Number.isFinite(leftS) && !restarted && Number.isFinite(before)) leftS = before
   }
   useExportJob.setState({ job: { ...job, stage: { ...job.stage, progress, leftS } } })
 }

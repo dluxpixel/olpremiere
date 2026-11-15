@@ -35,6 +35,8 @@ interface Job {
   win: BrowserWindow
   /** Stops finish's heartbeat; set only while finish waits on ffmpeg. */
   stopBeat?: () => void
+  /** finish's answer once it has begun: a second finish gets this one and does no work of its own. */
+  finishing?: Promise<NativeFinishResult>
 }
 let job: Job | null = null
 let pendingAudioPath: string | null = null
@@ -344,7 +346,7 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
   })
   // Parse -progress key=value blocks from stdout → a percentage.
   const readProgress = progressReader((frame) => {
-    if (job) win.webContents.send('native:progress', { frame, totalFrames: job.totalFrames })
+    if (job) sendProgress(win, frame, job.totalFrames)
   })
   ffmpeg.stdout.on('data', (d: Buffer) => readProgress(d.toString()))
   // stdin EPIPE if ffmpeg dies early is swallowed above; the close code surfaces the error.
@@ -353,6 +355,19 @@ export async function start(config: NativeExportConfig, win: BrowserWindow): Pro
   // Keep stderr live-updated on the job.
   ffmpeg.stderr.on('data', () => job && (job.stderr = stderr))
   return { started: true, outPath }
+}
+
+/**
+ * Tells the window how far ffmpeg is. ⛔ A WINDOW CLOSED MID EXPORT MUST NOT THROW IN MAIN (2026-10-17):
+ * a destroyed one is skipped, and one destroyed between that check and the send throws only here.
+ * The export itself carries on, since the file does not need the window.
+ */
+function sendProgress(win: BrowserWindow, frame: number, totalFrames: number): void {
+  try {
+    if (!win.isDestroyed()) win.webContents.send('native:progress', { frame, totalFrames })
+  } catch {
+    // Gone between the check and the send.
+  }
 }
 
 /**
@@ -487,9 +502,15 @@ export function startFinishHeartbeat(opts: {
 }
 
 // -- finish: close stdin, wait for exit, clean up --------------------------
-export async function finish(): Promise<NativeFinishResult> {
-  if (!job) return { ok: false, error: 'no export in progress' }
+export function finish(): Promise<NativeFinishResult> {
+  if (!job) return Promise.resolve({ ok: false, error: 'no export in progress' })
+  // ⛔ ONCE PER JOB (2026-10-17). A second finish (a repeated close, an error after one) used to
+  // close stdin again, start a second heartbeat and clean up twice. It is handed the first's answer.
   const j = job
+  return (j.finishing ??= finishJob(j))
+}
+
+async function finishJob(j: Job): Promise<NativeFinishResult> {
   j.ffmpeg.stdin.end()
   const closedAt = Date.now()
   let writtenBytes = 0
@@ -506,9 +527,7 @@ export async function finish(): Promise<NativeFinishResult> {
       startedAt: closedAt,
       // The same message as ffmpeg's frame= lines. Frame 0 never moves the percent,
       // since the page keeps the highest count it has seen.
-      send: () => {
-        if (!j.win.isDestroyed()) j.win.webContents.send('native:progress', { frame: 0, totalFrames: j.totalFrames })
-      },
+      send: () => sendProgress(j.win, 0, j.totalFrames),
     })
   }
   let code: number | null

@@ -807,3 +807,61 @@ describe('⛔ a start message the worker cannot take ends the export, with nothi
     expect(main.log).not.toContain('cancel')
   })
 })
+
+describe('⛔ a worker that cannot be made ends the export, with nothing left running', () => {
+  // `new Worker(...)` sat inside the promise executor with no catch: a throw there rejected, but
+  // ffmpeg (already started and holding the file) was never stopped and the progress subscription
+  // stayed on (review, 2026-10-17).
+  it('rejects with the reason, stops ffmpeg, and lets go of the progress subscription', async () => {
+    vi.stubGlobal(
+      'Worker',
+      class {
+        constructor() {
+          throw new Error('Worker construction failed')
+        }
+      },
+    )
+    await expect(start()).rejects.toThrow(/Worker construction failed/)
+    // ffmpeg was already running, so it is stopped.
+    expect(main.log).toContain('cancel')
+    // The progress subscription is gone: ffmpeg speaking now reaches nothing.
+    const seen = progress.length
+    main.ffmpegSays(5)
+    expect(progress.length).toBe(seen)
+  })
+})
+
+describe('⛔ a cancel always ends the export, even when the sound never finishes (review, 2026-10-17)', () => {
+  // The mix was awaited on its own, so a plan or a render that hangs left Cancel doing nothing.
+  const never = <T>(): Promise<T> => new Promise<T>(() => undefined)
+
+  it('while the mix is still being planned', async () => {
+    h.audioPlan = never()
+    const ctrl = new AbortController()
+    const run = start(ctrl.signal)
+    await flush()
+    ctrl.abort()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+    expect(main.log).not.toContain('start')
+    expect(FakeWorker.made).toBe(0)
+  })
+
+  it('while a segment of the mix never comes back, and the mix written so far is taken away', async () => {
+    h.audioPlan = {
+      info: { sampleRate: 48000, numberOfChannels: 2, totalFrames: 4 },
+      render: async (onSegment) => {
+        await onSegment([new Float32Array(2), new Float32Array(2)] as Float32Array<ArrayBuffer>[])
+        await never()
+      },
+    } satisfies AudioMixPlan
+    const ctrl = new AbortController()
+    const run = start(ctrl.signal)
+    while (!main.log.includes('audioChunk')) await new Promise((r) => setTimeout(r, 0))
+    ctrl.abort()
+    await expect(run).rejects.toMatchObject({ name: 'AbortError' })
+    expect(main.log.slice(-1)).toEqual(['cancel'])
+    expect(main.log).not.toContain('start')
+    expect(main.log).not.toContain('audioFinish')
+    expect(FakeWorker.made).toBe(0)
+  })
+})
