@@ -791,10 +791,11 @@ describe('the file guard, round three: names by folder, grown tracked files, lon
   function withFiles(paths) {
     const { dir, git, write } = scratchRepo()
     const base = git('rev-parse', 'HEAD')
-    for (const p of paths) {
+    // Four bytes each, but all different: a push lists a blob once, so equal bytes would be one name.
+    paths.forEach((p, i) => {
       mkdirSync(join(dir, p, '..'), { recursive: true })
-      write(p, 'tiny')
-    }
+      write(p, String(i).padStart(4, '0'))
+    })
     return { dir, git, base }
   }
   const refusedNames = ['OLP-MEDIA/clip.mp4', 'proj/olp-media/a/b/clip.mp4', 'My Edit.olstudio/data.bin', 'deep/OLP-Media/x/y.txt', 'a/B.OLSTUDIO/c.txt']
@@ -817,18 +818,25 @@ describe('the file guard, round three: names by folder, grown tracked files, lon
     expect(names(refusedInPush(`${base}..HEAD`, dir))).toEqual([...refusedNames].sort())
   })
 
-  it('judges a path in a push by its own name even when an earlier harmless file holds the same bytes', () => {
+  it('does not re-judge a file the remote already has when the range holds a merge', () => {
     const { dir, git, write } = scratchRepo()
     const base = git('rev-parse', 'HEAD')
-    // a.txt already holds 'a1', so one blob answers to three names; git lists a blob once, under one name.
+    // `side` holds a file in his media folder and is what the remote already has (tagged pushed).
+    git('checkout', '-q', '-b', 'side')
     mkdirSync(join(dir, 'OLP-MEDIA'))
-    write('OLP-MEDIA/same.txt', 'a1')
-    write('Same Bytes.olstudio', 'a1')
-    git('add', '-A')
-    git('commit', '-q', '-m', 'one blob, three names')
-    expect(names(refusedInPush(`${base}..HEAD`, dir))).toEqual(['OLP-MEDIA/same.txt', 'Same Bytes.olstudio'])
-    // The first commit of a history is judged too.
-    expect(names(refusedInPush('HEAD', dir))).toEqual(['OLP-MEDIA/same.txt', 'Same Bytes.olstudio'])
+    write('OLP-MEDIA/old.txt', 'old')
+    git('add', '--', 'OLP-MEDIA/old.txt')
+    git('commit', '-q', '-m', 'already pushed')
+    git('tag', 'pushed')
+    git('checkout', '-q', 'main')
+    write('fresh.txt', 'fresh')
+    git('add', '--', 'fresh.txt')
+    git('commit', '-q', '-m', 'unpushed work')
+    git('merge', '-q', '--no-ff', '-m', 'merge side', 'side')
+    // The merge is diffed against its first parent, which lacks the pushed file, but the push does not send it.
+    expect(refusedInPush('pushed..main', dir)).toEqual([])
+    // The same file is caught when the range really carries it.
+    expect(names(refusedInPush(`${base}..main`, dir))).toEqual(['OLP-MEDIA/old.txt'])
   })
 
   it('refuses the same paths among the untracked files, and lets the look-alike names through', () => {
@@ -871,18 +879,21 @@ describe('the file guard, round three: names by folder, grown tracked files, lon
     const { dir, git } = scratchRepo()
     const base = git('rev-parse', 'HEAD')
     // One fast-import stream: 12,000 distinct tiny blobs in one commit, quickly. Long folder names so the
-    // listing is well over the 1 MB a default buffer holds.
+    // listing is well over the 1 MB a default buffer holds (asserted below).
     const hidden = 5_999
-    const hiddenPath = 'crowd-of-files/with-a-long-folder-name/Hidden Project.olstudio'
+    const folder = 'crowd-of-files/with-a-long-folder-name-for-the-listing'
+    const hiddenPath = `${folder}/Hidden Project.olstudio`
     let stream = `commit refs/heads/crowd\ncommitter t <t@test.invalid> 1700000000 +0000\ndata 5\ncrowd\nfrom ${base}\n`
     for (let i = 0; i < 12_000; i++) {
-      const path = i === hidden ? hiddenPath : `crowd-of-files/with-a-long-folder-name/file-${String(i).padStart(5, '0')}.txt`
+      const path = i === hidden ? hiddenPath : `${folder}/file-${String(i).padStart(5, '0')}.txt`
       const body = `blob ${i}`
       stream += `M 100644 inline ${path}\ndata ${body.length}\n${body}\n`
     }
     execFileSync('git', ['fast-import', '--quiet'], { cwd: dir, input: stream, windowsHide: true, maxBuffer: 64 * 1024 * 1024 })
     try {
       expect(git('ls-tree', '-r', '--name-only', 'crowd').split('\n').length).toBeGreaterThan(12_000)
+      const listing = execFileSync('git', ['rev-list', '--objects', `${base}..crowd`], { cwd: dir, windowsHide: true, maxBuffer: 64 * 1024 * 1024 })
+      expect(listing.length).toBeGreaterThan(1024 * 1024)
       expect(refusedInPush(`${base}..crowd`, dir).map((r) => r.path)).toEqual([hiddenPath])
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -891,14 +902,18 @@ describe('the file guard, round three: names by folder, grown tracked files, lon
 
   it('finds one refused file among 20,000 untracked files', () => {
     const { dir, write } = scratchRepo()
+    const crowd = 'crowd-of-files/with-a-long-folder-name-for-the-listing'
     try {
       for (let d = 0; d < 200; d++) {
-        mkdirSync(join(dir, `crowd/part-${d}`), { recursive: true })
-        for (let f = 0; f < 100; f++) write(`crowd/part-${d}/file-${f}.txt`, 'x')
+        mkdirSync(join(dir, `${crowd}/part-${d}`), { recursive: true })
+        for (let f = 0; f < 100; f++) write(`${crowd}/part-${d}/file-${f}.txt`, 'x')
       }
-      mkdirSync(join(dir, 'crowd/part-77/OLP-MEDIA'))
-      write('crowd/part-77/OLP-MEDIA/clip.mp4', 'tiny')
-      expect(refusedUntracked(dir).map((r) => r.path)).toEqual(['crowd/part-77/OLP-MEDIA/clip.mp4'])
+      mkdirSync(join(dir, `${crowd}/part-77/OLP-MEDIA`))
+      write(`${crowd}/part-77/OLP-MEDIA/clip.mp4`, 'tiny')
+      // Long folder names so the listing is over the 1 MiB a default buffer holds.
+      const listing = execFileSync('git', ['ls-files', '-o', '--exclude-standard', '-z'], { cwd: dir, windowsHide: true, maxBuffer: 64 * 1024 * 1024 })
+      expect(listing.length).toBeGreaterThan(1024 * 1024)
+      expect(refusedUntracked(dir).map((r) => r.path)).toEqual([`${crowd}/part-77/OLP-MEDIA/clip.mp4`])
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }

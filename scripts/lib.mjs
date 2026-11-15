@@ -661,35 +661,23 @@ export function refusedAdds(tree, base, cwd = process.cwd()) {
  * batch of sizes however many objects there are.
  */
 export function refusedInPush(range, cwd = process.cwd()) {
-  // 2026-11-15: NOT `rev-list --objects`, which names a blob once however many paths hold it, so a
-  // project file with the same bytes as an earlier harmless file was only ever judged under the
-  // harmless name. Every commit in the range is diffed against its parent(s) instead (-m so a merge
-  // is diffed too, --root so a first commit is), and every path a commit adds or changes is judged.
-  const commits = gitIn(cwd, ['rev-list', range], { maxBuffer: LIST_BYTES })
-  if (!commits) return []
-  const raw = gitIn(cwd, ['diff-tree', '--stdin', '-r', '-z', '-m', '--root', '--no-renames', '--no-commit-id', '--diff-filter=AMT'], {
-    input: `${commits}\n`,
-    maxBuffer: LIST_BYTES,
-  })
-  const parts = raw.split('\0')
+  const listed = gitIn(cwd, ['rev-list', '--objects', range], { maxBuffer: LIST_BYTES })
   const named = []
-  const seen = new Set()
-  for (let i = 0; i + 1 < parts.length; i += 2) {
-    // `:oldmode newmode oldid newid status`; a submodule (160000) has no blob to weigh.
-    const [, mode, , id] = parts[i].split(' ')
-    const path = parts[i + 1]
-    if (mode === '160000' || seen.has(`${id} ${path}`)) continue
-    seen.add(`${id} ${path}`)
-    named.push({ oid: id, path })
+  for (const line of listed.split('\n')) {
+    // `<oid> <path>`; a commit and a root tree have no path.
+    const space = line.indexOf(' ')
+    if (space > 0 && line.slice(space + 1)) named.push({ oid: line.slice(0, space), path: line.slice(space + 1) })
   }
   if (!named.length) return []
-  const sizes = gitIn(cwd, ['cat-file', '--batch-check=%(objectsize)'], {
+  const checked = gitIn(cwd, ['cat-file', '--batch-check=%(objecttype) %(objectname) %(objectsize)'], {
     input: `${named.map((n) => n.oid).join('\n')}\n`,
     maxBuffer: LIST_BYTES,
   }).split('\n')
   const refused = []
   named.forEach(({ path }, i) => {
-    const bytes = Number(sizes[i])
+    const [type, , size] = (checked[i] ?? '').split(' ')
+    if (type !== 'blob') return
+    const bytes = Number(size)
     const why = whyRefused(path, bytes)
     if (why) refused.push({ path, bytes, why })
   })
