@@ -2,6 +2,7 @@
 // asset) and rasterizes to a texture at render time.
 
 import { isEmptyAppearance } from '../engine/anim/appearance'
+import { safeRect } from '../engine/safeSnap'
 import { clipDurationS, recomputeDuration, resolveStart } from '../engine/timeline'
 import {
   activeSequence,
@@ -15,7 +16,9 @@ import {
   type TitleDef,
   type Track,
 } from '../engine/types'
+import { startTextEdit } from '../components/MonitorTextEdit'
 import { applyAppearanceToClip, getDefaultTextAppearance } from './appearanceActions'
+import { useSettings } from './settings'
 import { updateActiveSequence, useStore } from './store'
 import { titleLookById } from './titleShelf'
 import { useToasts } from './toasts'
@@ -28,8 +31,26 @@ function titleTargetTrack(tracks: Track[]): Track | undefined {
   return [...vids].reverse().find((t) => !t.locked)
 }
 
-export function addTitleClip(text = 'Title'): void {
-  addTitle(defaultTitleDef(text), getDefaultTextAppearance() ?? undefined, DEFAULT_TITLE_S, 'Add title')
+/**
+ * A new title at the playhead (the T key and the toolbar button). In TikTok text mode it is the
+ * tiktok-plain look, at the middle of the SAFE area rather than the frame, empty, and straight
+ * into typing on the video. Out of the mode it is the plain default title, exactly as before.
+ */
+export function addTitleClip(text?: string): void {
+  if (!useSettings.getState().tiktokMode) {
+    addTitle(defaultTitleDef(text ?? 'Title'), getDefaultTextAppearance() ?? undefined, DEFAULT_TITLE_S, 'Add title')
+    return
+  }
+  const look = titleLookById('tiktok-plain')
+  if (!look) return
+  addTitle(
+    { ...defaultTitleDef(text ?? ''), ...look.style },
+    look.appearance,
+    look.durationS,
+    'Add title',
+    undefined,
+    { centreOnSafeArea: true, typeNow: true },
+  )
 }
 
 /**
@@ -42,7 +63,21 @@ export function addTitleFromShelf(lookId: string, atS?: number): void {
   addTitle({ ...defaultTitleDef(look.text), ...look.style }, look.appearance, look.durationS, `Add ${look.name}`, atS)
 }
 
-function addTitle(def: TitleDef, appearance: AppearanceSpec | undefined, durationS: number, label: string, atS?: number): void {
+interface TikTokPlacement {
+  /** Move the title to the middle of TikTok's safe area (the frame minus the app's buttons and caption). */
+  centreOnSafeArea: boolean
+  /** Go straight into typing on the video. */
+  typeNow: boolean
+}
+
+function addTitle(
+  def: TitleDef,
+  appearance: AppearanceSpec | undefined,
+  durationS: number,
+  label: string,
+  atS?: number,
+  tiktok?: TikTokPlacement,
+): void {
   const s = useStore.getState()
   const seq = activeSequence(s.project)
   const target = titleTargetTrack(seq.tracks)
@@ -52,6 +87,19 @@ function addTitle(def: TitleDef, appearance: AppearanceSpec | undefined, duratio
   }
   const wantS = atS ?? s.ui.playheadS
   let clip = newTitleClip(def, wantS, durationS)
+  if (tiktok?.centreOnSafeArea) {
+    // A title sits on the frame's middle, so its framing offset is how far the safe area's middle
+    // is from it. Set before the entrance is compiled, which is relative to this base.
+    const safe = safeRect(seq.width, seq.height, 'tiktok')
+    clip = {
+      ...clip,
+      transform: {
+        ...clip.transform,
+        x: safe.x + safe.w / 2 - seq.width / 2,
+        y: safe.y + safe.h / 2 - seq.height / 2,
+      },
+    }
+  }
   // New titles inherit the saved default entrance/exit, so a chosen "how it
   // appears" applies every time (compiled to keyframes up front).
   if (appearance && !isEmptyAppearance(appearance)) clip = applyAppearanceToClip(clip, appearance, seq.width, seq.height)
@@ -68,6 +116,8 @@ function addTitle(def: TitleDef, appearance: AppearanceSpec | undefined, duratio
     return recomputeDuration({ ...sq, tracks })
   })
   s.setUI({ selection: [clip.id] })
+  // Not while the video plays: the field only shows on a paused picture.
+  if (tiktok?.typeNow && !s.ui.playing) startTextEdit(clip.id)
 }
 
 /**

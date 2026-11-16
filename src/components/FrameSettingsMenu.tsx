@@ -19,7 +19,7 @@
 // aspect he changes most, loop, preview quality and fullscreen. What came in
 // here is what he sets once for a short and leaves alone.
 
-import { Aperture, Frame, Scan, Smartphone, Wind } from 'lucide-react'
+import { Aperture, Frame, Scan, Smartphone, Type, Wind } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { APP_GUIDE_APPS, type AppGuideApp } from '../engine/appGuides'
@@ -65,13 +65,14 @@ export function contentAspectKeyFor(seq: Sequence, customOpen: boolean): string 
  * he cannot tell a setting is on without opening the drawer. Motion blur is ON
  * by default, so "not default" means it has been switched OFF.
  */
-export function frameSettingsActive(seq: Sequence, safeMargins: boolean, appGuides = false): boolean {
+export function frameSettingsActive(seq: Sequence, safeMargins: boolean, appGuides = false, tiktokMode = false): boolean {
   return (
     seq.contentAspect !== undefined ||
     seq.blurBackground === true ||
     (seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE) === 0 ||
     safeMargins ||
-    appGuides
+    appGuides ||
+    tiktokMode
   )
 }
 
@@ -90,6 +91,9 @@ interface Props {
   onAppGuidesApp?: (app: AppGuideApp) => void
   /** Why the guides are not on the picture right now (a wide shape), or null when they show. */
   appGuidesHidden?: string | null
+  /** TikTok text mode: TikTok style text, typed on the video, kept inside TikTok's safe area. */
+  tiktokMode?: boolean
+  onTiktokMode?: (v: boolean) => void
 }
 
 export function FrameSettingsMenu({
@@ -101,6 +105,8 @@ export function FrameSettingsMenu({
   onAppGuides,
   onAppGuidesApp,
   appGuidesHidden = null,
+  tiktokMode = false,
+  onTiktokMode,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [customOpen, setCustomOpen] = useState(false)
@@ -152,7 +158,7 @@ export function FrameSettingsMenu({
   }, [open])
 
   const shutter = seq.shutterAngle ?? DEFAULT_SHUTTER_ANGLE
-  const anyOn = frameSettingsActive(seq, safeMargins, appGuides)
+  const anyOn = frameSettingsActive(seq, safeMargins, appGuides, tiktokMode)
 
   return (
     <div className="relative shrink-0">
@@ -380,6 +386,32 @@ export function FrameSettingsMenu({
                   {appGuides && appGuidesHidden
                     ? appGuidesHidden
                     : 'Shows where the app covers a tall picture. Guides only, never in the export.'}
+                </p>
+              </>
+            )}
+
+            {/* --- TikTok text mode ------------------------------------------ */}
+            {/* His ask: "make it so when I choose to, I can make the editor similar to the
+                TikTok-style editor" and "It should also have safe margins". A mode he turns on,
+                beside the guides it borrows: it shows them without touching his own guides switch
+                above. What it changes is in state/titleActions.ts and TikTokTextBar.tsx. */}
+            {onTiktokMode && (
+              <>
+                <label className={`${ROW} cursor-default`}>
+                  <span className="flex items-center gap-2">
+                    <Type size={14} strokeWidth={1.75} className="text-text-muted" aria-hidden />
+                    <span className={LABEL}>TikTok text mode</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    data-testid="tiktok-mode-toggle"
+                    checked={tiktokMode}
+                    onChange={(e) => onTiktokMode(e.target.checked)}
+                    className="size-4 shrink-0 accent-accent"
+                  />
+                </label>
+                <p className={`${HINT} px-2.5 pb-1.5`}>
+                  TikTok style text, typed on the video, kept inside TikTok's safe area.
                 </p>
               </>
             )}

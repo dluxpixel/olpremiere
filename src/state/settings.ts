@@ -66,6 +66,13 @@ interface SettingsState {
   appGuides: boolean
   /** Which app the guides are drawn for. */
   appGuidesApp: AppGuideApp
+  /**
+   * TikTok text mode (his ask: "make it so when I choose to, I can make the editor similar to the
+   * TikTok-style editor", and "It should also have safe margins"). A mode he chooses, off until he
+   * does: new text is TikTok text, typed on the video, kept inside TikTok's safe area. It shows the
+   * TikTok guides WITHOUT touching his own guides choice above (engine/appGuides.ts effectiveAppGuides).
+   */
+  tiktokMode: boolean
 }
 
 /** The ease field's own envelope. Shared by the store clamp and the scrub field. */
@@ -87,6 +94,7 @@ const USAGE_LOG_KEY = 'olpremiere:settings:usage-log'
 const SAFE_MARGINS_KEY = 'olpremiere:settings:safe-margins'
 const APP_GUIDES_KEY = 'olpremiere:settings:app-guides'
 const APP_GUIDES_APP_KEY = 'olpremiere:settings:app-guides-app'
+const TIKTOK_MODE_KEY = 'olpremiere:settings:tiktok-mode'
 
 function read(key: string): string | null {
   try {
@@ -138,6 +146,8 @@ const loadSafeMargins = (): boolean => read(SAFE_MARGINS_KEY) === 'on'
 const loadAppGuides = (): boolean => read(APP_GUIDES_KEY) === 'on'
 /** TikTok unless he picked Reels: only 'reels' is stored. */
 const loadAppGuidesApp = (): AppGuideApp => (read(APP_GUIDES_APP_KEY) === 'reels' ? 'reels' : 'tiktok')
+/** Off unless he turned it on: only 'on' is stored. */
+const loadTiktokMode = (): boolean => read(TIKTOK_MODE_KEY) === 'on'
 
 export const useSettings = create<SettingsState>(() => ({
   theme: loadTheme(),
@@ -148,6 +158,7 @@ export const useSettings = create<SettingsState>(() => ({
   safeMargins: loadSafeMargins(),
   appGuides: loadAppGuides(),
   appGuidesApp: loadAppGuidesApp(),
+  tiktokMode: loadTiktokMode(),
 }))
 
 export function setSafeMargins(on: boolean): void {
@@ -163,6 +174,11 @@ export function setAppGuides(on: boolean): void {
 export function setAppGuidesApp(app: AppGuideApp): void {
   useSettings.setState({ appGuidesApp: app })
   write(APP_GUIDES_APP_KEY, app === 'reels' ? 'reels' : null)
+}
+
+export function setTiktokMode(on: boolean): void {
+  useSettings.setState({ tiktokMode: on })
+  write(TIKTOK_MODE_KEY, on ? 'on' : null)
 }
 
 export function setPlatformLoudness(on: boolean): void {
@@ -225,6 +241,7 @@ export function reloadSettings(): void {
     safeMargins: loadSafeMargins(),
     appGuides: loadAppGuides(),
     appGuidesApp: loadAppGuidesApp(),
+    tiktokMode: loadTiktokMode(),
   })
   applyTheme(useSettings.getState().theme)
 }

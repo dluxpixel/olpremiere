@@ -27,14 +27,15 @@ import { pausePlayback, subscribeShuttleRate, tickPlaybackFrame, toggleLoop, tog
 import { screenshotToMedia } from '../state/screenshot'
 import { isCriticalWorkRunning } from '../state/unloadGuard'
 import { isExportWatched } from '../state/exportJob'
-import { setAppGuides, setAppGuidesApp, setPreviewQuality, setSafeMargins, useSettings } from '../state/settings'
+import { setAppGuides, setAppGuidesApp, setPreviewQuality, setSafeMargins, setTiktokMode, useSettings } from '../state/settings'
 import { setActiveSequenceFormat, useStore } from '../state/store'
 import { IconButton } from '../ui/Button'
 import { CompactSelect, type CompactOption } from '../ui/CompactSelect'
 import { Tooltip } from '../ui/Tooltip'
 import { usePhoneLayout } from '../ui/phoneLayout'
 import { MASTER_METER_W, MasterMeter } from './MasterMeter'
-import { AppGuidesOverlay } from './AppGuidesOverlay'
+import { ProgramAppGuides } from './AppGuidesOverlay'
+import { TikTokTextBar } from './TikTokTextBar'
 import { FrameSettingsMenu } from './FrameSettingsMenu'
 import { CUSTOM_FORMAT_KEY, FORMAT_OPTIONS, FORMATS, aspectKeyFor } from './frameFormats'
 import { fitCanvasBox } from './monitorSizing'
@@ -468,6 +469,8 @@ export function Monitor() {
   // The TikTok / Reels guides stick the same way. Whether they can show depends on the shape (appGuides.ts).
   const appGuides = useSettings((s) => s.appGuides)
   const appGuidesApp = useSettings((s) => s.appGuidesApp)
+  // TikTok text mode (the Frame menu): shows the TikTok guides without changing the choice above.
+  const tiktokMode = useSettings((s) => s.tiktokMode)
   // Hold to compare: the key (App.tsx) and the Before button share this one state.
   const holdingBefore = useHoldingBefore()
   // A hold must never outlive the picture it belongs to.
@@ -532,9 +535,8 @@ export function Monitor() {
         <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
           <canvas ref={canvasRef} data-testid="program-canvas" className="rounded-inner bg-black" />
           {safeMargins && <SafeMargins canvas={canvasRef.current} />}
-          {appGuides && (
-            <AppGuidesOverlay canvas={canvasRef.current} width={seq.width} height={seq.height} app={appGuidesApp} />
-          )}
+          {/* His own guides or TikTok text mode, and the regions a dragged title overlaps. */}
+          <ProgramAppGuides canvas={canvasRef.current} width={seq.width} height={seq.height} />
           {holdingBefore && <BeforeBadge canvas={canvasRef.current} />}
           {/* The one honest thing to show over a picture that cannot be drawn.
               It sits ON the monitor because the monitor is what looks broken;
@@ -563,6 +565,8 @@ export function Monitor() {
             />
           )}
           <MonitorTransformOverlay canvas={canvasRef.current} chromeHidden={fullscreen} />
+          {/* TikTok text mode: the style bar over a title while it is typed on. */}
+          {tiktokMode && !fullscreen && <TikTokTextBar />}
           {hasContent && !fullscreen && <BeforeButton holding={holdingBefore} />}
           {!hasContent && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
@@ -752,6 +756,8 @@ export function Monitor() {
                 onAppGuides={setAppGuides}
                 onAppGuidesApp={setAppGuidesApp}
                 appGuidesHidden={appGuideHiddenReason(seq.width, seq.height)}
+                tiktokMode={tiktokMode}
+                onTiktokMode={setTiktokMode}
               />
             </span>
             {/* ⛔ SAFE MARGINS IS BACK ON THE BAR (his words, 2026-10-04: "safe margins, which, for some

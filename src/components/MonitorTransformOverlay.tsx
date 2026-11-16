@@ -7,6 +7,8 @@ import {
 } from 'react'
 import { clipEndS } from '../engine/timeline'
 import { isEditableTarget, windowOverTheEdit } from '../keymap'
+import { appGuideRegions, type GuideRegion } from '../engine/appGuides'
+import { guideRegionsHit, safeRect, safeSnap, type Rect } from '../engine/safeSnap'
 import { boxFromQuad, snapTransformMove, type SnapBox } from '../engine/snapTransform'
 import { computeQuad, pointInQuad, subQuad } from '../engine/render/mat'
 import { resolveFrame } from '../engine/render/resolve'
@@ -28,11 +30,13 @@ import {
 import { alignNote, alignTargets, setClipsPosition } from '../state/bulkEdits'
 import { openContextMenu } from '../state/contextMenu'
 import { pausePlayback } from '../state/playbackControl'
+import { useSettings } from '../state/settings'
 import { quantizeToFrame } from '../engine/timecode'
 import { useStore, type ZoomAnchor } from '../state/store'
 import { plural } from '../engine/plural'
 import { useToasts } from '../state/toasts'
-import { endTextEdit, MonitorTextEdit, startTextEdit, useTextEdit } from './MonitorTextEdit'
+import { GuideHitsPublisher } from './AppGuidesOverlay'
+import { editBoxSeq, endTextEdit, MonitorTextEdit, startTextEdit, useTextEdit } from './MonitorTextEdit'
 
 interface Tf {
   x: number
@@ -45,11 +49,40 @@ type Drag =
   // and never re-read: a move is a translation, so the box only ever shifts, and
   // reading it back from an already-snapped position would feed the snap its own
   // output.
-  | { mode: 'move'; startX: number; startY: number; startTf: Tf; startBox: SnapBox }
+  | { mode: 'move'; startX: number; startY: number; startTf: Tf; startBox: SnapBox; safe: SafeDrag | null }
   // axis: edge handles scale along the edge's outward normal (travel along the
   // edge is ignored); corners omit it and use radial distance from center.
   | { mode: 'scale'; startTf: Tf; cx: number; cy: number; startDist: number; axis?: { x: number; y: number } }
   | { mode: 'rotate'; startTf: Tf; cx: number; cy: number; startAngle: number }
+
+/**
+ * What TikTok text mode adds to the move drag of a TITLE: the title's own box (its words, not the
+ * frame it is rasterised into), the safe area to stick to and the guide regions it can overlap.
+ * Null for every other drag, and always null with the mode off.
+ */
+interface SafeDrag {
+  box: SnapBox
+  rect: Rect
+  regions: GuideRegion[] | null
+}
+
+/** How close a title edge or centre must come to a safe line to stick to it, in MONITOR px (turned into sequence px per zoom). */
+const SAFE_SNAP_PX = 12
+
+/**
+ * A title's box in sequence px at the framing `corners` describe: the box of its drawn words (the
+ * same ink the click target uses), or, where there is no canvas to measure with or nothing is typed
+ * yet, the box its words are laid out in (the one typing on the video lies over).
+ */
+function titleBoxSeq(clip: Clip, seq: { width: number; height: number }, corners: [number, number][]): SnapBox {
+  const def = clip.title!
+  let uv = titleInkBoxUV(def, seq.width, seq.height)
+  if (!uv) {
+    const b = editBoxSeq(def, seq.width, seq.height, null)
+    uv = { u0: b.left / seq.width, v0: b.top / seq.height, u1: (b.left + b.width) / seq.width, v1: (b.top + b.height) / seq.height }
+  }
+  return boxFromQuad(subQuad(corners, uv))
+}
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v)
 const ACCENT = 'var(--color-accent)'
@@ -261,6 +294,9 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
   const project = useStore((s) => s.project)
   const playheadS = useStore((s) => s.ui.playheadS)
   const setUI = useStore((s) => s.setUI)
+  // TikTok text mode: a title's move drag sticks to TikTok's safe area, and the guide regions it
+  // overlaps are reported to the guides overlay.
+  const tiktokMode = useSettings((s) => s.tiktokMode)
   const seq = activeSequence(project)
 
   const [box, setBox] = useState<{ left: number; top: number; w: number; h: number } | null>(null)
@@ -507,6 +543,28 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
   // never change a pixel.
   const gizmoOn = !!clip && !clip.adjustment && track?.kind === 'video' && onScreen
 
+  // --- TikTok text mode: the safe area --------------------------------------
+  // Only for a selected TITLE, and only with the mode on: with it off nothing below does anything,
+  // so the drag and the picture are what they were. The mode keeps text clear of TikTok's own
+  // buttons and caption, whatever app he picked for his own guides.
+  const safeTitle = tiktokMode && gizmoOn && clip?.title ? clip : undefined
+  const safeRegions = safeTitle ? appGuideRegions(seq.width, seq.height, 'tiktok') : null
+  const safeDragOf = safeTitle
+    ? (corners: [number, number][]): SafeDrag => ({
+        box: titleBoxSeq(safeTitle, seq, corners),
+        rect: safeRect(seq.width, seq.height, 'tiktok'),
+        regions: safeRegions,
+      })
+    : null
+  // The guide regions the title overlaps right now, at rest and mid drag, for the overlay to tint.
+  const guideHits =
+    safeTitle && safeDragOf
+      ? guideRegionsHit(
+          safeDragOf(gizmoQuad(safeTitle, seq, undefined, dragTf ?? restingTf(safeTitle, manualAnimated, playheadS - safeTitle.startS)).corners).box,
+          safeRegions,
+        )
+      : []
+
   // While a title is typed on, its handles are gone: a drag must not move, scale or turn it under the
   // caret, and the field is the only thing on the picture to press.
   const typingOn = gizmoOn && !!clip?.title && editingId === clip.id
@@ -612,8 +670,32 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
           // flush in a corner instead of near one. 8 screen px of tolerance,
           // converted to sequence px so it feels the same at any zoom.
           const snapped = snapTransformMove(x, y, drag.startTf.x, drag.startTf.y, drag.startBox, seq.width, seq.height, 8 / k, inner)
-          setSnapGuides({ x: snapped.guideX, y: snapped.guideY })
-          apply({ ...drag.startTf, x: snapped.x, y: snapped.y })
+          let nx = snapped.x
+          let ny = snapped.y
+          let guideX = snapped.guideX
+          let guideY = snapped.guideY
+          if (drag.safe) {
+            if (ev.altKey) {
+              // Alt: no snapping at all for this drag, the frame's lines included.
+              nx = x
+              ny = y
+              guideX = null
+              guideY = null
+            } else {
+              // The safe area's lines win where they hold (a pull, never a wall: safeSnap.ts).
+              const sn = safeSnap(drag.safe.box, x - drag.startTf.x, y - drag.startTf.y, drag.safe.rect, SAFE_SNAP_PX / k, drag.safe.regions)
+              if (sn.guideX !== null) {
+                nx = drag.startTf.x + sn.dx
+                guideX = sn.guideX
+              }
+              if (sn.guideY !== null) {
+                ny = drag.startTf.y + sn.dy
+                guideY = sn.guideY
+              }
+            }
+          }
+          setSnapGuides({ x: guideX, y: guideY })
+          apply({ ...drag.startTf, x: nx, y: ny })
         } else if (drag.mode === 'scale') {
           // Engine scale is uniform, so aspect stays constrained by
           // construction on every handle. Shift snaps to 5% steps, the scale
@@ -667,7 +749,14 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
       e.preventDefault()
       e.stopPropagation()
       const p = localPt(e.clientX, e.clientY)
-      startDrag({ mode: 'move', startX: p.x, startY: p.y, startTf: tf, startBox: boxFromQuad(corners) })
+      startDrag({
+        mode: 'move',
+        startX: p.x,
+        startY: p.y,
+        startTf: tf,
+        startBox: boxFromQuad(corners),
+        safe: safeDragOf ? safeDragOf(corners) : null,
+      })
     }
     const beginScale = (e: ReactPointerEvent, axis?: { x: number; y: number }) => {
       if (e.button !== 0) return
@@ -979,6 +1068,7 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
       style={{ left: box.left, top: box.top, width: box.w, height: box.h }}
       onDoubleClick={editAt}
     >
+      {tiktokMode && <GuideHitsPublisher hits={guideHits} />}
       {/* Full-canvas click-to-select layer, beneath the gizmo. */}
       <div
         data-testid="preview-select"

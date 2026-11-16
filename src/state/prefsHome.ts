@@ -34,6 +34,7 @@ export const PREFS_KEYS = [
   'olpremiere:export-presets',
   'olpremiere:settings:app-guides',
   'olpremiere:settings:app-guides-app',
+  'olpremiere:settings:tiktok-mode',
   'olpremiere:zoomAnchor',
   'olpremiere:moveCurve',
   'olpremiere:snapping',

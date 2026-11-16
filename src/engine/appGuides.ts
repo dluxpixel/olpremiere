@@ -82,3 +82,17 @@ export function appGuideRegions(w: number, h: number, app: AppGuideApp): GuideRe
 export function appGuideHiddenReason(w: number, h: number): string | null {
   return isTallFrame(w, h) ? null : 'App guides are for tall videos. Switch the shape to 9:16 or Phone to see them.'
 }
+
+/**
+ * What the guides over the picture are, given his own guides choice and TikTok text mode: shown
+ * when EITHER asks for them, and for TikTok while the mode is on (that is the app the mode keeps
+ * text clear of). His saved choice is only read here, never written, so turning the mode off
+ * puts the picture back as he had it.
+ */
+export function effectiveAppGuides(
+  appGuides: boolean,
+  appGuidesApp: AppGuideApp,
+  tiktokMode: boolean,
+): { show: boolean; app: AppGuideApp } {
+  return { show: appGuides || tiktokMode, app: tiktokMode ? 'tiktok' : appGuidesApp }
+}
