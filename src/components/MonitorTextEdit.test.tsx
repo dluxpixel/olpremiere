@@ -316,7 +316,7 @@ describe('while editing, the editor stays out of the way', () => {
     mountOverlay()
     const undoRun = vi.fn()
     const off = installKeymap([
-      { combo: 'mod+z', description: 'Undo', domain: 'edit', run: undoRun },
+      { combo: 'mod+z', description: 'Undo', domain: 'project', run: undoRun },
     ] as Parameters<typeof installKeymap>[0])
     try {
       // The control: outside any field the same key runs the app's undo.
