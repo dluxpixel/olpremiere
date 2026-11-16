@@ -5,6 +5,7 @@
 
 import { POP_EMPHASIS_BOOST, scaleTitleDef, splitWords, type TitleDef } from '../types'
 import { appleEmojiFor, EMOJI_STACK } from './emojiFont'
+import { lineBoxShapes, traceLineBox, type LineBoxShape } from './lineBox'
 
 // ---------------------------------------------------------------------------
 // Pure helpers (no canvas), unit-tested in node.
@@ -209,6 +210,33 @@ function textLeftOf(anchorX: number, textW: number, align: TitleDef['align']): n
   if (align === 'left') return anchorX
   if (align === 'right') return anchorX - textW
   return anchorX - textW / 2
+}
+
+/**
+ * The outline of a title's TikTok line highlight (lineBox.ts), measured the way
+ * the text is laid out: each non-blank line's own width, put where its alignment
+ * puts it, in the line's own cell of the block. Empty when the title has none, has
+ * no text, is an inverted stencil (which takes no decoration), or the stored
+ * values cannot draw (a colour that is not a string, no opacity, no size). One
+ * function for the draw and the click target, so they cannot disagree.
+ */
+function lineBoxOutline(
+  def: TitleDef,
+  L: Pick<TitleLayout, 'lines' | 'hasText' | 'anchorX' | 'blockTop' | 'lineHeightPx'>,
+  measure: (s: string) => number,
+): LineBoxShape[] {
+  const lb = def.lineBox
+  if (!lb || !L.hasText || def.invertBackdrop) return []
+  if (typeof lb.color !== 'string' || !(lb.opacity > 0) || !(def.fontSizePx > 0)) return []
+  const spans = L.lines.map((line, i) => {
+    if (line.trim() === '') return null
+    const w = measure(line)
+    const left = textLeftOf(L.anchorX, w, def.align)
+    const top = L.blockTop + i * L.lineHeightPx
+    return { left, right: left + w, top, bottom: top + L.lineHeightPx }
+  })
+  const em = def.fontSizePx
+  return lineBoxShapes(spans, lb.padXEm * em, lb.padYEm * em, lb.radiusEm * em)
 }
 
 /**
@@ -710,6 +738,13 @@ export function titleInkBoxUV(
     add(boxLeft, L.blockTop - pad, boxLeft + boxW, L.blockTop + L.blockH + pad)
   }
 
+  // The line highlight reaches past the text by its own pad, line by line.
+  for (const shape of lineBoxOutline(def, L, measure)) {
+    const xs = shape.map((c) => c.x)
+    const ys = shape.map((c) => c.y)
+    add(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys))
+  }
+
   if (!Number.isFinite(x0)) return null
   // The raster clips to the frame, so the hit area does too.
   return {
@@ -943,6 +978,20 @@ export function rasterizeTitle(
       ctx.fillStyle = def.box.color
       ctx.fill()
     }
+  }
+
+  // LINE HIGHLIGHT (the TikTok look): one shape for the lines, each hugged, drawn
+  // under the text and under its outline and shadow, and under a size pop's
+  // words. Filled in one go at the stored opacity, so lines that overlap at a
+  // join never double up. No shadow is set until the text below, so it casts none.
+  const lineShapes = lineBoxOutline(def, { lines, hasText, anchorX, blockTop, lineHeightPx }, (str) => ctx.measureText(str).width)
+  if (lineShapes.length > 0) {
+    ctx.beginPath()
+    traceLineBox(ctx, lineShapes)
+    ctx.fillStyle = def.lineBox!.color
+    ctx.globalAlpha = Math.min(1, def.lineBox!.opacity)
+    ctx.fill()
+    ctx.globalAlpha = 1
   }
 
   // SIZE POP: a title with a pop size draws its words one at a time, on EVERY

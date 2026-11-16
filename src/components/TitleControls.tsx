@@ -15,7 +15,8 @@ import {
   Contrast,
   Italic,
 } from 'lucide-react'
-import { ensureTitleFont, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
+import { contrastTextColor, tiktokLineBox } from '../engine/render/lineBox'
+import { ensureTitleFont, TIKTOK_SANS_STACK, TITLE_FONT_OPTIONS } from '../engine/render/titleFonts'
 import { appleEmojiFor, EMOJI_STACK } from '../engine/render/emojiFont'
 import { defaultTitleDef, type Clip, type TitleDef } from '../engine/types'
 import { setTitlesFontSize, updateTitle } from '../state/titleActions'
@@ -287,11 +288,11 @@ export function TitleControls({ clip }: { clip: Clip }) {
         </div>
         {def.invertBackdrop && (
           // A control that still moves while nothing on screen changes reads as a
-          // broken app, so the rasterizer ignoring colour, outline, shadow and box
+          // broken app, so the rasterizer ignoring colour, outline, shadow, box and line highlight
           // is said out loud rather than left to be discovered.
           <p className="text-[10px] leading-snug text-text-muted">
-            The letters take the picture behind them and flip it, so colour, outline, shadow and box
-            are off while this is on.
+            The letters take the picture behind them and flip it, so colour, outline, shadow, box
+            and line highlight are off while this is on.
           </p>
         )}
       </Section>
@@ -574,6 +575,70 @@ export function TitleControls({ clip }: { clip: Clip }) {
                 max={400}
                 ariaLabel="Background radius"
                 onCommit={(v) => set({ box: { ...def.box!, radiusPx: v } }, 'box')}
+              />
+            </PropRow>
+          </div>
+        )}
+      </Section>
+
+      <div className="h-px bg-border" />
+
+      {/* The TikTok highlight: a box round EACH line, merged into one shape. Its own
+          switch beside Background, which is the one rectangle round the whole block;
+          the two can be on together. */}
+      <Section title="Line highlight">
+        <PropRow
+          label="Box per line"
+          labelFor="title-linebox-on"
+          lead={
+            <input
+              type="checkbox"
+              id="title-linebox-on"
+              data-testid="title-linebox-toggle"
+              aria-label="Enable line highlight"
+              checked={!!def.lineBox}
+              // `undefined` on the off-click, never a stub, so the def returns to the
+              // exact key it had before and the cached raster is reused.
+              onChange={(e) => set({ lineBox: e.target.checked ? tiktokLineBox('#ffffff', 1) : undefined })}
+              className="ml-1 accent-accent"
+            />
+          }
+        />
+        {def.lineBox && (
+          <div className="flex flex-col gap-1">
+            <PropRow label="Color" labelTitle="Line highlight color">
+              <input
+                type="color"
+                data-testid="title-linebox-color"
+                aria-label="Line highlight color"
+                value={hexOf(def.lineBox.color)}
+                onChange={(e) =>
+                  // On a TikTok look the text flips for contrast the way TikTok does,
+                  // in the same edit so one undo takes both back.
+                  set(
+                    {
+                      lineBox: { ...def.lineBox!, color: e.target.value },
+                      ...(def.fontFamily === TIKTOK_SANS_STACK ? { color: contrastTextColor(e.target.value) } : {}),
+                    },
+                    'lineBox',
+                  )
+                }
+                className="h-6 w-9 shrink-0 cursor-default rounded-field bg-bg-input p-0.5"
+              />
+            </PropRow>
+            <PropRow
+              label="Opacity"
+              labelTitle="Line highlight opacity, percent"
+              onReset={() => set({ lineBox: { ...def.lineBox!, opacity: 1 } })}
+              resetLabel="Reset line highlight opacity"
+            >
+              <NumberField
+                value={Math.round(def.lineBox.opacity * 100)}
+                min={0}
+                max={100}
+                testId="title-linebox-opacity"
+                ariaLabel="Line highlight opacity"
+                onCommit={(v) => set({ lineBox: { ...def.lineBox!, opacity: v / 100 } }, 'lineBox')}
               />
             </PropRow>
           </div>

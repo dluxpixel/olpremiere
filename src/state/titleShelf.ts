@@ -11,11 +11,15 @@
 // the Inspector uses (types.ts withTitleFontSize). Outlines, boxes and shadows
 // are the absolute pixels that ladder expects at those sizes.
 
+import { tiktokLineBox } from '../engine/render/lineBox'
+import { TIKTOK_SANS_STACK } from '../engine/render/titleFonts'
 import type { AppearanceSpec, TitleDef } from '../engine/types'
 
 export interface TitleLook {
   id: string
   name: string
+  /** Looks that belong together share a group, so the shelf can show them in one block. Absent: ungrouped. */
+  group?: string
   /** One line for the tooltip: where it sits and how it moves. */
   hint: string
   /** The text it arrives with, to be replaced. */
@@ -27,6 +31,24 @@ export interface TitleLook {
 
 const WHITE = '#ffffff'
 const INK = '#000000'
+
+/**
+ * What the four TikTok looks share. The shelf merges a look over defaultTitleDef,
+ * which has a drop shadow, so each of the four says what it has and clears the
+ * rest here. 64 px is TikTok's starting size on 1080 wide, on the ladder the
+ * other looks use; the pinned weight of TikTok Sans is what `bold` reaches.
+ */
+const TIKTOK_BASE: Partial<TitleDef> = {
+  fontFamily: TIKTOK_SANS_STACK,
+  fontSizePx: 64,
+  bold: true,
+  align: 'center',
+  vAlign: 'middle',
+  shadow: undefined,
+  outline: undefined,
+  textCase: undefined,
+}
+const TIKTOK_APPEARANCE: AppearanceSpec = { in: 'fadeIn', out: 'fadeOut', durS: 0.12 }
 
 export const TITLE_SHELF: readonly TitleLook[] = [
   {
@@ -113,6 +135,53 @@ export const TITLE_SHELF: readonly TitleLook[] = [
     style: { fontSizePx: 88, color: WHITE, outline: { color: INK, widthPx: 10 }, align: 'center', vAlign: 'top', offsetYPx: 220, textCase: 'upper' },
     appearance: { in: 'riseUp', out: 'dropDown', durS: 0.3 },
   },
+  // The text TikTok's own app adds (his ask): its caption face, bold, centred, at
+  // the size TikTok text starts at on a 1080 wide frame. The two highlight looks
+  // read their box from the one TIKTOK_LINE_BOX block (render/lineBox.ts), so a
+  // later measurement against a recording changes one place.
+  {
+    id: 'tiktok-plain',
+    name: 'TikTok',
+    group: 'tiktok',
+    hint: 'White text with a soft dark shadow, the way TikTok adds it. Centred, fades in and out.',
+    text: 'Type your text',
+    durationS: 3,
+    style: { ...TIKTOK_BASE, color: WHITE, shadow: { color: 'rgba(0,0,0,0.5)', blurPx: 8, dx: 0, dy: 2 } },
+    appearance: TIKTOK_APPEARANCE,
+  },
+  {
+    id: 'tiktok-outline',
+    name: 'TikTok outline',
+    group: 'tiktok',
+    hint: 'White text with a black outline, the way TikTok adds it. Centred, fades in and out.',
+    text: 'Type your text',
+    durationS: 3,
+    style: { ...TIKTOK_BASE, color: WHITE, outline: { color: INK, widthPx: 8 } },
+    appearance: TIKTOK_APPEARANCE,
+  },
+  {
+    id: 'tiktok-highlight',
+    name: 'TikTok highlight',
+    group: 'tiktok',
+    hint: 'Black text on a white highlight that hugs every line, the way TikTok adds it. Centred, fades in and out.',
+    text: 'Type your text',
+    durationS: 3,
+    style: { ...TIKTOK_BASE, color: INK, lineBox: tiktokLineBox(WHITE, 1) },
+    appearance: TIKTOK_APPEARANCE,
+  },
+  {
+    id: 'tiktok-soft',
+    name: 'TikTok soft',
+    group: 'tiktok',
+    hint: 'White text on a see-through black highlight that hugs every line, the way TikTok adds it. Centred, fades in and out.',
+    text: 'Type your text',
+    durationS: 3,
+    style: { ...TIKTOK_BASE, color: WHITE, lineBox: tiktokLineBox(INK, 0.5) },
+    appearance: TIKTOK_APPEARANCE,
+  },
 ]
 
 export const titleLookById = (id: string): TitleLook | undefined => TITLE_SHELF.find((l) => l.id === id)
+
+/** The looks of one group, in shelf order. */
+export const titleLooksInGroup = (group: string): TitleLook[] => TITLE_SHELF.filter((l) => l.group === group)

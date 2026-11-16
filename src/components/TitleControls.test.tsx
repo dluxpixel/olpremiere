@@ -17,6 +17,8 @@ vi.mock('../state/toasts', () => ({
 }))
 
 import { channelKeyframes } from '../engine/effects/channels'
+import { TIKTOK_LINE_BOX, tiktokLineBox } from '../engine/render/lineBox'
+import { TIKTOK_SANS_STACK } from '../engine/render/titleFonts'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, type Clip, type TitleDef } from '../engine/types'
 import { updateActiveSequence, useStore } from '../state/store'
@@ -72,6 +74,75 @@ describe('the box and shadow colour keep their see through', () => {
     expect(titleOf(c.id).shadow!.color).toBe('rgba(255,0,0,0.6)')
     typeInto('title-shadow-opacity', '0')
     expect(titleOf(c.id).shadow!.color).toBe('rgba(255,0,0,0)')
+  })
+})
+
+// The TikTok line highlight: one box per line, merged into one shape. The panel
+// has a switch, a colour and an opacity, and on a TikTok look the text flips
+// between black and white the way TikTok does as the colour changes.
+describe('the Line highlight section', () => {
+  it('the switch turns it on at the TikTok measures in white, and off again clears the field', () => {
+    const c = seed({})
+    render(<Live id={c.id} />)
+    expect(titleOf(c.id).lineBox).toBeUndefined()
+    expect(screen.queryByTestId('title-linebox-color')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('title-linebox-toggle'))
+    expect(titleOf(c.id).lineBox).toEqual(tiktokLineBox('#ffffff', 1))
+    expect(titleOf(c.id).lineBox).toEqual({ color: '#ffffff', opacity: 1, ...TIKTOK_LINE_BOX })
+    expect((screen.getByTestId('title-linebox-toggle') as HTMLInputElement).checked).toBe(true)
+
+    fireEvent.click(screen.getByTestId('title-linebox-toggle'))
+    expect(titleOf(c.id).lineBox).toBeUndefined()
+    // Off leaves the def as it was before it was ever on: no stub in the raster cache key.
+    expect(JSON.stringify(titleOf(c.id))).not.toContain('lineBox')
+  })
+
+  it('leaves the block box alone: the two are separate switches', () => {
+    const c = seed({ box: { color: 'rgba(0,0,0,0.6)', paddingPx: 24, radiusPx: 8 } })
+    render(<Live id={c.id} />)
+    fireEvent.click(screen.getByTestId('title-linebox-toggle'))
+    expect(titleOf(c.id).box).toEqual({ color: 'rgba(0,0,0,0.6)', paddingPx: 24, radiusPx: 8 })
+    expect(titleOf(c.id).lineBox).toBeDefined()
+  })
+
+  it('the colour and opacity write into the field and keep the em measures', () => {
+    const c = seed({ lineBox: tiktokLineBox('#ffffff', 1) })
+    render(<Live id={c.id} />)
+    expect((screen.getByTestId('title-linebox-opacity') as HTMLInputElement).value).toBe('100')
+    fireEvent.change(screen.getByTestId('title-linebox-color'), { target: { value: '#336699' } })
+    expect(titleOf(c.id).lineBox).toEqual({ ...tiktokLineBox('#336699', 1) })
+    typeInto('title-linebox-opacity', '50')
+    expect(titleOf(c.id).lineBox).toEqual({ ...tiktokLineBox('#336699', 0.5) })
+  })
+
+  it('on a TikTok look, a light box flips the text to black and a dark box to white', () => {
+    const c = seed({ fontFamily: TIKTOK_SANS_STACK, color: '#ffffff', lineBox: tiktokLineBox('#000000', 0.5) })
+    render(<Live id={c.id} />)
+    fireEvent.change(screen.getByTestId('title-linebox-color'), { target: { value: '#ffffff' } })
+    expect(titleOf(c.id).lineBox!.color).toBe('#ffffff')
+    expect(titleOf(c.id).color).toBe('#000000')
+    fireEvent.change(screen.getByTestId('title-linebox-color'), { target: { value: '#111111' } })
+    expect(titleOf(c.id).color).toBe('#ffffff')
+    fireEvent.change(screen.getByTestId('title-linebox-color'), { target: { value: '#ffd400' } })
+    expect(titleOf(c.id).color).toBe('#000000')
+  })
+
+  it('the colour and the text flip are one undo step', () => {
+    const c = seed({ fontFamily: TIKTOK_SANS_STACK, color: '#ffffff', lineBox: tiktokLineBox('#000000', 0.5) })
+    render(<Live id={c.id} />)
+    fireEvent.change(screen.getByTestId('title-linebox-color'), { target: { value: '#ffffff' } })
+    useStore.getState().undo()
+    expect(titleOf(c.id).lineBox!.color).toBe('#000000')
+    expect(titleOf(c.id).color).toBe('#ffffff')
+  })
+
+  it('on any other font the text colour is his, and stays', () => {
+    const c = seed({ color: '#ff00ff', lineBox: tiktokLineBox('#000000', 1) })
+    render(<Live id={c.id} />)
+    fireEvent.change(screen.getByTestId('title-linebox-color'), { target: { value: '#ffffff' } })
+    expect(titleOf(c.id).lineBox!.color).toBe('#ffffff')
+    expect(titleOf(c.id).color).toBe('#ff00ff')
   })
 })
 

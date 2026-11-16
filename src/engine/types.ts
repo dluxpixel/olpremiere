@@ -651,6 +651,27 @@ export interface TitleBox {
   radiusPx: number
 }
 
+/**
+ * The TikTok text highlight: every LINE of the text gets its own rounded box
+ * hugging that line's width, and the boxes of neighbouring lines merge into one
+ * shape with rounded outer corners and rounded inner (concave) corners where a
+ * wide line meets a narrow one (render/lineBox.ts draws the outline).
+ *
+ * Every size is in EM of the title's font size, so the look scales with the text
+ * and needs no help from scaleTitleDef or withTitleFontSize.
+ */
+export interface TitleLineBox {
+  color: string
+  /** 0 to 1, applied to the whole shape, so overlapping lines never double up. */
+  opacity: number
+  /** Box edge past the line's text, each side, in em. */
+  padXEm: number
+  /** Box edge past the line's top and bottom, in em. */
+  padYEm: number
+  /** Corner radius, outer and inner alike, in em. */
+  radiusEm: number
+}
+
 /** A word he leaned on (`emphasis`) pops a third further than the others: 1 + (peak - 1) * this. */
 export const POP_EMPHASIS_BOOST = 4 / 3
 
@@ -678,6 +699,13 @@ export interface TitleDef {
   shadow?: TitleShadow
   outline?: TitleOutline
   box?: TitleBox
+  /**
+   * TikTok style line highlight, drawn under the text and under its outline and
+   * shadow. Independent of `box`: the two can be on together. Absent = off, so
+   * every title made before this draws, and keys the raster cache, exactly as it
+   * always did. Written back as `undefined` when switched off, never a stub.
+   */
+  lineBox?: TitleLineBox
   /**
    * Draw every glyph as the PER-PIXEL INVERSE of whatever is composited behind
    * it, 255 minus the backdrop, clipped to the glyph shapes. Not a colour: over
