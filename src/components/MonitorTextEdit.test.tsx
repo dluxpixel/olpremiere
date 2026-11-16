@@ -25,7 +25,7 @@ import {
   type TitleDef,
 } from '../engine/types'
 import { updateActiveSequence, useStore } from '../state/store'
-import { editBoxSeq, endTextEdit, useTextEdit } from './MonitorTextEdit'
+import { editBoxSeq, endTextEdit, startTextEdit, useTextEdit } from './MonitorTextEdit'
 import { MonitorTransformOverlay } from './MonitorTransformOverlay'
 
 const clipOf = (id: string): Clip =>
@@ -434,6 +434,24 @@ describe('the hook another component reads', () => {
     expect(e.box!.left + e.box!.w / 2).toBeCloseTo(canvasW / 2, 3)
     fireEvent.keyDown(screen.getByTestId('text-edit-field'), { key: 'Escape' })
     expect(useTextEdit.getState().editing).toBeNull()
+  })
+})
+
+describe('a typing session on a title the TikTok mode just made', () => {
+  it('keeps its fresh mark once the field has measured the box, and Escape on a still empty title removes it', () => {
+    const c = seed({ text: '' })
+    useStore.getState().setUI({ selection: [c.id] })
+    mountOverlay()
+    act(() => startTextEdit(c.id, true))
+    const e = useTextEdit.getState().editing!
+    expect(e.box).not.toBeNull()
+    expect(e.fresh).toBe(true)
+    fireEvent.keyDown(screen.getByTestId('text-edit-field'), { key: 'Escape' })
+    expect(
+      activeSequence(useStore.getState().project)
+        .tracks.flatMap((t) => t.clips)
+        .some((x) => x.id === c.id),
+    ).toBe(false)
   })
 })
 

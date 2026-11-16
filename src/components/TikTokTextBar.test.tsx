@@ -90,20 +90,20 @@ describe('when the bar shows', () => {
     expect(screen.queryByTestId('tiktok-text-bar')).toBeNull()
   })
 
-  it('sits just above the text box, centred on it', () => {
+  it('sits 20 monitor px above the text box, centred on it', () => {
     const c = seed()
     mount()
     edit(c.id) // box left 100, top 300, 200 x 80
     const bar = screen.getByTestId('tiktok-text-bar')
-    expect(bar.style.top).toBe(`${300 - barH - 6}px`)
+    expect(bar.style.top).toBe(`${300 - barH - 20}px`)
     expect(bar.style.left).toBe(`${100 + 100 - barW / 2}px`)
   })
 
-  it('flips below the box when there is no room above', () => {
+  it('flips below the box, 20 monitor px under it, when there is no room above', () => {
     const c = seed()
     mount()
     edit(c.id, { left: 100, top: 20, w: 200, h: 80 })
-    expect(screen.getByTestId('tiktok-text-bar').style.top).toBe(`${20 + 80 + 6}px`)
+    expect(screen.getByTestId('tiktok-text-bar').style.top).toBe(`${20 + 80 + 20}px`)
   })
 
   it('stays inside the monitor sideways', () => {
@@ -123,6 +123,43 @@ describe('when the bar shows', () => {
     expect(bar.className).toContain('rounded-overlay')
     expect(bar.className).toContain('bg-bg-elevated')
     expect(bar.hasAttribute('data-keeps-text-edit')).toBe(true)
+  })
+
+  it('casts no wide drop shadow, which at the gap it keeps would still fall on the first line of the text', () => {
+    const c = seed()
+    mount()
+    edit(c.id)
+    expect(screen.getByTestId('tiktok-text-bar').className).not.toContain('shadow-pop')
+  })
+
+  it('follows the bar and the monitor when they are resized', () => {
+    const observers: Array<() => void> = []
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          observers.push(cb)
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    try {
+      const c = seed()
+      mount()
+      edit(c.id) // box left 100, width 200: centred on x 200
+      const bar = screen.getByTestId('tiktok-text-bar')
+      expect(bar.style.left).toBe(`${200 - barW / 2}px`)
+      barW = 300
+      act(() => observers.forEach((cb) => cb()))
+      expect(bar.style.left).toBe(`${200 - 150}px`)
+      barH = 60
+      act(() => observers.forEach((cb) => cb()))
+      expect(bar.style.top).toBe(`${300 - 60 - 20}px`)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('a press on the bar does not take the focus off the field, and does not reach the picture under it', () => {
@@ -201,6 +238,70 @@ describe('the A button cycles the four TikTok looks on this title', () => {
     expect(titleOf(c.id).lineBox).toBeDefined()
     useStore.getState().undo()
     expect(titleOf(c.id).lineBox).toBeUndefined()
+  })
+})
+
+describe('the tooltips open away from the text', () => {
+  const tips = () => screen.getAllByRole('tooltip', { hidden: true })
+
+  it('upward while the bar is above the text', () => {
+    const c = seed()
+    mount()
+    edit(c.id)
+    expect(tips().length).toBe(2)
+    for (const t of tips()) {
+      expect(t.className).toContain('bottom-full')
+      expect(t.className).not.toContain('top-full')
+    }
+  })
+
+  it('downward once the bar has flipped below the text', () => {
+    const c = seed()
+    mount()
+    edit(c.id, { left: 100, top: 20, w: 200, h: 80 })
+    for (const t of tips()) {
+      expect(t.className).toContain('top-full')
+      expect(t.className).not.toContain('bottom-full')
+    }
+  })
+
+  it('and turn round with the bar when the text moves', () => {
+    const c = seed()
+    mount()
+    edit(c.id)
+    edit(c.id, { left: 100, top: 20, w: 200, h: 80 })
+    expect(tips()[0]!.className).toContain('top-full')
+    edit(c.id)
+    expect(tips()[0]!.className).toContain('bottom-full')
+  })
+})
+
+describe('the alignment button also keeps the text in the safe area', () => {
+  const fakeCtx = { font: '', textAlign: 'left', measureText: (s: string) => ({ width: s.length * 40 }) }
+  class FakeOffscreen {
+    getContext() {
+      return fakeCtx
+    }
+  }
+
+  it('moves the title and sets the alignment in ONE undo step', () => {
+    vi.stubGlobal('OffscreenCanvas', FakeOffscreen)
+    try {
+      const c = seed({ text: 'Round 2' })
+      mount()
+      edit(c.id)
+      const x0 = clipOf(c.id).transform.x
+      const steps = useStore.getState().history.undo.length
+      fireEvent.click(screen.getByTestId('tiktok-align')) // centre to right
+      expect(titleOf(c.id).align).toBe('right')
+      expect(clipOf(c.id).transform.x).not.toBe(x0)
+      expect(useStore.getState().history.undo.length).toBe(steps + 1)
+      useStore.getState().undo()
+      expect(titleOf(c.id).align).toBe('center')
+      expect(clipOf(c.id).transform.x).toBe(x0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

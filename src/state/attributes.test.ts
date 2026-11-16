@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { tiktokLineBox } from '../engine/render/lineBox'
 import { recomputeDuration } from '../engine/timeline'
 import {
   activeSequence,
@@ -7,6 +8,7 @@ import {
   newTitleClip,
   type Clip,
   type Sequence,
+  type TitleDef,
 } from '../engine/types'
 import { copyClipAttributes, hasClipAttributes, pasteClipAttributes } from './attributes'
 import { channelKeyframes } from '../engine/effects/channels'
@@ -116,5 +118,37 @@ describe('copy / paste attributes', () => {
     // the invariant we assert is that pasting onto an EMPTY selection never throws.
     expect(() => pasteClipAttributes([])).not.toThrow()
     void before
+  })
+})
+
+// The TikTok line highlight is part of a title's look: copying a highlight title and pasting it
+// gave black text and no box, because the copied style list had the block box but not this field.
+describe('copy / paste attributes carries the line highlight', () => {
+  function seedWith(startS: number, patch: Partial<TitleDef>): Clip {
+    const clip = newTitleClip({ ...defaultTitleDef('x'), ...patch }, startS, 5)
+    updateActiveSequence('seed', (sq) =>
+      recomputeDuration({ ...sq, tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, clips: [...t.clips, clip] } : t)) }),
+    )
+    return clip
+  }
+  const titleAt = (i: number): TitleDef => clips()[i].title!
+
+  it('a highlight title pastes its box and its text colour, and keeps the target words', () => {
+    const a = seedWith(0, { color: '#000000', lineBox: tiktokLineBox('#ffffff', 0.5) })
+    const b = seedWith(6, { text: 'mine' })
+    copyClipAttributes(a.id)
+    pasteClipAttributes([b.id])
+    expect(titleAt(1).lineBox).toEqual(tiktokLineBox('#ffffff', 0.5))
+    expect(titleAt(1).color).toBe('#000000')
+    expect(titleAt(1).text).toBe('mine')
+  })
+
+  it('a title without one clears the target highlight', () => {
+    const a = seedWith(0, {})
+    const b = seedWith(6, { lineBox: tiktokLineBox('#ffffff', 1) })
+    copyClipAttributes(a.id)
+    pasteClipAttributes([b.id])
+    expect(titleAt(1).lineBox).toBeUndefined()
+    expect(JSON.stringify(titleAt(1))).not.toContain('lineBox')
   })
 })

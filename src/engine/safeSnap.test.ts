@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { appGuideRegions } from './appGuides'
-import { guideRegionsHit, safeRect, safeSnap } from './safeSnap'
+import { alignShiftX, guideRegionsHit, SAFE_SIDE_MARGIN_PX_AT_1080, safeRect, safeSideMargin, safeSnap } from './safeSnap'
 
 // TikTok text mode keeps a title inside the app's safe area. The snap is pure geometry in
 // SEQUENCE px: the title's box at the start of a drag, the move proposed so far, the safe
@@ -142,5 +142,67 @@ describe('which guide regions the box overlaps', () => {
   it('reports the box where it ends up after the snap', () => {
     // proposed top at 146 (inside the band by 4) snaps out to 150, so no overlap is reported
     expect(snap(box(300, 400), 0, -254).overlaps).toEqual([])
+  })
+})
+
+// The align button of the TikTok bar: the title is moved sideways in the same edit so its drawn
+// box (highlight padding included) sits inside the safe area with a side margin.
+describe('safeSideMargin', () => {
+  it('is 48 px on a 1080 wide frame and scales with the frame width', () => {
+    expect(SAFE_SIDE_MARGIN_PX_AT_1080).toBe(48)
+    expect(safeSideMargin(1080)).toBe(48)
+    expect(safeSideMargin(540)).toBe(24)
+    expect(safeSideMargin(2160)).toBe(96)
+  })
+})
+
+describe('alignShiftX', () => {
+  /** A 400 wide box with its left edge at x. */
+  const wide = (x: number) => ({ minX: x, maxX: x + 400, minY: 700, maxY: 800 })
+  const after = (b: ReturnType<typeof wide>, dx: number) => ({ minX: b.minX + dx, maxX: b.maxX + dx })
+
+  it('left puts the left edge at the safe left plus the margin', () => {
+    const b = wide(300)
+    expect(after(b, alignShiftX(b, SAFE, 'left', 1080)).minX).toBe(48)
+  })
+
+  it('right puts the right edge at the safe right minus the margin, clear of the Buttons column', () => {
+    const b = wide(300)
+    expect(after(b, alignShiftX(b, SAFE, 'right', 1080)).maxX).toBe(950 - 48)
+  })
+
+  it('centre puts the box centre on the safe area centre, not the frame centre', () => {
+    const b = wide(10)
+    const a = after(b, alignShiftX(b, SAFE, 'center', 1080))
+    expect((a.minX + a.maxX) / 2).toBe(475)
+  })
+
+  it('moves nothing that already sits there', () => {
+    expect(alignShiftX(wide(48), SAFE, 'left', 1080)).toBe(0)
+    expect(alignShiftX(wide(950 - 48 - 400), SAFE, 'right', 1080)).toBe(0)
+    expect(alignShiftX(wide(275), SAFE, 'center', 1080)).toBe(0)
+  })
+
+  it('works on the Phone shape, where only the bottom band differs, so the sides are the same', () => {
+    const safe = safeRect(1080, 2112, 'tiktok')
+    const b = wide(300)
+    expect(after(b, alignShiftX(b, safe, 'left', 1080)).minX).toBe(48)
+    expect(after(b, alignShiftX(b, safe, 'right', 1080)).maxX).toBe(902)
+  })
+
+  it('on a frame without guides the safe area is the whole frame and the margin scales with it', () => {
+    const safe = safeRect(1920, 1080, 'tiktok')
+    const margin = (48 * 1920) / 1080
+    const b = wide(700)
+    expect(after(b, alignShiftX(b, safe, 'left', 1920)).minX).toBeCloseTo(margin, 9)
+    expect(after(b, alignShiftX(b, safe, 'right', 1920)).maxX).toBeCloseTo(1920 - margin, 9)
+    const c = after(b, alignShiftX(b, safe, 'center', 1920))
+    expect((c.minX + c.maxX) / 2).toBe(960)
+  })
+
+  it('a box wider than the room still has its left edge on the margin for left, its right edge for right', () => {
+    const b = { minX: 100, maxX: 1000, minY: 0, maxY: 10 } // 900 wide, the room is 854
+    expect(after(b, alignShiftX(b, SAFE, 'left', 1080)).minX).toBe(48)
+    expect(after(b, alignShiftX(b, SAFE, 'right', 1080)).maxX).toBe(902)
   })
 })

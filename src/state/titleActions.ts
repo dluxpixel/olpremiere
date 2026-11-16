@@ -2,7 +2,11 @@
 // asset) and rasterizes to a texture at render time.
 
 import { isEmptyAppearance } from '../engine/anim/appearance'
-import { safeRect } from '../engine/safeSnap'
+import { computeQuad, subQuad } from '../engine/render/mat'
+import { titleInkBoxUV } from '../engine/render/titleRaster'
+import type { ResolvedTransform } from '../engine/render/types'
+import { alignShiftX, safeRect } from '../engine/safeSnap'
+import { boxFromQuad } from '../engine/snapTransform'
 import { clipDurationS, recomputeDuration, resolveStart } from '../engine/timeline'
 import {
   activeSequence,
@@ -117,7 +121,99 @@ function addTitle(
   })
   s.setUI({ selection: [clip.id] })
   // Not while the video plays: the field only shows on a paused picture.
-  if (tiktok?.typeNow && !s.ui.playing) startTextEdit(clip.id)
+  // Marked FRESH: typing that ends with it still empty takes it away again (dropEmptyFreshTitle).
+  if (tiktok?.typeNow && !s.ui.playing) startTextEdit(clip.id, true)
+}
+
+function findClip(clipId: string): Clip | undefined {
+  return activeSequence(useStore.getState().project)
+    .tracks.flatMap((t) => t.clips)
+    .find((c) => c.id === clipId)
+}
+
+/**
+ * A title the TikTok text mode just made, whose typing has ended with nothing in it (or only
+ * spaces and new lines): take it off the timeline, so no invisible title is left behind. Called by
+ * endTextEdit for a FRESH typing session only, never for a title that was already there.
+ *
+ * If nothing has been done since the title was added, the add itself is taken back out of the
+ * history (undo, then the redo it leaves is dropped), so no pointless step remains. If he typed
+ * and deleted, or styled it, that work is real history, so the removal is one 'Delete clip' step
+ * that undo brings back.
+ */
+export function dropEmptyFreshTitle(clipId: string): void {
+  const s = useStore.getState()
+  const clip = findClip(clipId)
+  if (!clip?.title || clip.title.text.trim() !== '') return
+  const top = s.history.undo[s.history.undo.length - 1]
+  if (top && top.label === 'Add title' && top.after === s.project) {
+    s.undo()
+    // Adding a command emptied the redo list, so it was empty before the undo made it hold the add.
+    useStore.setState((st) => ({ history: { ...st.history, redo: [] } }))
+    return
+  }
+  updateActiveSequence('Delete clip', (sq) =>
+    recomputeDuration({ ...sq, tracks: sq.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== clipId) })) }),
+  )
+  const sel = useStore.getState().ui.selection
+  if (sel.includes(clipId)) useStore.getState().setUI({ selection: sel.filter((id) => id !== clipId) })
+}
+
+/**
+ * How far, in sequence px, a title must move sideways for its drawn box (highlight padding
+ * included) to sit where `align` puts it in TikTok's safe area. Measured at the title's framing
+ * as it stands, with the NEW alignment, because the alignment is what moves the box.
+ * 0 where nothing is drawn yet (an empty title has no box to place).
+ */
+function alignShiftFor(clip: Clip, align: TitleDef['align'], seq: { width: number; height: number }): number {
+  const uv = titleInkBoxUV({ ...clip.title!, align }, seq.width, seq.height)
+  if (!uv) return 0
+  const t = clip.transform
+  const rt: ResolvedTransform = {
+    x: t.x,
+    y: t.y,
+    scale: t.scale,
+    rotationDeg: t.rotationDeg,
+    anchorX: t.anchorX,
+    anchorY: t.anchorY,
+    cropT: t.crop.t,
+    cropR: t.crop.r,
+    cropB: t.crop.b,
+    cropL: t.crop.l,
+    ...(t.fit === 'stretch' ? { fit: 'stretch' as const } : {}),
+  }
+  const { corners } = computeQuad({ frameW: seq.width, frameH: seq.height, texW: seq.width, texH: seq.height, transform: rt })
+  const box = boxFromQuad(subQuad(corners, uv))
+  return alignShiftX(box, safeRect(seq.width, seq.height, 'tiktok'), align, seq.width)
+}
+
+/**
+ * The TikTok bar's align button. In TikTok text mode the title is also moved sideways, in the
+ * SAME edit (one undo step), so its drawn box stays inside the safe area with a side margin: left
+ * at the safe left, right at the safe right (clear of TikTok's Buttons column), centre on the safe
+ * centre. Its height is not changed. With the mode off it is just the alignment.
+ */
+export function setTitleAlign(clipId: string, align: TitleDef['align']): void {
+  const clip = findClip(clipId)
+  if (!clip?.title) return
+  const seq = activeSequence(useStore.getState().project)
+  const dx = useSettings.getState().tiktokMode ? alignShiftFor(clip, align, seq) : 0
+  updateActiveSequence('Edit title', (sq) => ({
+    ...sq,
+    tracks: sq.tracks.map((t) =>
+      t.clips.some((c) => c.id === clipId)
+        ? {
+            ...t,
+            clips: t.clips.map((c) => {
+              if (c.id !== clipId || !c.title) return c
+              const moved: Clip = { ...c, title: { ...c.title, align }, transform: { ...c.transform, x: c.transform.x + dx } }
+              // An entrance/exit is compiled from the base framing, so it follows the new base (as setClipTransform does).
+              return dx !== 0 && moved.appearance ? applyAppearanceToClip(moved, moved.appearance, sq.width, sq.height) : moved
+            }),
+          }
+        : t,
+    ),
+  }))
 }
 
 /**

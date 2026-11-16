@@ -598,8 +598,19 @@ export function TitleControls({ clip }: { clip: Clip }) {
               aria-label="Enable line highlight"
               checked={!!def.lineBox}
               // `undefined` on the off-click, never a stub, so the def returns to the
-              // exact key it had before and the cached raster is reused.
-              onChange={(e) => set({ lineBox: e.target.checked ? tiktokLineBox('#ffffff', 1) : undefined })}
+              // exact key it had before and the cached raster is reused. On the TikTok font the
+              // text takes the colour that reads on the new white box in the same edit, or white
+              // words would vanish on it; any other font keeps his text colour.
+              onChange={(e) =>
+                set(
+                  e.target.checked
+                    ? {
+                        lineBox: tiktokLineBox('#ffffff', 1),
+                        ...(def.fontFamily === TIKTOK_SANS_STACK ? { color: contrastTextColor('#ffffff') } : {}),
+                      }
+                    : { lineBox: undefined },
+                )
+              }
               className="ml-1 accent-accent"
             />
           }

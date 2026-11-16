@@ -28,8 +28,8 @@ class FakeOffscreen {
     return fakeCtx
   }
 }
+// No constructor: the overlay's `new ResizeObserver(measure)` passes a callback this stand-in never calls.
 class FakeResizeObserver {
-  constructor(_cb: () => void) {}
   observe() {}
   unobserve() {}
   disconnect() {}

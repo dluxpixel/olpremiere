@@ -67,6 +67,8 @@ export function copyClipAttributes(clipId?: string): void {
           outline: t.outline,
           shadow: t.shadow,
           box: t.box,
+          // The TikTok line highlight: undefined when the source has none, so a paste clears the target's.
+          lineBox: t.lineBox,
           offsetXPx: t.offsetXPx,
           offsetYPx: t.offsetYPx,
         }

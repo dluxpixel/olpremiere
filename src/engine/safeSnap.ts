@@ -33,6 +33,30 @@ export function safeRect(w: number, h: number, app: AppGuideApp): Rect {
   return { x: 0, y: top, w: w - right, h: h - top - bottom }
 }
 
+/**
+ * The air kept between a title's drawn box and the safe area's side when the bar's align button
+ * puts it left or right, on a frame 1080 wide. PROVISIONAL, not yet measured against a TikTok recording.
+ */
+export const SAFE_SIDE_MARGIN_PX_AT_1080 = 48
+
+/** The side margin for a frame `frameW` wide, in sequence px: 48 on a 1080 frame, scaled with the width. */
+export function safeSideMargin(frameW: number): number {
+  return (SAFE_SIDE_MARGIN_PX_AT_1080 * frameW) / 1080
+}
+
+/**
+ * How far to move a title sideways, in sequence px, so that its drawn `box` (highlight padding
+ * included) sits where its alignment says inside `safe`: the left edge at the safe left plus the
+ * margin, the right edge at the safe right minus the margin, the centre on the safe centre.
+ * A box wider than the room keeps the edge its alignment names on the margin and spills on the other side.
+ */
+export function alignShiftX(box: SnapBox, safe: Rect, align: 'left' | 'center' | 'right', frameW: number): number {
+  const margin = safeSideMargin(frameW)
+  if (align === 'left') return safe.x + margin - box.minX
+  if (align === 'right') return safe.x + safe.w - margin - box.maxX
+  return safe.x + safe.w / 2 - (box.minX + box.maxX) / 2
+}
+
 /** Less than this much of the box inside a region is not an overlap: an edge resting on the line is clear of it. */
 const TOUCH_EPS = 1e-3
 

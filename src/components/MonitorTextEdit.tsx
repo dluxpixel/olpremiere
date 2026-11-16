@@ -22,7 +22,7 @@ import { appleEmojiFor, EMOJI_STACK } from '../engine/render/emojiFont'
 import { blockLayout, titleLayout, wrapLinesWith } from '../engine/render/titleRaster'
 import { activeSequence, type TitleDef } from '../engine/types'
 import { useStore } from '../state/store'
-import { updateTitle } from '../state/titleActions'
+import { dropEmptyFreshTitle, updateTitle } from '../state/titleActions'
 
 /** A rectangle in monitor px: measured from the top left of the monitor's picture area. */
 export interface MonitorBox {
@@ -43,6 +43,11 @@ export interface TextEditing {
   box: MonitorBox | null
   /** The clip's rotation, so a toolbar can tell a box that is straight from one that is tipped. */
   rotationDeg: number
+  /**
+   * The title was made for this typing session by TikTok text mode, not one that was already on the
+   * timeline: if the typing ends with it still empty it is removed again (dropEmptyFreshTitle).
+   */
+  fresh?: boolean
 }
 
 /**
@@ -51,11 +56,15 @@ export interface TextEditing {
  */
 export const useTextEdit = create<{ editing: TextEditing | null }>(() => ({ editing: null }))
 
-export const startTextEdit = (clipId: string): void =>
-  useTextEdit.setState({ editing: { clipId, box: null, rotationDeg: 0 } })
+export const startTextEdit = (clipId: string, fresh = false): void =>
+  useTextEdit.setState({ editing: { clipId, box: null, rotationDeg: 0, ...(fresh ? { fresh: true } : {}) } })
 
 export const endTextEdit = (): void => {
-  if (useTextEdit.getState().editing !== null) useTextEdit.setState({ editing: null })
+  const cur = useTextEdit.getState().editing
+  if (cur === null) return
+  useTextEdit.setState({ editing: null })
+  // A title the mode just made and he left empty does not stay on the timeline as an invisible clip.
+  if (cur.fresh) dropEmptyFreshTitle(cur.clipId)
 }
 
 /** A control that belongs to the edit (a floating toolbar): pressing it does not end the typing. */
@@ -202,7 +211,7 @@ function MonitorTextEditView(p: MonitorTextEditProps) {
     if (!cur || cur.clipId !== clipId) return
     const b = cur.box
     if (b && b.left === next.left && b.top === next.top && b.w === next.w && b.h === next.h && cur.rotationDeg === rotationDeg) return
-    useTextEdit.setState({ editing: { clipId, box: next, rotationDeg } })
+    useTextEdit.setState({ editing: { ...cur, box: next, rotationDeg } })
   }, [clipId, hasBox, boxLeft, boxTop, boxW, boxH, canvasLeft, canvasTop, canvasW, canvasH, k, x, y, scale, rotationDeg, anchorX, anchorY])
 
   if (!def || !box) return null

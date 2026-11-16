@@ -19,7 +19,7 @@ import { contrastTextColor } from '../engine/render/lineBox'
 import { activeSequence, type TitleDef } from '../engine/types'
 import { useSettings } from '../state/settings'
 import { useStore } from '../state/store'
-import { updateTitle } from '../state/titleActions'
+import { setTitleAlign, updateTitle } from '../state/titleActions'
 import { titleLookById } from '../state/titleShelf'
 import { IconButton } from '../ui/Button'
 import { KEEPS_TEXT_EDIT, useTextEdit } from './MonitorTextEdit'
@@ -58,8 +58,13 @@ const ALIGN_CYCLE = ['left', 'center', 'right'] as const
 const ALIGN_ICON = { left: AlignLeft, center: AlignCenter, right: AlignRight } as const
 const ALIGN_NAME = { left: 'left', center: 'centre', right: 'right' } as const
 
-/** Air between the bar and the text box, and between the bar and the monitor's edge, in monitor px. */
-const GAP = 6
+/**
+ * Air between the bar and the text box, in monitor px, above it or below it. The bar casts no wide
+ * drop shadow (a 32 px blur falls 44 px below a panel, over the first line of the words); its border
+ * and panel colour set it off, so nothing of it lands on the text.
+ */
+const GAP = 20
+/** Air between the bar and the monitor's edge, in monitor px. */
 const EDGE = 4
 /** Before the bar has been measured: about one row of small buttons and a little padding. */
 const FALLBACK_H = 36
@@ -89,18 +94,28 @@ export function TikTokTextBar() {
   )
   const ref = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 0, h: 0, cw: 0, ch: 0 })
+  const shown = tiktokMode && !!editing?.box && !!def
 
-  // The bar's own size and the monitor's, read after every render so a title that changes its
-  // box or a monitor that is resized keeps the bar where it belongs.
+  // The bar's own size and the monitor's, read when the bar appears and again whenever either one
+  // is resized, so a monitor that is resized keeps the bar where it belongs. Where the bar sits
+  // against the text box is worked out in render from the box, which follows the title's size.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
     const host = el.parentElement
-    const next = { w: el.offsetWidth, h: el.offsetHeight, cw: host?.clientWidth ?? 0, ch: host?.clientHeight ?? 0 }
-    setSize((prev) => (prev.w === next.w && prev.h === next.h && prev.cw === next.cw && prev.ch === next.ch ? prev : next))
-  })
+    const read = () => {
+      const next = { w: el.offsetWidth, h: el.offsetHeight, cw: host?.clientWidth ?? 0, ch: host?.clientHeight ?? 0 }
+      setSize((prev) => (prev.w === next.w && prev.h === next.h && prev.cw === next.cw && prev.ch === next.ch ? prev : next))
+    }
+    read()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    if (host) ro.observe(host)
+    return () => ro.disconnect()
+  }, [shown])
 
-  if (!tiktokMode || !editing || !editing.box || !def) return null
+  if (!shown || !editing?.box || !def) return null
 
   const { box, clipId } = editing
   const style = styleOf(def)
@@ -111,12 +126,15 @@ export function TikTokTextBar() {
   const barH = size.h || FALLBACK_H
   // Above the box, or below it when the top of the monitor leaves no room.
   const above = box.top - barH - GAP
-  let top = above >= EDGE ? above : box.top + box.h + GAP
+  const sitsAbove = above >= EDGE
+  let top = sitsAbove ? above : box.top + box.h + GAP
   if (size.ch > 0) top = Math.min(top, size.ch - barH - EDGE)
   let left = box.left + box.w / 2 - size.w / 2
   if (size.cw > 0) left = Math.min(left, size.cw - size.w - EDGE)
   left = Math.max(EDGE, left)
 
+  // The tooltips open on the side away from the text: up while the bar is above it, down once it has flipped below.
+  const tipSide = sitsAbove ? 'top' : 'bottom'
   const nextStyle = STYLE_CYCLE[(STYLE_CYCLE.indexOf(style) + 1) % STYLE_CYCLE.length]!
   const nextAlign = ALIGN_CYCLE[(ALIGN_CYCLE.indexOf(align) + 1) % ALIGN_CYCLE.length]!
 
@@ -138,7 +156,7 @@ export function TikTokTextBar() {
       {...{ [KEEPS_TEXT_EDIT]: '' }}
       role="toolbar"
       aria-label="TikTok text style"
-      className="pointer-events-auto absolute z-20 flex items-center gap-1 rounded-overlay border border-border-strong bg-bg-elevated p-1 shadow-pop"
+      className="pointer-events-auto absolute z-20 flex items-center gap-1 rounded-overlay border border-border-strong bg-bg-elevated p-1"
       style={{ left, top }}
       // A press here is the bar's: not the picture's under it, and not a move of the focus off the field.
       onPointerDown={(e) => e.stopPropagation()}
@@ -146,7 +164,7 @@ export function TikTokTextBar() {
       onDoubleClick={(e) => e.stopPropagation()}
     >
       <IconButton
-        tipSide="bottom"
+        tipSide={tipSide}
         label={`Text style: ${STYLE_NAME[style]}. Click for ${STYLE_NAME[nextStyle]}.`}
         active={style !== 'plain'}
         onClick={cycleStyle}
@@ -158,9 +176,9 @@ export function TikTokTextBar() {
         </span>
       </IconButton>
       <IconButton
-        tipSide="bottom"
+        tipSide={tipSide}
         label={`Align text: ${ALIGN_NAME[align]}. Click for ${ALIGN_NAME[nextAlign]}.`}
-        onClick={() => updateTitle(clipId, { align: nextAlign })}
+        onClick={() => setTitleAlign(clipId, nextAlign)}
         data-testid="tiktok-align"
         data-align={align}
       >

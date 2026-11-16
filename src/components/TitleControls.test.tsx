@@ -17,7 +17,7 @@ vi.mock('../state/toasts', () => ({
 }))
 
 import { channelKeyframes } from '../engine/effects/channels'
-import { TIKTOK_LINE_BOX, tiktokLineBox } from '../engine/render/lineBox'
+import { contrastTextColor, TIKTOK_LINE_BOX, tiktokLineBox } from '../engine/render/lineBox'
 import { TIKTOK_SANS_STACK } from '../engine/render/titleFonts'
 import { recomputeDuration } from '../engine/timeline'
 import { activeSequence, defaultTitleDef, newProject, newTitleClip, type Clip, type TitleDef } from '../engine/types'
@@ -104,6 +104,36 @@ describe('the Line highlight section', () => {
     fireEvent.click(screen.getByTestId('title-linebox-toggle'))
     expect(titleOf(c.id).box).toEqual({ color: 'rgba(0,0,0,0.6)', paddingPx: 24, radiusPx: 8 })
     expect(titleOf(c.id).lineBox).toBeDefined()
+  })
+
+  it('on the TikTok font, switching it on writes black text in the same edit, so white words do not vanish on the white box', () => {
+    const c = seed({ fontFamily: TIKTOK_SANS_STACK, color: '#ffffff' })
+    render(<Live id={c.id} />)
+    const steps = useStore.getState().history.undo.length
+    fireEvent.click(screen.getByTestId('title-linebox-toggle'))
+    expect(titleOf(c.id).lineBox!.color).toBe('#ffffff')
+    expect(titleOf(c.id).color).toBe(contrastTextColor('#ffffff'))
+    expect(titleOf(c.id).color).toBe('#000000')
+    expect(useStore.getState().history.undo.length).toBe(steps + 1)
+    useStore.getState().undo()
+    expect(titleOf(c.id).lineBox).toBeUndefined()
+    expect(titleOf(c.id).color).toBe('#ffffff')
+  })
+
+  it('on any other font, switching it on leaves the text colour alone', () => {
+    const c = seed({ color: '#ffffff' })
+    render(<Live id={c.id} />)
+    fireEvent.click(screen.getByTestId('title-linebox-toggle'))
+    expect(titleOf(c.id).lineBox).toBeDefined()
+    expect(titleOf(c.id).color).toBe('#ffffff')
+  })
+
+  it('switching it off leaves the text colour as it is', () => {
+    const c = seed({ fontFamily: TIKTOK_SANS_STACK, color: '#000000', lineBox: tiktokLineBox('#ffffff', 1) })
+    render(<Live id={c.id} />)
+    fireEvent.click(screen.getByTestId('title-linebox-toggle'))
+    expect(titleOf(c.id).lineBox).toBeUndefined()
+    expect(titleOf(c.id).color).toBe('#000000')
   })
 
   it('the colour and opacity write into the field and keep the em measures', () => {
