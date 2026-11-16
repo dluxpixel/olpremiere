@@ -306,9 +306,15 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
   useEffect(() => {
     if (editingId === null) return
     const c = seq.tracks.flatMap((t) => t.clips).find((x) => x.id === editingId)
+    const trackKind = seq.tracks.find((t) => t.clips.some((x) => x.id === editingId))?.kind
     const gone =
       !c ||
       !c.title ||
+      !!c.adjustment ||
+      trackKind !== 'video' ||
+      !box ||
+      box.w <= 0 ||
+      seq.durationS <= 0 ||
       chromeHidden ||
       selection.length !== 1 ||
       selection[0] !== editingId ||
@@ -316,6 +322,8 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
       playheadS >= clipEndS(c)
     if (gone) endTextEdit()
   })
+  // Whatever way this overlay leaves the screen, no typing is left over to come back with it.
+  useEffect(() => () => endTextEdit(), [])
   // Enter with ONE title selected, and the focus not in a field, button or menu, starts typing on it.
   // A listener read at the keypress (getState), so it costs this component no subscription.
   useEffect(() => {
@@ -504,7 +512,23 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
   const typingOn = gizmoOn && !!clip?.title && editingId === clip.id
   let textEdit: React.ReactNode = null
   if (typingOn && clip) {
-    const t = restingTf(clip, manualAnimated, playheadS - clip.startS)
+    // The field lies on the framing the renderer draws: its resolved layer, which carries an
+    // appearance animation's compiled keyframes that the clip's own transform does not.
+    const layer = visibleLayers.find((l) => l.clipId === clip.id)
+    const t = layer
+      ? {
+          x: layer.transform.x,
+          y: layer.transform.y,
+          scale: layer.transform.scale,
+          rotationDeg: layer.transform.rotationDeg,
+          anchorX: layer.transform.anchorX,
+          anchorY: layer.transform.anchorY,
+        }
+      : {
+          ...restingTf(clip, manualAnimated, playheadS - clip.startS),
+          anchorX: clip.transform.anchorX,
+          anchorY: clip.transform.anchorY,
+        }
     textEdit = (
       <MonitorTextEdit
         clipId={clip.id}
@@ -518,8 +542,8 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
         y={t.y}
         scale={t.scale}
         rotationDeg={t.rotationDeg}
-        anchorX={clip.transform.anchorX}
-        anchorY={clip.transform.anchorY}
+        anchorX={t.anchorX}
+        anchorY={t.anchorY}
       />
     )
   }

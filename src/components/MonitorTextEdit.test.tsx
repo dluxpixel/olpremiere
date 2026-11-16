@@ -159,7 +159,7 @@ describe('double click starts typing on the video', () => {
 })
 
 describe('typing writes the title', () => {
-  it('each keystroke goes through the store, and the whole session is one undo step', () => {
+  it('each keystroke goes through the store, and a run of typing inside the merge window is one undo step', () => {
     const c = seed()
     mountOverlay()
     dblClickMiddle()
@@ -245,6 +245,29 @@ describe('ways out', () => {
     act(() => useStore.getState().setUI({ selection: [] }))
     expect(useTextEdit.getState().editing).toBeNull()
   })
+
+  it('the overlay going away ends it, so nothing is left over to come back', () => {
+    seed()
+    mountOverlay()
+    dblClickMiddle()
+    expect(useTextEdit.getState().editing).not.toBeNull()
+    cleanup()
+    expect(useTextEdit.getState().editing).toBeNull()
+  })
+
+  it('a title on a track that is not a video track ends it', () => {
+    const c = seed()
+    mountOverlay()
+    dblClickMiddle()
+    act(() =>
+      updateActiveSequence('seed', (sq) => ({
+        ...sq,
+        tracks: sq.tracks.map((t, i) => (i === 0 ? { ...t, kind: 'audio' as const } : t)),
+      })),
+    )
+    expect(useStore.getState().ui.selection).toEqual([c.id])
+    expect(useTextEdit.getState().editing).toBeNull()
+  })
 })
 
 describe('while editing, the editor stays out of the way', () => {
@@ -288,7 +311,26 @@ describe('while editing, the editor stays out of the way', () => {
     }
   })
 
-  it('the field is a plain textarea that undo and redo leave to the browser, as the Inspector box does', () => {
+  it('undo and redo keys inside the field are left to the field, as the Inspector box does', () => {
+    seed()
+    mountOverlay()
+    const undoRun = vi.fn()
+    const off = installKeymap([
+      { combo: 'mod+z', description: 'Undo', domain: 'edit', run: undoRun },
+    ] as Parameters<typeof installKeymap>[0])
+    try {
+      // The control: outside any field the same key runs the app's undo.
+      fireEvent.keyDown(document.body, { key: 'z', code: 'KeyZ', ctrlKey: true })
+      expect(undoRun).toHaveBeenCalledTimes(1)
+      dblClickMiddle()
+      fireEvent.keyDown(screen.getByTestId('text-edit-field'), { key: 'z', code: 'KeyZ', ctrlKey: true })
+      expect(undoRun).toHaveBeenCalledTimes(1)
+    } finally {
+      off()
+    }
+  })
+
+  it('turns spellcheck and autocorrect off', () => {
     seed()
     mountOverlay()
     dblClickMiddle()
@@ -346,6 +388,28 @@ describe('the field lies exactly over the title', () => {
     dblClickMiddle()
     expect(c.transform.rotationDeg).toBe(30)
     expect(screen.getByTestId('text-edit-frame').style.transform).toContain('rotate(30deg)')
+  })
+
+  it('lies on the scale the renderer draws mid animation, not the resting transform', () => {
+    // A title with an entrance animation: the compiled keyframes scale it while the clip's own
+    // transform stays at 1, so the field must follow the keyframes.
+    const c = seed(
+      {},
+      {
+        appearance: { in: 'pop' },
+        keyframes: {
+          scale: [
+            { t: 0, value: 2, ease: 'linear' },
+            { t: 3, value: 2, ease: 'linear' },
+          ],
+        },
+      },
+    )
+    expect(c.transform.scale).toBe(1)
+    useStore.getState().setUI({ playheadS: 1 })
+    mountOverlay()
+    dblClickMiddle()
+    expect(screen.getByTestId('text-edit-frame').style.transform).toContain('scale(2)')
   })
 
   it('an unrotated title carries no rotation', () => {
