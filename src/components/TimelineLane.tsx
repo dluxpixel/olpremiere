@@ -107,7 +107,9 @@ export function TimelineLane({
       })}
       {/* The ghost of what a drop will land here, as long as it will be, with the
           2px line at its start. Without a ghost (a length not known yet) the
-          line alone marks the hovered lane, as it always did. */}
+          line alone marks the hovered lane, as it always did. A clip that will land
+          on a lane that does not exist yet gets neither here: that line would point
+          at the wrong lane. */}
       {ghosts.map((g, i) => (
         <Fragment key={i}>
           <div
@@ -124,7 +126,7 @@ export function TimelineLane({
           <div className="pointer-events-none absolute inset-y-0 z-20 w-[2px] bg-accent" style={{ left: g.tS * pxPerS }} />
         </Fragment>
       ))}
-      {dropPreview?.trackId === track.id && dropPreview.ghosts.length === 0 && (
+      {dropPreview?.trackId === track.id && dropPreview.ghosts.length === 0 && !dropPreview.makesLane && (
         <div
           className="pointer-events-none absolute inset-y-0 z-20 w-[2px] bg-accent"
           style={{ left: dropPreview.tS * pxPerS }}

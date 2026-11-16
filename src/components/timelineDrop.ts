@@ -55,6 +55,18 @@ export interface DropPreview {
   trackId: Id
   tS: number
   ghosts: DropGhost[]
+  /**
+   * A clip of the drop lands on a lane that does not exist yet. Its lane is not
+   * on screen, so the hovered lane must not draw the plain line for it (that
+   * would point at the wrong lane).
+   */
+  makesLane?: boolean
+}
+
+/** The ghosts of an insert, and whether any of its clips lands on a lane the insert makes. */
+export interface InsertPreview {
+  ghosts: DropGhost[]
+  makesLane: boolean
 }
 
 /**
@@ -84,34 +96,50 @@ export function insertDroppedAsset(
 /**
  * The ghosts for the clips an insert made: each one's lane, start and length as
  * the insert actually left them. A clip on a lane the insert had to MAKE (every
- * line of its kind was taken) has no lane on screen to draw in, so it has no ghost.
+ * line of its kind was taken) has no lane on screen to draw in, so it has no
+ * ghost, and `makesLane` says so (the hovered lane then draws no line either).
  */
-function ghostsOfInsert(before: Sequence, after: Sequence, clipIds: Id[], label: string): DropGhost[] {
-  const out: DropGhost[] = []
+function ghostsOfInsert(before: Sequence, after: Sequence, clipIds: Id[], label: string): InsertPreview {
+  const ghosts: DropGhost[] = []
+  let makesLane = false
   for (const id of clipIds) {
     const track = after.tracks.find((t) => t.clips.some((c) => c.id === id))
     const clip = track?.clips.find((c) => c.id === id)
-    if (!track || !clip || !before.tracks.some((t) => t.id === track.id)) continue
-    out.push({ trackId: track.id, tS: clip.startS, durS: clipDurationS(clip), ...(label ? { label } : {}) })
+    if (!track || !clip) continue
+    if (!before.tracks.some((t) => t.id === track.id)) {
+      makesLane = true
+      continue
+    }
+    ghosts.push({ trackId: track.id, tS: clip.startS, durS: clipDurationS(clip), ...(label ? { label } : {}) })
   }
-  return out
+  return { ghosts, makesLane }
 }
 
-/** The ghosts of a bin or Library drop, from the same lane choice and insert the drop uses. */
-export function assetDropGhosts(seq: Sequence, asset: MediaAsset, hovered: Track | null, tS: number): DropGhost[] {
+const NO_PREVIEW: InsertPreview = { ghosts: [], makesLane: false }
+
+/** The ghosts of a bin or Library drop, and whether it makes a lane, from the same lane choice and insert the drop uses. */
+export function assetDropPreview(seq: Sequence, asset: MediaAsset, hovered: Track | null, tS: number): InsertPreview {
   const target = assetDropTrack(hovered, seq, asset.kind === 'audio' ? 'audio' : 'video')
-  if (!target) return []
+  if (!target) return NO_PREVIEW
   const r = insertDroppedAsset(seq, asset, target, tS)
   return ghostsOfInsert(seq, r.seq, r.clipIds, asset.name)
 }
 
-/** The ghost of a dropped sound: the lane and nudge the sound inserter gives it (not `exact`, like it). */
-export function sfxDropGhosts(seq: Sequence, asset: MediaAsset, hovered: Track | null, tS: number): DropGhost[] {
+/** The ghosts of a bin or Library drop, from the same lane choice and insert the drop uses. */
+export const assetDropGhosts = (seq: Sequence, asset: MediaAsset, hovered: Track | null, tS: number): DropGhost[] =>
+  assetDropPreview(seq, asset, hovered, tS).ghosts
+
+/** The ghost of a dropped sound (and whether it makes a lane): the lane and nudge the sound inserter gives it (not `exact`, like it). */
+export function sfxDropPreview(seq: Sequence, asset: MediaAsset, hovered: Track | null, tS: number): InsertPreview {
   const target = sfxDropTrack(hovered, seq)
-  if (!target) return []
+  if (!target) return NO_PREVIEW
   const r = addClipFromAsset(seq, target.id, asset, tS)
   return ghostsOfInsert(seq, r.seq, r.clipId ? [r.clipId] : [], asset.name)
 }
+
+/** The ghost of a dropped sound: the lane and nudge the sound inserter gives it (not `exact`, like it). */
+export const sfxDropGhosts = (seq: Sequence, asset: MediaAsset, hovered: Track | null, tS: number): DropGhost[] =>
+  sfxDropPreview(seq, asset, hovered, tS).ghosts
 
 /** Where every title goes: the topmost unlocked video lane (titles overlay footage below them). */
 export const titleDropTrack = (seq: Sequence): Track | undefined => [...videoTracks(seq)].reverse().find((t) => !t.locked)

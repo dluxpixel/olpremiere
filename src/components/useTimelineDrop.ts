@@ -18,17 +18,18 @@ import { addTitleFromShelf } from '../state/titleActions'
 import { titleLookById } from '../state/titleShelf'
 import { useToasts } from '../state/toasts'
 import {
-  assetDropGhosts,
+  assetDropPreview,
   assetDropTrack,
   dropKinds,
   insertDroppedAsset,
   laneTakesDrop,
-  sfxDropGhosts,
+  sfxDropPreview,
   sfxDropTrack,
   snappedDropTime,
   titleDropGhosts,
   type DropGhost,
   type DropPreview,
+  type InsertPreview,
 } from './timelineDrop'
 import { frameAtOffset } from './timelineZoom'
 
@@ -36,6 +37,7 @@ type Pointer = { clientX: number; clientY: number }
 
 /** No ghost: the plain line only. A shared array so an unchanged preview stays the same object. */
 const NO_GHOSTS: DropGhost[] = []
+const NO_PREVIEW: InsertPreview = { ghosts: NO_GHOSTS, makesLane: false }
 
 /** What the drag carries, read off its types. */
 interface DragFlags {
@@ -91,7 +93,7 @@ export function useTimelineDrop({
   const show = useToasts((s) => s.show)
   const [dropPreview, setDropPreview] = useState<DropPreview | null>(null)
   /** The last ghosts worked out, and what they were worked out from: see ghostsFor. */
-  const ghostCache = useRef<{ key: string; seq: Sequence; assets: Record<Id, MediaAsset>; ghosts: DropGhost[] } | null>(
+  const ghostCache = useRef<{ key: string; seq: Sequence; assets: Record<Id, MediaAsset>; preview: InsertPreview } | null>(
     null,
   )
 
@@ -147,11 +149,18 @@ export function useTimelineDrop({
       setDropPreview(null)
       return
     }
-    const t = snapWithIndicator(frameAtOffset(x, pxPerS, seq.fps))
-    const ghosts = ghostsFor(getDragRecord(), { isAsset, isSfx, isTitle, isLibrary }, lane, t)
+    // ⛔ ONE TIME for the ghost and the drop: dropTimeAt, the function handleDrop
+    // uses. snapWithIndicator only draws (or clears) the snap line; its answer is
+    // not used, so the two can never drift apart.
+    const tRaw = frameAtOffset(x, pxPerS, seq.fps)
+    snapWithIndicator(tRaw)
+    const t = dropTimeAt(x)
+    const { ghosts, makesLane } = ghostsFor(getDragRecord(), { isAsset, isSfx, isTitle, isLibrary }, lane, t)
     // The same lane, time and ghosts is the same preview: no new object, no repaint.
     setDropPreview((prev) =>
-      prev && prev.trackId === lane.id && prev.tS === t && prev.ghosts === ghosts ? prev : { trackId: lane.id, tS: t, ghosts },
+      prev && prev.trackId === lane.id && prev.tS === t && prev.ghosts === ghosts && !!prev.makesLane === makesLane
+        ? prev
+        : { trackId: lane.id, tS: t, ghosts, ...(makesLane ? { makesLane } : {}) },
     )
   }
 
@@ -167,24 +176,24 @@ export function useTimelineDrop({
    * length that is not known right now: no ghost, and the line shows as before.
    * A length is never guessed.
    */
-  const ghostsFor = (rec: DragRecord | null, k: DragFlags, lane: Track, t: number): DropGhost[] => {
-    if (!rec) return NO_GHOSTS
+  const ghostsFor = (rec: DragRecord | null, k: DragFlags, lane: Track, t: number): InsertPreview => {
+    if (!rec) return NO_PREVIEW
     const key = `${rec.kind}:${rec.id}|${lane.id}|${t}`
     const hit = ghostCache.current
-    if (hit && hit.key === key && hit.seq === seq && hit.assets === assets) return hit.ghosts
-    const ghosts = computeGhosts(rec, k, lane, t)
-    ghostCache.current = { key, seq, assets, ghosts }
-    return ghosts
+    if (hit && hit.key === key && hit.seq === seq && hit.assets === assets) return hit.preview
+    const preview = computeGhosts(rec, k, lane, t)
+    ghostCache.current = { key, seq, assets, preview }
+    return preview
   }
 
-  const computeGhosts = (rec: DragRecord, k: DragFlags, lane: Track, t: number): DropGhost[] => {
+  const computeGhosts = (rec: DragRecord, k: DragFlags, lane: Track, t: number): InsertPreview => {
     if (rec.kind === 'asset' && k.isAsset) {
       const asset = assets[rec.id]
-      return asset ? assetDropGhosts(seq, asset, lane, t) : NO_GHOSTS
+      return asset ? assetDropPreview(seq, asset, lane, t) : NO_PREVIEW
     }
     if (rec.kind === 'sfx' && k.isSfx) {
       const def = sfxById(rec.id)
-      if (!def) return NO_GHOSTS
+      if (!def) return NO_PREVIEW
       // The project's copy when it has one (what the sound inserter reuses), else
       // the asset it would make: the bundled sound's own length.
       const own = Object.values(assets).find((a) => a.kind === 'audio' && a.name === sfxAssetName(def))
@@ -197,15 +206,15 @@ export function useTimelineDrop({
         hasAudio: true,
         hasVideo: false,
       }
-      return sfxDropGhosts(seq, { ...asset, name: def.name }, lane, t)
+      return sfxDropPreview(seq, { ...asset, name: def.name }, lane, t)
     }
     if (rec.kind === 'title' && k.isTitle) {
       const look = titleLookById(rec.id)
-      return look ? titleDropGhosts(seq, look.durationS, look.name, t) : NO_GHOSTS
+      return look ? { ghosts: titleDropGhosts(seq, look.durationS, look.name, t), makesLane: false } : NO_PREVIEW
     }
     if (rec.kind === 'library' && k.isLibrary) {
       const item = useLibrary.getState().items.find((i) => i.id === rec.id)
-      if (!item) return NO_GHOSTS
+      if (!item) return NO_PREVIEW
       // What addLibraryItemToTimeline lays down: the project's own copy of the
       // media when it has one, else a fresh copy with the item's own length.
       const reused = Object.values(assets).find(
@@ -220,9 +229,9 @@ export function useTimelineDrop({
         hasAudio: item.hasAudio,
         hasVideo: item.hasVideo,
       }
-      return assetDropGhosts(seq, asset, lane, t)
+      return assetDropPreview(seq, asset, lane, t)
     }
-    return NO_GHOSTS
+    return NO_PREVIEW
   }
 
   const dropTimeAt = (x: number): number =>

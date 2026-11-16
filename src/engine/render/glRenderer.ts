@@ -2578,7 +2578,7 @@ export function createRenderer(gl: WebGL2RenderingContext, options?: RendererOpt
    * caption is barred. A bar of nothing is not drawn.
    */
   function barsFbo(fbo: Fbo, sizePct: number, frameW: number, frameH: number): void {
-    if (sizePct / 100 <= 0.0001) return
+    if (sizePct / 100 < 0.0001) return
     const bars = barsPass.get()
     if (!bars) return
     gl.useProgram(bars.prog)

@@ -176,6 +176,12 @@ describe('Cinematic Bars with a neighborhood effect on the same layer', () => {
     expect(draws.filter(isBarsPass)).toHaveLength(1)
   })
 
+  it('draw at the exact size the layer shader draws (step(0.0001, bar)), and skip only a smaller one', () => {
+    expect(0.01 / 100).toBe(0.0001)
+    expect(draw([bars(0.01), split()]).draws.filter(isBarsPass)).toHaveLength(1)
+    expect(draw([bars(0.005), split()]).draws.filter(isBarsPass)).toHaveLength(0)
+  })
+
   it('size from the frame, with the same maths the layer shader uses', () => {
     const pass = draw([bars(12), split()]).draws.find(isBarsPass)!
     expect(pass.fs).toContain(cinematicBarsKeepGlsl('uSize'))

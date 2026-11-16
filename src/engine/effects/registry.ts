@@ -693,7 +693,7 @@ export const EFFECTS: EffectDef[] = [
     params: [p('size', 'Size', 0, 50, 0.1, 0, '%', 0.25)],
     // When the layer ALSO has a neighborhood effect (RGB Split, a blur) the renderer
     // leaves this out of the layer shader and draws the same maths as the layer's
-    // LAST pass (glRenderer.ts cinematicBarsFs), so a split or a blur cannot fringe
+    // LAST pass (glRenderer.ts CINEMATIC_BARS_FS, run by barsFbo), so a split or a blur cannot fringe
     // or soften the bar edges. Alone it stays here, in the shader, as it always was.
     glsl: (u) => `
       ${cinematicBarsKeepGlsl(u('size'))}

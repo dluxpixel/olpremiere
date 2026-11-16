@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { ASSET_MIME, SFX_MIME, TITLE_MIME } from '../state/dnd'
 import {
   assetDropGhosts,
+  assetDropPreview,
   assetDropTrack,
   dropKinds,
   insertDroppedAsset,
   laneTakesDrop,
   sfxDropGhosts,
+  sfxDropPreview,
   sfxDropTrack,
   snappedDropTime,
   titleDropGhosts,
@@ -120,6 +122,27 @@ describe('drop ghosts', () => {
     expect(assetDropGhosts(seq, still, v1, 2).map((g) => g.trackId)).toEqual([v2.id])
     const packed = makeSeq([makeTrack({ clips: [clip(0, 20)] })])
     expect(assetDropGhosts(packed, still, packed.tracks[0]!, 2)).toEqual([])
+  })
+
+  it('says a drop makes a lane when the clip lands on one that does not exist yet', () => {
+    const packed = makeSeq([makeTrack({ clips: [clip(0, 20)] })])
+    expect(assetDropPreview(packed, still, packed.tracks[0]!, 2)).toEqual({ ghosts: [], makesLane: true })
+    const roomy = makeSeq([makeTrack(), makeTrack()])
+    expect(assetDropPreview(roomy, still, roomy.tracks[0]!, 2).makesLane).toBe(false)
+    const a1 = makeTrack({ kind: 'audio', clips: [clip(0, 20)] })
+    const sndSeq = makeSeq([makeTrack(), a1])
+    // A sound is nudged to a gap on its own lane (not `exact`): it never makes one.
+    const s = sfxDropPreview(sndSeq, snd, a1, 2)
+    expect(s.makesLane).toBe(false)
+    expect(s.ghosts.map((g) => g.trackId)).toEqual([a1.id])
+  })
+
+  it('keeps the ghost of the clip of a pair that lands on an existing lane', () => {
+    // Video lane is free, the only audio lane is taken: the sound goes to a new lane.
+    const seq = makeSeq([makeTrack(), makeTrack({ kind: 'audio', clips: [clip(0, 20)] })])
+    const r = assetDropPreview(seq, av, seq.tracks[0]!, 3)
+    expect(r.ghosts).toEqual([{ trackId: seq.tracks[0]!.id, tS: 3, durS: 8, label: 'cat.mp4' }])
+    expect(r.makesLane).toBe(true)
   })
 
   it('shows nothing when no unlocked lane of the kind is left', () => {

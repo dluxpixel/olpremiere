@@ -117,6 +117,20 @@ describe('TimelineLane', () => {
     expect(laneEl.querySelector('.w-\\[2px\\]')).toBeNull()
   })
 
+  it('draws no line on the hovered lane when the clip will land on a lane that does not exist yet', () => {
+    const { laneEl } = renderLane({ dropPreview: { trackId: lane.id, tS: 4, ghosts: [], makesLane: true } })
+    expect(screen.queryByTestId('drop-ghost')).toBeNull()
+    expect(laneEl.querySelector('.w-\\[2px\\]')).toBeNull()
+  })
+
+  it('still draws the ghost of a clip that lands here when its pair makes a lane', () => {
+    const { laneEl } = renderLane({
+      dropPreview: { trackId: 'hovered', tS: 4, ghosts: [{ trackId: lane.id, tS: 4, durS: 3 }], makesLane: true },
+    })
+    expect(screen.getByTestId('drop-ghost')).toBeTruthy()
+    expect(laneEl.querySelectorAll('.w-\\[2px\\]')).toHaveLength(1)
+  })
+
   it('routes presses to the lane and the clip handlers', () => {
     const { h, laneEl } = renderLane()
     fireEvent.pointerDown(laneEl)

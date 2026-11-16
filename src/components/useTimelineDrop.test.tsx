@@ -240,6 +240,50 @@ describe('useTimelineDrop drop ghost', () => {
     expect(created(before).every((x) => x.clip.startS === shown)).toBe(true)
   })
 
+  it('with snapping on and a snap point near the pointer, the ghost starts where the drop starts', () => {
+    // A clip on V2 ends at 5.3 s: the pointer at 5.0 s is inside the snap range.
+    useStore.getState().dispatch('seed', (p) => {
+      const sq = p.sequences[p.activeSequenceId]!
+      const edge = makeClip({ startS: 0, outS: 5.3 })
+      const tracks = sq.tracks.map((t) => (t.id === lane('video', 1).id ? { ...t, clips: [edge] } : t))
+      return { ...p, sequences: { ...p.sequences, [sq.id]: { ...sq, tracks } } }
+    })
+    // The hover path reports the raw time (as if it did not know the snap point).
+    const { hook } = mount(() => lane('video'), { snapping: true, snapWithIndicator: (t) => t })
+    setDragRecord('asset', 'av')
+    act(() => hook.result.current.handleDragOver(dragEvent({ [ASSET_MIME]: 'av' }, 50)))
+    const p = hook.result.current.dropPreview!
+    const before = allClips().map((x) => x.clip.id)
+    act(() => hook.result.current.handleDrop(dragEvent({ [ASSET_MIME]: 'av' }, 50)))
+    const made = created(before)
+    expect(made.length).toBeGreaterThan(0)
+    expect(p.tS).toBe(made[0]!.clip.startS)
+    expect(p.ghosts[0]!.tS).toBe(made[0]!.clip.startS)
+    expect(made[0]!.clip.startS).not.toBe(5)
+  })
+
+  it('marks the preview as making a lane when every lane of the kind is taken at the pointer', () => {
+    useStore.getState().dispatch('seed', (p) => {
+      const sq = p.sequences[p.activeSequenceId]!
+      const tracks = sq.tracks.map((t) => (t.kind === 'video' ? { ...t, clips: [makeClip({ startS: 0, outS: 20 })] } : t))
+      return { ...p, sequences: { ...p.sequences, [sq.id]: { ...sq, tracks } } }
+    })
+    const png = makeAsset({ id: 'png', kind: 'image', durationS: 0, hasAudio: false, hasVideo: true })
+    useStore.getState().setProject({ ...useStore.getState().project, assets: { ...useStore.getState().project.assets, png } })
+    const { hook } = mount(() => lane('video'))
+    setDragRecord('asset', 'png')
+    act(() => hook.result.current.handleDragOver(dragEvent({ [ASSET_MIME]: 'png' }, 50)))
+    expect(hook.result.current.dropPreview).toMatchObject({ trackId: lane('video').id, ghosts: [], makesLane: true })
+  })
+
+  it('drives the snap line from snapWithIndicator but takes the time from the drop time', () => {
+    const snapWithIndicator = vi.fn((t: number) => t + 1)
+    const { hook } = mount(() => lane('video'), { snapWithIndicator })
+    act(() => hook.result.current.handleDragOver(dragEvent({ [ASSET_MIME]: 'av' }, 50)))
+    expect(snapWithIndicator).toHaveBeenCalled()
+    expect(hook.result.current.dropPreview!.tS).toBe(5)
+  })
+
   it('gives a picture the same default length the insert gives it', () => {
     const png = makeAsset({ id: 'png', kind: 'image', durationS: 0, hasAudio: false, hasVideo: true })
     useStore.getState().setProject({ ...useStore.getState().project, assets: { ...useStore.getState().project.assets, png } })
