@@ -6,6 +6,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { clipEndS } from '../engine/timeline'
+import { isEditableTarget, windowOverTheEdit } from '../keymap'
 import { boxFromQuad, snapTransformMove, type SnapBox } from '../engine/snapTransform'
 import { computeQuad, pointInQuad, subQuad } from '../engine/render/mat'
 import { resolveFrame } from '../engine/render/resolve'
@@ -31,6 +32,7 @@ import { quantizeToFrame } from '../engine/timecode'
 import { useStore, type ZoomAnchor } from '../state/store'
 import { plural } from '../engine/plural'
 import { useToasts } from '../state/toasts'
+import { endTextEdit, MonitorTextEdit, startTextEdit, useTextEdit } from './MonitorTextEdit'
 
 interface Tf {
   x: number
@@ -57,6 +59,26 @@ const ACCENT_WASH = 'color-mix(in srgb, var(--color-accent) 6%, transparent)'
 const HANDLE_INK = 'var(--color-accent-fg)'
 /** Pointer travel before a monitor click becomes a scrub jog. */
 const SCRUB_SLOP_PX = 4
+
+/**
+ * The framing the gizmo, and the typing field over a title, sit on at the playhead: the resolved
+ * channels of a clip that animates, the plain transform of one that does not.
+ */
+function restingTf(clip: Clip, manualAnimated: boolean, localT: number): Tf {
+  return manualAnimated
+    ? {
+        x: resolveChannel(clip, 'posX', localT),
+        y: resolveChannel(clip, 'posY', localT),
+        scale: resolveChannel(clip, 'scale', localT),
+        rotationDeg: resolveChannel(clip, 'rotation', localT),
+      }
+    : {
+        x: clip.transform.x,
+        y: clip.transform.y,
+        scale: clip.transform.scale,
+        rotationDeg: clip.transform.rotationDeg,
+      }
+}
 
 /**
  * The selected clip's box on the monitor, in sequence pixels, laid out exactly
@@ -225,6 +247,11 @@ export function MonitorTransformOverlay({
   // way the transport does, so the gizmo stands down for it too. Without this
   // the overlay re-renders on every frame of the sweep.
   const previewing = useStore((s) => s.ui.previewingMove)
+  // The transport or a replayed move takes the screen: typing on the video stops with it, so the
+  // field is never left over a picture that is moving.
+  useEffect(() => {
+    if (playing || previewing) endTextEdit()
+  }, [playing, previewing])
   if (playing || previewing) return null
   return <OverlayInner canvas={canvas} chromeHidden={chromeHidden} />
 }
@@ -270,6 +297,52 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
   // guide now lands on an edge as well as the centre.
   const [snapGuides, setSnapGuides] = useState<{ x: number | null; y: number | null }>({ x: null, y: null })
   useEffect(() => () => cleanupRef.current?.(), [])
+
+  // --- Typing on the video (MonitorTextEdit) ------------------------------
+  // Which title is being typed into, if any. A tiny local store, not the project.
+  const editingId = useTextEdit((s) => s.editing?.clipId ?? null)
+  // The typing ends the moment its title is no longer the one thing selected and on screen, or the
+  // monitor goes to the full screen, so no field is ever left over a picture it does not belong to.
+  useEffect(() => {
+    if (editingId === null) return
+    const c = seq.tracks.flatMap((t) => t.clips).find((x) => x.id === editingId)
+    const gone =
+      !c ||
+      !c.title ||
+      chromeHidden ||
+      selection.length !== 1 ||
+      selection[0] !== editingId ||
+      playheadS < c.startS ||
+      playheadS >= clipEndS(c)
+    if (gone) endTextEdit()
+  })
+  // Enter with ONE title selected, and the focus not in a field, button or menu, starts typing on it.
+  // A listener read at the keypress (getState), so it costs this component no subscription.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.defaultPrevented || e.repeat) return
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return
+      const t = e.target
+      if (isEditableTarget(t)) return
+      if (
+        t instanceof HTMLElement &&
+        t.closest('button, a, select, input, textarea, summary, [role="button"], [role="menuitem"], [role="option"], [role="tab"], [role="slider"]')
+      )
+        return
+      if (windowOverTheEdit() || chromeHidden) return
+      const st = useStore.getState()
+      if (st.ui.playing || st.ui.selection.length !== 1) return
+      const sq = activeSequence(st.project)
+      const track = sq.tracks.find((tr) => tr.clips.some((c) => c.id === st.ui.selection[0]))
+      const c = track?.clips.find((x) => x.id === st.ui.selection[0])
+      if (!c || !c.title || track?.kind !== 'video') return
+      if (st.ui.playheadS < c.startS || st.ui.playheadS >= clipEndS(c)) return
+      e.preventDefault()
+      startTextEdit(c.id)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [chromeHidden])
 
   // Playing is handled by the outer gate; here we are always paused.
   const active = !!box && box.w > 0 && seq.durationS > 0
@@ -385,6 +458,23 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
     }
   }
 
+  // Double click a TITLE in the preview to type on it. The topmost thing under the pointer decides, as
+  // for a click, so a title over footage opens and footage under a title never does. A double click
+  // on a video clip does what it always did, which is nothing.
+  const editAt = (e: ReactMouseEvent) => {
+    const p = localPt(e.clientX, e.clientY)
+    const sx = p.x / k
+    const sy = p.y / k
+    for (let i = visibleLayers.length - 1; i >= 0; i--) {
+      const layer = visibleLayers[i]
+      if (!pointInQuad(sx, sy, quadFor(layer))) continue
+      if (!layer.title) return
+      setUI({ selection: [layer.clipId] })
+      startTextEdit(layer.clipId)
+      return
+    }
+  }
+
   // --- The selected clip's gizmo (box + handles) ---------------------------
   const clip =
     selection.length === 1 ? seq.tracks.flatMap((t) => t.clips).find((c) => c.id === selection[0]) : undefined
@@ -409,25 +499,36 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
   // never change a pixel.
   const gizmoOn = !!clip && !clip.adjustment && track?.kind === 'video' && onScreen
 
+  // While a title is typed on, its handles are gone: a drag must not move, scale or turn it under the
+  // caret, and the field is the only thing on the picture to press.
+  const typingOn = gizmoOn && !!clip?.title && editingId === clip.id
+  let textEdit: React.ReactNode = null
+  if (typingOn && clip) {
+    const t = restingTf(clip, manualAnimated, playheadS - clip.startS)
+    textEdit = (
+      <MonitorTextEdit
+        clipId={clip.id}
+        canvasLeft={box.left}
+        canvasTop={box.top}
+        canvasW={box.w}
+        canvasH={box.h}
+        seqW={seq.width}
+        seqH={seq.height}
+        x={t.x}
+        y={t.y}
+        scale={t.scale}
+        rotationDeg={t.rotationDeg}
+        anchorX={clip.transform.anchorX}
+        anchorY={clip.transform.anchorY}
+      />
+    )
+  }
+
   let gizmo: React.ReactNode = null
-  if (gizmoOn && clip) {
+  if (gizmoOn && clip && !typingOn) {
     const clipId = clip.id
     const gizmoLocalT = playheadS - clip.startS
-    const tf: Tf =
-      dragTf ??
-      (manualAnimated
-        ? {
-            x: resolveChannel(clip, 'posX', gizmoLocalT),
-            y: resolveChannel(clip, 'posY', gizmoLocalT),
-            scale: resolveChannel(clip, 'scale', gizmoLocalT),
-            rotationDeg: resolveChannel(clip, 'rotation', gizmoLocalT),
-          }
-        : {
-            x: clip.transform.x,
-            y: clip.transform.y,
-            scale: clip.transform.scale,
-            rotationDeg: clip.transform.rotationDeg,
-          })
+    const tf: Tf = dragTf ?? restingTf(clip, manualAnimated, gizmoLocalT)
     const { rt, texW, texH, corners } = gizmoQuad(clip, seq, project.assets[clip.assetId], tf)
     const inner = contentBox(seq.width, seq.height, seq.contentAspect)
     const xs = corners.map(([x]) => x * k)
@@ -765,7 +866,7 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
   // to the SAME spot (great for stacking a run of captions). We move only the
   // topmost VISIBLE selected clip live, then commit that position to all of them.
   let multiGizmo: React.ReactNode = null
-  if (selection.length > 1) {
+  if (selection.length > 1 && !typingOn) {
     const sel = new Set(selection)
     const under = visibleLayers.filter((l) => sel.has(l.clipId))
     const primary = under[under.length - 1]
@@ -852,6 +953,7 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
       className="pointer-events-none absolute"
       data-testid="transform-gizmo"
       style={{ left: box.left, top: box.top, width: box.w, height: box.h }}
+      onDoubleClick={editAt}
     >
       {/* Full-canvas click-to-select layer, beneath the gizmo. */}
       <div
@@ -879,6 +981,7 @@ function OverlayInner({ canvas, chromeHidden }: { canvas: HTMLCanvasElement | nu
       )}
       {gizmo}
       {multiGizmo}
+      {textEdit}
     </div>
   )
 }
