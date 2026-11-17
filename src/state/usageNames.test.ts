@@ -282,6 +282,7 @@ describe('every dynamic testid in the source', () => {
     'stopwatch-',
     'tab-',
     'theme-',
+    'tiktok-dot-',
     'title-swatch-',
   ])
 
